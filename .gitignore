@@ -1,0 +1,10 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Local state written by artefacto itself
+/.artefacto/
+
+# OS / editor
+.DS_Store
+*.swp
