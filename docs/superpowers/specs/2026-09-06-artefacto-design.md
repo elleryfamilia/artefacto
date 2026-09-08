@@ -277,7 +277,47 @@ The page reconnects with backoff and shows a clear "server gone" state after a
 bounded number of retries, never a silent one. `artefacto open` mints a fresh
 one-time bootstrap URL at any time, so losing the cookie is never a lockout.
 
-### 4.4 The skill
+### 4.4 The artifact index
+
+Every artifact artefacto has ever produced for this repository is listed on one
+page, served at `/` by the server and printed by `artefacto list`. It answers
+"what have I got open, and how stale is it" at a glance.
+
+Each row carries:
+
+- **A poster**: a small picture of the artifact, described below.
+- **Title and kind**, and the artifact id.
+- **How long ago**, as relative text ("2 hours ago", "yesterday"), computed from
+  the last revision. The exact timestamp is in the title attribute and in the
+  JSON.
+- **Review state**: the current revision number, open thread count, unanchored
+  thread count, and the last verdict if there was one.
+- **Where it came from**: the plan file's path, and whether that file still
+  exists.
+
+**The poster is drawn, not screenshotted.** A real screenshot needs a browser at
+generation time. Making Chrome a hard dependency of `push` would be a bad trade
+for a thumbnail, and it would fail on exactly the headless boxes loadout already
+supports. Instead artefacto draws a deterministic SVG card from the plan model
+it already has: title, kind badge, a bar per phase sized by task count, risk
+markers, and the review state. artefacto already generates a deterministic SVG
+dependency graph, so this reuses machinery that exists. The poster is
+recognisable, costs nothing, needs no browser, and can be asserted in a golden
+test the same way the graph is.
+
+A real rendered screenshot stays possible later, as an opt-in for machines that
+have a browser, writing to the same slot the poster occupies. It is not v1.
+
+**The index survives everything.** It is a small per-repository registry, not a
+view over the event log, because the log gets truncated by `clean` and because
+static exports are made with no server running. `render` and `push` both record
+into it. It follows the conventions rosita already settled on for its Recents
+registry: refuse to write a file written by a newer version, self-heal a corrupt
+one, and **never auto-prune**. A missing artifact file greys the row and offers a
+per-row remove; it is never deleted on the user's behalf, because an absent file
+usually means an unmounted volume rather than a dead artifact.
+
+### 4.5 The skill
 
 The skill is a **package, not a file**: today's `loadout-plan-preview` is a
 `SKILL.md` that points at a `reference.md`, and both are installed together. So
@@ -296,7 +336,9 @@ lifecycle installs it into every agent directory exactly as it does today.
 artefacto serve  [--port N] [--idle 15m] [--away 5m] [--passive digest|live] [--no-open] [--foreground]
 artefacto stop
 artefacto status [--json]
-artefacto open                       # mint a fresh bootstrap URL and open the browser
+artefacto list   [--json]            # every artifact for this repo, newest first
+artefacto open   [--artifact ID]     # mint a fresh bootstrap URL and open the browser;
+                                     # with no id, opens the artifact index
 
 artefacto plan check  <file>... [--json] [--lenient]   # prints plan_hash, title, counts, per file
 artefacto plan render <file> [--out PATH] [--no-open] [--json]
@@ -384,6 +426,10 @@ Behaviour that matters:
   threads, the last event sequence, each lease's `acked_seq`, the lease holder
   and its age, reviewer presence, and the exact `events --follow` command line
   for the skill to arm.
+- `list` prints one row per artifact: id, kind, title, revision, relative age,
+  open and unanchored thread counts, last verdict, source path, and whether
+  that path still exists. `--json` adds absolute timestamps and the poster path.
+  It works with no server running, because it reads the registry, not the log.
 - **Where the session token comes from.** `await` and `events` return it in
   their result as `session`, alongside `seq`. An agent takes it from the first
   call and passes it to every mutation until a call hands back a new one.
@@ -588,7 +634,9 @@ The studio model, carried over, with the agent side simplified:
 ~/.local/state/artefacto/<repo-hash>/
   server.json                       # pid, port, secret, started_at   (0600)
   server.log                        # daemon stdout and stderr
-  events.ndjson                     # one log per server; everything else folds from it
+  events.ndjson                     # one log per server; live state folds from it
+  index.json                        # the artifact index; survives clean and needs no server
+  posters/<artifact-id>.svg         # one drawn poster per artifact
 <repo>/<plan-stem>-feedback.json    # written on submit; path overridable per push
 ```
 
@@ -618,6 +666,14 @@ Every reverse dependency in section 2 gets a home:
 | studio Skills tab | keeps installing and removing by the same id; the source of the text changes, not the id |
 | `tests/skill_examples.rs` | moves to artefacto with the skill; rosita keeps no copy to validate |
 | README and docs links | repointed to the artefacto repo in the dispatcher PR |
+
+**The index and loadout's Recents tab do different jobs, so neither replaces the
+other.** Recents is machine-wide and cross-repo: "what did I render lately,
+anywhere". The artefacto index is per-repo and deeper: every artifact for this
+repository, with its poster, age, revision, and review state. The dispatcher
+keeps recording into Recents exactly as before. Later, studio can show artefacto
+posters in Recents by reading `artefacto list --json`, but that is not v1 and
+nothing in v1 depends on it.
 
 **Why the badge needs batching.** `plan_badge` runs per Recents row inside a
 synchronous HTTP handler, and the registry holds up to 30 entries
@@ -679,14 +735,17 @@ v1 delivers:
 3. **the page, rewritten** for a re-entrant mount and a server-side store,
    keeping the serverless clipboard path working in the same asset (section
    4.3). This is the largest single item, not a set of small edits.
-4. the skill with both sections
-5. cargo-dist releases for macOS and Linux
-6. the rosita dispatcher PR: `load plan` → `artefacto plan`, install offer,
+4. the artifact index: registry, drawn posters, the served page, and `list`
+5. the skill with both sections
+6. cargo-dist releases for macOS and Linux
+7. the rosita dispatcher PR: `load plan` → `artefacto plan`, install offer,
    update, doctor, recents, clean, status, batched badge, skill pointer, docs
    links
 
-Deferred, in likely order: the Claude Code marketplace plugin (v1.1); the
-agent-role WebSocket; question `options`; the **spec** and **checklist** kinds;
+Deferred, in likely order: real browser screenshots as an opt-in alternative to
+drawn posters; the Claude Code marketplace plugin (v1.1); studio showing
+artefacto posters in Recents; the agent-role WebSocket; question `options`;
+the **spec** and **checklist** kinds;
 the **board** kind; an MCP mode exposing the same verbs as tools; Windows
 builds; mockup review; anything remote or team-facing; studio listing live
 artifacts.
@@ -711,6 +770,9 @@ artifacts.
 | studio's Recents page gets slow | one batched `check` call per render plus a short-TTL cache, never one subprocess per row |
 | renderer drift between artefacto and rosita | rosita's plan module is deleted in the dispatcher PR |
 | the browser test for the served page cannot be written | budgeted explicitly in section 14 as new harness work, with a fallback that needs no new harness |
+| a thumbnail feature drags in a browser dependency | posters are drawn deterministically from the plan model, reusing the existing SVG machinery; no browser is involved at any point |
+| the index lists artifacts whose files are gone | the row greys and offers a per-row remove; nothing is auto-pruned, because an absent file is usually an unmounted volume |
+| the index and the event log disagree | the registry is the index's only source and is written by render and push; the log drives live state only |
 
 ## 14. Testing
 
@@ -729,6 +791,13 @@ artifacts.
   before and after the event commits, because those lose different things.
 - A log-sufficiency test: kill the server, start it again with no other state,
   and the rendered body and every thread come back identical.
+- Index tests: `render` and `push` both record; `list` works with no server
+  running; a truncating `clean` leaves the index intact; a newer-version file is
+  refused rather than overwritten; a corrupt file self-heals; a missing source
+  file greys the row and is never auto-removed; relative ages render correctly
+  either side of a day boundary.
+- A golden test for the drawn poster, the same shape as the existing dependency
+  graph golden, so poster drift is caught like renderer drift.
 - Digest and live-mode tests use an injected clock: prepend order, quiet gap,
   count cap, age cap, the two-frames-a-minute bound.
 - `await` tests: returns on submit, chat, idle, away, timeout, and stop with
@@ -803,6 +872,10 @@ Stated so they can be overridden rather than discovered:
   `loadout.plan/1`
 - server mode does not use `localStorage` for review state; static export keeps
   using it exactly as today
+- index posters are **drawn from the plan model**, not screenshotted, so no
+  browser is ever required; real screenshots stay a later opt-in
+- the index is a per-repo registry file, never a view over the event log, so it
+  survives `clean` and covers artifacts made with no server running
 - marketplace plugin is v1.1
 - macOS and Linux only in v1
 
