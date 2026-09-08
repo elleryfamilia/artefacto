@@ -167,6 +167,11 @@ fn render(file: &Path, out: Option<&Path>, no_open: bool, json: bool) -> Result<
             for e in &errors {
                 eprintln!("error[{}] {}: {}", e.code, e.path, e.message);
             }
+            // An unreadable file is a usage problem, not an invalid plan.
+            // Same precedence `check` uses, so the two commands agree.
+            if errors.iter().any(|e| e.code == "unreadable") {
+                return Err(UsageReported.into());
+            }
             return Err(PlanInvalid.into());
         }
     };

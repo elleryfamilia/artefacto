@@ -230,3 +230,21 @@ fn render_resolves_a_relative_out_against_the_invocation_directory() {
         "relative --out anchors to cwd"
     );
 }
+
+#[test]
+fn render_reports_an_unreadable_plan_as_a_usage_error() {
+    let dir = tempfile::tempdir().unwrap();
+    bin()
+        .args([
+            "plan",
+            "render",
+            "/nonexistent/plan.json",
+            "--out",
+            dir.path().join("plan.html").to_str().unwrap(),
+            "--no-open",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("/nonexistent/plan.json"));
+    assert!(!dir.path().join("plan.html").exists(), "nothing is written");
+}
