@@ -1,0 +1,418 @@
+{
+  "format": "loadout.plan/1",
+  "meta": {
+    "id": "artefacto-extraction",
+    "title": "artefacto extraction \u2014 plan 1 of 6",
+    "goal_md": "Stand up the `artefacto` binary as a standalone static plan renderer, with loadout's plan module moved across and its whole test suite green.",
+    "summary_md": "This is the first of six plans. The design spec's v1 covers several subsystems that each ship working software on their own, so it is split rather than written as one document.\n\nWhat this plan builds: a Rust binary that validates a plan document and renders it to one self-contained HTML page. The model, validator, dependency graph and page assets move over from loadout essentially unedited; only their crate paths change. Three small helpers loadout owns are copied rather than shared, because publishing a crate for three files is not worth it.\n\nWhat it deliberately does not build: any server, any socket, any change to the page's behaviour. Those are plans 2 and 3. Loadout keeps its own copy of the plan module until plan 6 lands the dispatcher, so the two coexist and nothing breaks in between.\n\nWhy this order: the spec names this as the first implementation step because it is mechanical and it de-risks everything after it. If the renderer does not move cleanly, that is much better to learn now than after a server is built on top of it.",
+    "key_points": [
+      "Ten tasks, each ending with its own test run and commit.",
+      "Golden fixtures move byte-identical. A golden that stops matching means the move was wrong, so the plan forbids regenerating one to make a test pass.",
+      "Task 2 freezes the generated first line as a committed fixture, because loadout parses that line to decide whether a render is fresh.",
+      "The plan format string stays `loadout.plan/1`, so every existing plan document keeps working."
+    ],
+    "out_of_scope": [
+      "The interactive server, event log, or WebSocket",
+      "Rewriting plan.js for a re-entrant mount",
+      "The artifact index and its drawn posters",
+      "Deleting the plan module from loadout"
+    ]
+  },
+  "phases": [
+    {
+      "id": "p-foundation",
+      "title": "Foundation \u2014 the crate and its copied helpers",
+      "summary_md": "Get a crate that builds, then port the three small helpers loadout owns. The marker task is the one that matters: it freezes the cross-repo contract before anything depends on it.",
+      "tasks": [
+        {
+          "id": "t-scaffold",
+          "title": "Cargo scaffold and the plan hash",
+          "summary_md": "Create the package, pin the toolchain, and port `context_hash` and `short`. The digest is a cross-repo contract, so the bodies are copied unchanged.",
+          "estimate": "s",
+          "files": [
+            {
+              "path": "Cargo.toml",
+              "action": "create"
+            },
+            {
+              "path": "rust-toolchain.toml",
+              "action": "create"
+            },
+            {
+              "path": "src/hash.rs",
+              "action": "create",
+              "note": "copied from loadout, bodies unchanged"
+            },
+            {
+              "path": "src/lib.rs",
+              "action": "create"
+            },
+            {
+              "path": "src/main.rs",
+              "action": "create"
+            }
+          ],
+          "acceptance": [
+            "`context_hash` returns `sha256:` plus 64 lowercase hex characters",
+            "The same input hashes to the same value across calls",
+            "`short` truncates a long hash and returns anything else unchanged"
+          ],
+          "validation": [
+            "cargo test --lib hash",
+            "cargo clippy --all-targets -- -D warnings"
+          ]
+        },
+        {
+          "id": "t-marker",
+          "title": "The generated first line and its frozen fixture",
+          "summary_md": "loadout reads the first line of a rendered page to decide whether it is fresh. Its own constant is only the prefix, so testing the prefix would let the two repos drift while both suites stayed green. A committed fixture of the exact line is the contract.",
+          "estimate": "s",
+          "risk": "high",
+          "depends_on": [
+            "t-scaffold"
+          ],
+          "files": [
+            {
+              "path": "src/marker.rs",
+              "action": "create"
+            },
+            {
+              "path": "tests/marker_contract.rs",
+              "action": "test"
+            },
+            {
+              "path": "tests/fixtures/marker/first-line.txt",
+              "action": "create",
+              "note": "the frozen contract"
+            }
+          ],
+          "acceptance": [
+            "The emitted line equals the committed fixture byte for byte",
+            "A hash written by `line` is read back by `extract_hash`",
+            "A document with no marker, or a marker with no context token, yields None"
+          ],
+          "validation": [
+            "cargo test --test marker_contract",
+            "Change the prefix temporarily and confirm the fixture test fails, then revert"
+          ]
+        },
+        {
+          "id": "t-markdown",
+          "title": "The sanitizing markdown renderer",
+          "summary_md": "Copy the sanitizer that turns untrusted markdown into HTML. It has no crate dependencies, so it moves as-is. Two regression tests are added for the behaviour that matters most.",
+          "estimate": "s",
+          "depends_on": [
+            "t-scaffold"
+          ],
+          "files": [
+            {
+              "path": "src/markdown.rs",
+              "action": "create"
+            },
+            {
+              "path": "src/lib.rs",
+              "action": "modify"
+            }
+          ],
+          "acceptance": [
+            "A `javascript:` link destination never becomes an anchor",
+            "Raw HTML is neutralized to text rather than passed through"
+          ],
+          "validation": [
+            "cargo test --lib markdown"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p-renderer",
+      "title": "The renderer \u2014 model, graph, and HTML",
+      "summary_md": "Move the parts that do the actual work. Each arrives with the tests and golden fixtures that already prove it, so a bad move is caught immediately.",
+      "tasks": [
+        {
+          "id": "t-model",
+          "title": "The plan model and validator",
+          "summary_md": "Move the schema, parser, validator, advisories and hash function, plus the JSON fixtures. Its single crate reference is to the hash module, which sits at the same path, so no rewrite is needed.",
+          "estimate": "m",
+          "depends_on": [
+            "t-scaffold"
+          ],
+          "files": [
+            {
+              "path": "src/plan/model.rs",
+              "action": "create"
+            },
+            {
+              "path": "src/plan/mod.rs",
+              "action": "create"
+            },
+            {
+              "path": "tests/fixtures/plan/",
+              "action": "create",
+              "note": "seven JSON fixtures"
+            }
+          ],
+          "acceptance": [
+            "The kitchen-sink fixture parses and validates clean",
+            "The three invalid fixtures each produce issues",
+            "The plan hash is stable for the same document"
+          ],
+          "validation": [
+            "cargo test --lib plan::model"
+          ]
+        },
+        {
+          "id": "t-graph",
+          "title": "Icon names and the dependency graph",
+          "summary_md": "Move the icon validator and the deterministic SVG graph, with its golden. Includes a step that proves the golden is load-bearing by breaking it on purpose and reverting.",
+          "estimate": "s",
+          "depends_on": [
+            "t-model"
+          ],
+          "files": [
+            {
+              "path": "src/plan/icons.rs",
+              "action": "create"
+            },
+            {
+              "path": "src/plan/svg.rs",
+              "action": "create"
+            },
+            {
+              "path": "tests/fixtures/plan/kitchen-sink-p-core.svg",
+              "action": "create"
+            }
+          ],
+          "acceptance": [
+            "The golden SVG comparison passes unchanged",
+            "Both graph entry points produce byte-identical output across calls"
+          ],
+          "validation": [
+            "cargo test --lib plan"
+          ]
+        },
+        {
+          "id": "t-render",
+          "title": "The HTML renderer and page assets",
+          "summary_md": "Move the renderer, the stylesheet and the page script. One crate path changes: the first line now comes from the marker module, so exactly one place knows its shape. The golden HTML proves the rewrite produced identical bytes.",
+          "estimate": "m",
+          "risk": "medium",
+          "depends_on": [
+            "t-graph",
+            "t-markdown",
+            "t-marker"
+          ],
+          "files": [
+            {
+              "path": "src/plan/render.rs",
+              "action": "modify",
+              "note": "one format! call rewritten to use marker::line"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "create"
+            },
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "create",
+              "note": "moves byte-identical; plan 3 rewrites it"
+            },
+            {
+              "path": "tests/fixtures/plan/kitchen-sink.html",
+              "action": "create"
+            }
+          ],
+          "acceptance": [
+            "The golden HTML matches byte for byte, proving the marker rewrite changed nothing",
+            "The rendered document's first line is the contract line for that plan's hash"
+          ],
+          "validation": [
+            "cargo test --lib plan::render"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p-cli",
+      "title": "The command line",
+      "summary_md": "Three commands, each with the JSON output loadout's dispatcher will need in plan 6. The multi-file and lenient modes on check exist because studio parses up to thirty plans per page render.",
+      "tasks": [
+        {
+          "id": "t-check",
+          "title": "CLI scaffold and plan check",
+          "summary_md": "Add the argument parser and the check command. It takes many files in one call and reports each one separately, so a single bad plan does not hide the good ones.",
+          "estimate": "m",
+          "depends_on": [
+            "t-model"
+          ],
+          "files": [
+            {
+              "path": "src/cli.rs",
+              "action": "create",
+              "note": "types only, no logic"
+            },
+            {
+              "path": "src/commands/mod.rs",
+              "action": "create"
+            },
+            {
+              "path": "src/commands/plan.rs",
+              "action": "create"
+            },
+            {
+              "path": "tests/cli.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "A valid plan exits 0, an invalid one exits 1, a missing file exits 2",
+            "JSON output carries one entry per file with hash, title, and phase and task counts",
+            "Lenient mode downgrades unknown fields from errors to warnings"
+          ],
+          "validation": [
+            "cargo test --test cli"
+          ]
+        },
+        {
+          "id": "t-render-cmd",
+          "title": "plan render",
+          "summary_md": "Write the page to disk and open it. Relative output paths anchor to the directory the command was run in, which is the behaviour loadout settled on after a bug where they anchored elsewhere.",
+          "estimate": "m",
+          "depends_on": [
+            "t-check",
+            "t-render"
+          ],
+          "files": [
+            {
+              "path": "src/paths.rs",
+              "action": "create"
+            },
+            {
+              "path": "src/commands/plan.rs",
+              "action": "modify"
+            },
+            {
+              "path": "tests/cli.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "The written file starts with the contract marker line",
+            "An invalid plan exits 1 and leaves no partial file behind",
+            "A relative output path resolves against the invocation directory"
+          ],
+          "validation": [
+            "cargo test --test cli"
+          ]
+        },
+        {
+          "id": "t-status",
+          "title": "plan status, schema, and the skill package",
+          "summary_md": "Status compares the hash inside a rendered page to the plan's hash, which is exactly how loadout decides freshness. The skill files land here rather than later because the schema command embeds one of them at compile time.",
+          "estimate": "m",
+          "depends_on": [
+            "t-render-cmd",
+            "t-marker"
+          ],
+          "files": [
+            {
+              "path": "src/commands/plan.rs",
+              "action": "modify"
+            },
+            {
+              "path": "skills/artefacto-plan/SKILL.md",
+              "action": "create"
+            },
+            {
+              "path": "skills/artefacto-plan/reference.md",
+              "action": "create"
+            },
+            {
+              "path": "tests/cli.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "Status reports fresh, stale, or none, and exits 0 only when fresh",
+            "JSON output carries both hashes it compared",
+            "Schema prints the reference and mentions the plan format string"
+          ],
+          "validation": [
+            "cargo test --test cli"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p-ship",
+      "title": "Keep it honest",
+      "summary_md": "One test that stops the skill documentation drifting from the schema, plus continuous integration and a hands-on check of the real page.",
+      "tasks": [
+        {
+          "id": "t-ci",
+          "title": "The skill example test and CI",
+          "summary_md": "Every JSON example in the skill reference is parsed by the real deserializer, so the document cannot describe a schema the code does not accept. Ends with opening the rendered page and actually looking at it.",
+          "estimate": "s",
+          "depends_on": [
+            "t-status"
+          ],
+          "files": [
+            {
+              "path": "tests/skill_examples.rs",
+              "action": "test"
+            },
+            {
+              "path": ".github/workflows/ci.yml",
+              "action": "create"
+            },
+            {
+              "path": "README.md",
+              "action": "modify"
+            }
+          ],
+          "acceptance": [
+            "Every plan example in the reference parses and validates",
+            "The extractor finds at least one example, so a silent zero-check pass is impossible",
+            "Format, clippy with warnings denied, and the full test suite are green in CI"
+          ],
+          "validation": [
+            "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --all",
+            "Render the kitchen-sink fixture, open it in a browser, and confirm it looks like the loadout plan viewer"
+          ]
+        }
+      ]
+    }
+  ],
+  "risks": [
+    {
+      "id": "r-golden",
+      "title": "A golden fixture stops matching after a move",
+      "severity": "medium",
+      "mitigation_md": "The goldens were generated by loadout. If one stops matching, the move was wrong, most likely the marker rewrite in the renderer task. The plan forbids regenerating a golden to make a test pass, because that would hide exactly the bug the golden exists to catch."
+    },
+    {
+      "id": "r-marker",
+      "title": "The two repos drift on the generated first line",
+      "severity": "high",
+      "mitigation_md": "loadout's constant is only the prefix, and its status command needs the prefix plus the hash. Two independent test suites could both be edited to agree with a change that breaks the other side. The committed fixture is the mitigation, and plan 6 adds a version check in the dispatcher."
+    },
+    {
+      "id": "r-coexist",
+      "title": "Both repos carry the renderer until plan 6",
+      "severity": "low",
+      "mitigation_md": "Deliberate. Loadout keeps working throughout, and rollback is just not shipping the dispatcher. The window closes when plan 6 deletes loadout's copy, so drift cannot start."
+    }
+  ],
+  "open_questions": [
+    {
+      "id": "q-marker-name",
+      "question_md": "Should artefacto keep emitting `<!-- loadout:generated` indefinitely, or should plan 6 move both repos to an artefacto marker with loadout accepting either? Keeping it is simplest and costs nothing except a slightly odd name in a file artefacto owns.",
+      "blocking": false
+    },
+    {
+      "id": "q-skill-name",
+      "question_md": "The skill is named `artefacto-plan` here. If artefacto later gains spec and checklist kinds, would you rather have one `artefacto` skill covering all kinds, or one per kind?",
+      "blocking": false
+    }
+  ]
+}
