@@ -222,12 +222,15 @@ pub fn parse(input: &str, lenient: bool) -> Result<Parsed, Vec<Issue>> {
         .map_err(|e| vec![Issue::new("/", "invalid_json", e.to_string())])?;
 
     // Format gate before anything else so a newer plan gets one clear error.
+    let mut format_warning = None;
     match value.get("format").and_then(|f| f.as_str()) {
         Some(f) if f == FORMAT => {}
         Some(f) if f == LEGACY_FORMAT => {
-            eprintln!(
-                "note: \"format\": \"{LEGACY_FORMAT}\" is deprecated; write \"{FORMAT}\" instead"
-            );
+            format_warning = Some(Issue::new(
+                "/format",
+                "deprecated_format",
+                format!("\"{LEGACY_FORMAT}\" is deprecated; write \"{FORMAT}\" instead"),
+            ));
         }
         Some(f) if f.starts_with("artefacto.plan/") => {
             return Err(vec![Issue::new(
@@ -251,6 +254,9 @@ pub fn parse(input: &str, lenient: bool) -> Result<Parsed, Vec<Issue>> {
     walk_unknown(&mut pruned, "", PLAN_FIELDS, &mut unknown);
     if !unknown.is_empty() && !lenient {
         return Err(unknown);
+    }
+    if let Some(w) = format_warning {
+        unknown.push(w);
     }
 
     // Typed deserialize with pointer paths for shape errors.
