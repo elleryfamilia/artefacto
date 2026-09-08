@@ -42,6 +42,14 @@ pub fn run(args: &PlanArgs) -> Result<()> {
             no_open,
             json,
         } => render(file, out.as_deref(), *no_open, *json),
+        PlanAction::Status { file, out, json } => status(file, out.as_deref(), *json),
+        PlanAction::Schema => {
+            print!(
+                "{}",
+                include_str!("../../skills/artefacto-plan/reference.md")
+            );
+            Ok(())
+        }
     }
 }
 
@@ -223,4 +231,69 @@ fn render(file: &Path, out: Option<&Path>, no_open: bool, json: bool) -> Result<
         crate::paths::open_browser(&crate::paths::file_url(&target));
     }
     Ok(())
+}
+
+fn status(file: &Path, out: Option<&Path>, json: bool) -> Result<()> {
+    let checked = match check_one(file, false) {
+        Ok(ok) => ok,
+        Err(errors) => {
+            // Unreadable files always report on stderr, as `check` does, because
+            // the message is about the invocation rather than the document.
+            let unreadable = errors.iter().any(|e| e.code == "unreadable");
+            if unreadable || !json {
+                for e in &errors {
+                    eprintln!("error[{}] {}: {}", e.code, e.path, e.message);
+                }
+            }
+            if json {
+                let doc = serde_json::json!({
+                    "ok": false,
+                    "path": file.display().to_string(),
+                    "errors": errors,
+                });
+                println!("{}", serde_json::to_string(&doc)?);
+            }
+            if unreadable {
+                return Err(UsageReported.into());
+            }
+            return Err(PlanInvalid.into());
+        }
+    };
+    let plan_hash = model::plan_hash(&checked.plan);
+
+    let cwd = std::env::current_dir().context("could not read the current directory")?;
+    let target = crate::paths::resolve_relative(&cwd, out.unwrap_or(Path::new("plan.html")));
+
+    let rendered = std::fs::read_to_string(&target)
+        .ok()
+        .and_then(|c| crate::marker::extract_hash(&c));
+
+    let state = match &rendered {
+        Some(h) if *h == plan_hash => "fresh",
+        Some(_) => "stale",
+        None => "none",
+    };
+
+    if json {
+        let doc = serde_json::json!({
+            "state": state,
+            "path": file.display().to_string(),
+            "out": target.display().to_string(),
+            "plan_hash": plan_hash,
+            "rendered_hash": rendered,
+        });
+        println!("{}", serde_json::to_string(&doc)?);
+    } else {
+        match state {
+            "fresh" => println!("render: fresh ({})", target.display()),
+            "stale" => println!("render: stale — re-run `artefacto plan render`"),
+            _ => println!("render: none — run `artefacto plan render`"),
+        }
+    }
+
+    if state == "fresh" {
+        Ok(())
+    } else {
+        Err(PlanInvalid.into())
+    }
 }

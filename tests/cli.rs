@@ -295,3 +295,133 @@ fn render_json_reports_an_unreadable_plan_as_json() {
     assert_eq!(doc["ok"], false);
     assert_eq!(doc["errors"][0]["code"], "unreadable");
 }
+
+#[test]
+fn status_reports_fresh_after_a_render() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("plan.html");
+    bin()
+        .args([
+            "plan",
+            "render",
+            &fixture("minimal.json"),
+            "--out",
+            out.to_str().unwrap(),
+            "--no-open",
+        ])
+        .assert()
+        .success();
+    bin()
+        .args([
+            "plan",
+            "status",
+            &fixture("minimal.json"),
+            "--out",
+            out.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("fresh"));
+}
+
+#[test]
+fn status_reports_stale_when_the_plan_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("plan.html");
+    bin()
+        .args([
+            "plan",
+            "render",
+            &fixture("minimal.json"),
+            "--out",
+            out.to_str().unwrap(),
+            "--no-open",
+        ])
+        .assert()
+        .success();
+    bin()
+        .args([
+            "plan",
+            "status",
+            &fixture("kitchen-sink.json"),
+            "--out",
+            out.to_str().unwrap(),
+        ])
+        .assert()
+        .code(1)
+        .stdout(contains("stale"));
+}
+
+#[test]
+fn status_reports_missing_when_nothing_was_rendered() {
+    let dir = tempfile::tempdir().unwrap();
+    bin()
+        .args([
+            "plan",
+            "status",
+            &fixture("minimal.json"),
+            "--out",
+            dir.path().join("absent.html").to_str().unwrap(),
+        ])
+        .assert()
+        .code(1)
+        .stdout(contains("none"));
+}
+
+#[test]
+fn status_json_carries_the_hashes_it_compared() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("plan.html");
+    bin()
+        .args([
+            "plan",
+            "render",
+            &fixture("minimal.json"),
+            "--out",
+            out.to_str().unwrap(),
+            "--no-open",
+        ])
+        .assert()
+        .success();
+    let stdout = bin()
+        .args([
+            "plan",
+            "status",
+            &fixture("minimal.json"),
+            "--out",
+            out.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(doc["state"], "fresh");
+    assert_eq!(doc["plan_hash"], doc["rendered_hash"]);
+}
+
+#[test]
+fn schema_prints_the_reference() {
+    bin()
+        .args(["plan", "schema"])
+        .assert()
+        .success()
+        .stdout(contains("artefacto.plan/1"));
+}
+
+#[test]
+fn no_command_output_mentions_loadout() {
+    // artefacto is a separate project. Someone using it will not have loadout
+    // and should never see its name.
+    for args in [
+        vec!["plan", "schema"],
+        vec!["--help"],
+        vec!["plan", "--help"],
+    ] {
+        let out = bin().args(&args).assert().get_output().stdout.clone();
+        let text = String::from_utf8_lossy(&out).to_lowercase();
+        assert!(!text.contains("loadout"), "`{args:?}` mentioned loadout");
+    }
+}
