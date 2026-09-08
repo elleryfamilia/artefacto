@@ -735,34 +735,18 @@ Expected: PASS, including the golden comparison against `kitchen-sink-p-core.svg
 
 Temporarily change one literal in `svg.rs` that affects output, such as a node's corner radius, and run `cargo test --lib plan::svg`. Expected: the golden test FAILS. Revert and confirm it passes. Do not commit the temporary change.
 
-- [ ] **Step 6: Add a determinism test**
+- [ ] **Step 6: Confirm the determinism coverage already exists, and add nothing**
 
-Append to `mod tests` in `src/plan/svg.rs`, using the same graph entry point the existing golden test calls:
+Do **not** write a determinism test here. The module arrives with
+`phase_svg_is_deterministic_and_links_tasks`, which already makes that assertion, and
+`golden_phase_svg`, which pins the output against the committed fixture. A third test
+covering the same ground asserts less than either.
 
-```rust
-    #[test]
-    fn graph_output_is_deterministic_across_calls() {
-        let raw = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/plan/kitchen-sink.json"
-        ))
-        .unwrap();
-        let plan = crate::plan::model::parse(&raw, false).unwrap().plan;
-        let phase_id = plan.phases.first().expect("kitchen sink has a phase").id.clone();
-        assert_eq!(
-            phase_svg(&plan, &phase_id),
-            phase_svg(&plan, &phase_id),
-            "one phase's graph must be byte-identical across calls"
-        );
-        assert_eq!(
-            phase_graph_svg(&plan),
-            phase_graph_svg(&plan),
-            "the whole-plan graph must be byte-identical across calls"
-        );
-    }
-```
-
-The golden test at `svg.rs:568` already compares `phase_svg` against `kitchen-sink-p-core.svg`; this adds the determinism assertion it does not make.
+Read both, confirm they are present and passing, and record in your report that you
+checked and deliberately added nothing. The two entry points are
+`phase_svg(&Plan, &str) -> Option<String>` and `phase_graph_svg(&Plan) -> Option<String>`;
+the test module has a `kitchen()` helper that loads and parses the kitchen-sink fixture,
+so use that rather than re-reading the file if you ever do need a plan in a test here.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
@@ -901,28 +885,27 @@ Expected: the golden test FAILS, and **every** differing line is a plan-hash occ
 
 Read the failure output and confirm that. If any structural markup differs — an element, an attribute other than the fingerprint, a class, any text a reader would see — the move is wrong. Stop and report it rather than regenerating.
 
-- [ ] **Step 6: Update the two hash occurrences**
+- [ ] **Step 6: Regenerate the golden with the project's own switch, then audit the diff**
 
-`plan render` does not exist until Task 8, so write the corrected hash in directly rather than regenerating the whole file. Take the expected hash from the test failure output and substitute it:
+The golden test carries an escape hatch: setting `UPDATE_GOLDEN` rewrites the fixture
+instead of asserting against it. Use it rather than editing the file by hand.
 
 ```bash
-python3 - <<'PY'
-import pathlib, re, sys
-NEW = sys.argv[1] if len(sys.argv) > 1 else input("expected sha256:... hash: ").strip()
-assert NEW.startswith("sha256:") and len(NEW) == 71, NEW
-p = pathlib.Path("tests/fixtures/plan/kitchen-sink.html")
-t = p.read_text()
-old = set(re.findall(r"sha256:[0-9a-f]{64}", t))
-assert len(old) == 1, f"expected one distinct hash in the golden, found {len(old)}: {old}"
-t = t.replace(old.pop(), NEW)
-p.write_text(t)
-print("hash updated in", t.count(NEW), "places")
-PY
+UPDATE_GOLDEN=1 cargo test --lib plan::render
+git diff --stat tests/fixtures/plan/kitchen-sink.html
+git diff tests/fixtures/plan/kitchen-sink.html
 ```
 
-Expected: `hash updated in 2 places`. If the assertion about one distinct hash fires, stop: the golden holds more than one fingerprint and the situation is not what this plan assumed.
+Then **audit that diff line by line**. Every changed line must be a plan-hash
+occurrence: the `context=` value in the first line, and the `data-plan-fingerprint`
+attribute on the body. That is two lines.
 
-Record in the completion report the full list of what changed in the golden, grouped as: the rename map from Step 4, and the two hash occurrences. Nothing else may appear on that list.
+If the diff shows anything else — an element, a class, an attribute, any text a reader
+would see — the rename map in Step 1a and Step 4 disagree with each other, or the move
+changed behaviour. Revert the fixture (`git checkout -- tests/fixtures/plan/kitchen-sink.html`),
+fix the real cause, and start this step again. Do not accept a wider diff.
+
+Record the audited diff in your completion report.
 
 - [ ] **Step 7: Add a test proving no rendered page carries loadout's name**
 
