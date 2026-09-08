@@ -164,12 +164,23 @@ fn render(file: &Path, out: Option<&Path>, no_open: bool, json: bool) -> Result<
     let checked = match check_one(file, false) {
         Ok(ok) => ok,
         Err(errors) => {
-            for e in &errors {
-                eprintln!("error[{}] {}: {}", e.code, e.path, e.message);
+            // Unreadable files always report on stderr, as `check` does, because
+            // the message is about the invocation rather than the document.
+            let unreadable = errors.iter().any(|e| e.code == "unreadable");
+            if unreadable || !json {
+                for e in &errors {
+                    eprintln!("error[{}] {}: {}", e.code, e.path, e.message);
+                }
             }
-            // An unreadable file is a usage problem, not an invalid plan.
-            // Same precedence `check` uses, so the two commands agree.
-            if errors.iter().any(|e| e.code == "unreadable") {
+            if json {
+                let doc = serde_json::json!({
+                    "ok": false,
+                    "path": file.display().to_string(),
+                    "errors": errors,
+                });
+                println!("{}", serde_json::to_string(&doc)?);
+            }
+            if unreadable {
                 return Err(UsageReported.into());
             }
             return Err(PlanInvalid.into());
