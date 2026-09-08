@@ -4,12 +4,12 @@
     "id": "artefacto-extraction",
     "title": "artefacto extraction \u2014 plan 1 of 6",
     "goal_md": "Stand up the `artefacto` binary as a standalone static plan renderer, with loadout's plan module moved across and its whole test suite green.",
-    "summary_md": "This is the first of six plans. The design spec's v1 covers several subsystems that each ship working software on their own, so it is split rather than written as one document.\n\nWhat this plan builds: a Rust binary that validates a plan document and renders it to one self-contained HTML page. The model, validator, dependency graph and page assets move over from loadout essentially unedited; only their crate paths change. Three small helpers loadout owns are copied rather than shared, because publishing a crate for three files is not worth it.\n\nWhat it deliberately does not build: any server, any socket, any change to the page's behaviour. Those are plans 2 and 3. Loadout keeps its own copy of the plan module until plan 6 lands the dispatcher, so the two coexist and nothing breaks in between.\n\nWhy this order: the spec names this as the first implementation step because it is mechanical and it de-risks everything after it. If the renderer does not move cleanly, that is much better to learn now than after a server is built on top of it.",
+    "summary_md": "This is the first of six plans. The design spec's v1 covers several subsystems that each ship working software on their own, so it is split rather than written as one document.\n\n**Revision 2, after your review.** You said loadout's name should not exist in this project at all, since most people using artefacto will not have loadout and will never hear of it. That is now the rule: artefacto emits `<!-- artefacto:generated ... -->` and writes `artefacto.plan/1`. The parser still reads the old format string as a deprecated alias, so existing plan documents keep working, but it is never written. Teaching loadout to accept artefacto's marker is plan 6's job, which is the right way round: loadout is the integrator, and artefacto does not know it exists.\n\nWhat this plan builds: a Rust binary that validates a plan document and renders it to one self-contained HTML page. The model, validator, dependency graph and page assets move over from loadout essentially unedited; only their crate paths and their names change.\n\nWhat it deliberately does not build: any server, any socket, any change to the page's behaviour. Those are plans 2 and 3. Loadout keeps its own copy of the plan module until plan 6 lands the dispatcher, so the two coexist and nothing breaks in between.",
     "key_points": [
       "Ten tasks, each ending with its own test run and commit.",
-      "Golden fixtures move byte-identical. A golden that stops matching means the move was wrong, so the plan forbids regenerating one to make a test pass.",
-      "Task 2 freezes the generated first line as a committed fixture, because loadout parses that line to decide whether a render is fresh.",
-      "The plan format string stays `loadout.plan/1`, so every existing plan document keeps working."
+      "Nothing artefacto writes carries loadout's name: not the generated line, not a format string, not a default path, not a message. A test asserts no command output mentions it.",
+      "The old format string is still accepted on read, so plan documents that already exist keep working. It is never written.",
+      "Golden fixtures move byte-identical below the first line. Task 6 regenerates the golden exactly once, after proving the only differences are the marker, the format string, and the hash."
     ],
     "out_of_scope": [
       "The interactive server, event log, or WebSocket",
@@ -64,8 +64,8 @@
         },
         {
           "id": "t-marker",
-          "title": "The generated first line and its frozen fixture",
-          "summary_md": "loadout reads the first line of a rendered page to decide whether it is fresh. Its own constant is only the prefix, so testing the prefix would let the two repos drift while both suites stayed green. A committed fixture of the exact line is the contract.",
+          "title": "artefacto's generated first line, frozen as a fixture",
+          "summary_md": "The first line of a rendered page carries the plan's fingerprint, and tools read it back to decide whether a render is stale. artefacto emits its own line and does not adopt loadout's. A committed fixture pins the exact bytes, because a prefix-only test would let a producer and a consumer drift apart while both test suites stayed green.",
           "estimate": "s",
           "risk": "high",
           "depends_on": [
@@ -87,9 +87,9 @@
             }
           ],
           "acceptance": [
-            "The emitted line equals the committed fixture byte for byte",
-            "A hash written by `line` is read back by `extract_hash`",
-            "A document with no marker, or a marker with no context token, yields None"
+            "The emitted line is `<!-- artefacto:generated context=<hash> -->` and equals the committed fixture byte for byte",
+            "A hash written by the builder is read back by the parser",
+            "A marker with the right prefix but no context token yields nothing"
           ],
           "validation": [
             "cargo test --test marker_contract",
@@ -131,9 +131,9 @@
       "tasks": [
         {
           "id": "t-model",
-          "title": "The plan model and validator",
-          "summary_md": "Move the schema, parser, validator, advisories and hash function, plus the JSON fixtures. Its single crate reference is to the hash module, which sits at the same path, so no rewrite is needed.",
-          "estimate": "m",
+          "title": "The plan model, under artefacto's own format string",
+          "summary_md": "Move the schema, parser, validator, advisories and hash function, plus the JSON fixtures. Rename the format constant to `artefacto.plan/1` and widen the parse gate so a document declaring the old name still parses, printing one deprecation line.",
+          "estimate": "l",
           "depends_on": [
             "t-scaffold"
           ],
@@ -153,9 +153,10 @@
             }
           ],
           "acceptance": [
-            "The kitchen-sink fixture parses and validates clean",
-            "The three invalid fixtures each produce issues",
-            "The plan hash is stable for the same document"
+            "Documents artefacto writes declare `artefacto.plan/1`",
+            "A document declaring the old format string still parses, so existing plans keep working",
+            "An unrelated format string is rejected with a clear error",
+            "The three invalid fixtures each produce issues, and the plan hash is stable"
           ],
           "validation": [
             "cargo test --lib plan::model"
@@ -194,7 +195,7 @@
         {
           "id": "t-render",
           "title": "The HTML renderer and page assets",
-          "summary_md": "Move the renderer, the stylesheet and the page script. One crate path changes: the first line now comes from the marker module, so exactly one place knows its shape. The golden HTML proves the rewrite produced identical bytes.",
+          "summary_md": "Move the renderer, the stylesheet and the page script. The first line now comes from the marker module, so exactly one place knows its shape. The golden cannot match byte for byte any more: the marker, the embedded format string and the hash all change. The task captures the failing diff, proves those are the only three differences, then regenerates once.",
           "estimate": "m",
           "risk": "medium",
           "depends_on": [
@@ -223,8 +224,9 @@
             }
           ],
           "acceptance": [
-            "The golden HTML matches byte for byte, proving the marker rewrite changed nothing",
-            "The rendered document's first line is the contract line for that plan's hash"
+            "The failing diff shows exactly three differences: the marker line, the embedded format string, and the hash",
+            "Nothing else in the golden shifts, which is what proves the move was clean",
+            "The rendered document's first line is artefacto's contract line for that plan's hash"
           ],
           "validation": [
             "cargo test --lib plan::render"
@@ -308,7 +310,7 @@
         {
           "id": "t-status",
           "title": "plan status, schema, and the skill package",
-          "summary_md": "Status compares the hash inside a rendered page to the plan's hash, which is exactly how loadout decides freshness. The skill files land here rather than later because the schema command embeds one of them at compile time.",
+          "summary_md": "Status compares the hash inside a rendered page to the plan's hash. The skill files land here rather than later because the schema command embeds one of them at compile time. Every trace of loadout is stripped from the skill text, and its description is rewritten so the model invokes it after writing a plan rather than waiting to be typed.",
           "estimate": "m",
           "depends_on": [
             "t-render-cmd",
@@ -334,8 +336,9 @@
           ],
           "acceptance": [
             "Status reports fresh, stale, or none, and exits 0 only when fresh",
-            "JSON output carries both hashes it compared",
-            "Schema prints the reference and mentions the plan format string"
+            "Searching the skill package for loadout returns nothing",
+            "The skill description says when it applies, so an agent picks it up on its own",
+            "If a person invokes it directly, it starts from plan content that already exists"
           ],
           "validation": [
             "cargo test --test cli"
@@ -373,7 +376,8 @@
           "acceptance": [
             "Every plan example in the reference parses and validates",
             "The extractor finds at least one example, so a silent zero-check pass is impossible",
-            "Format, clippy with warnings denied, and the full test suite are green in CI"
+            "Format, clippy with warnings denied, and the full test suite are green in CI",
+            "No command output mentions loadout, asserted across schema and the help screens"
           ],
           "validation": [
             "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --all",
@@ -392,27 +396,22 @@
     },
     {
       "id": "r-marker",
-      "title": "The two repos drift on the generated first line",
-      "severity": "high",
-      "mitigation_md": "loadout's constant is only the prefix, and its status command needs the prefix plus the hash. Two independent test suites could both be edited to agree with a change that breaks the other side. The committed fixture is the mitigation, and plan 6 adds a version check in the dispatcher."
+      "title": "loadout stops recognising artefacto's output",
+      "severity": "medium",
+      "mitigation_md": "artefacto now emits its own marker, so loadout will not recognise it until plan 6 widens the three places it gates on its own. Until then loadout's studio will not serve or clean an artefacto-rendered page, and its status will read stale. That is acceptable because loadout still has its own renderer throughout. Each repo commits a frozen fixture of the same bytes, one pinning what it writes and one pinning what it must accept."
     },
     {
       "id": "r-coexist",
       "title": "Both repos carry the renderer until plan 6",
       "severity": "low",
       "mitigation_md": "Deliberate. Loadout keeps working throughout, and rollback is just not shipping the dispatcher. The window closes when plan 6 deletes loadout's copy, so drift cannot start."
-    }
-  ],
-  "open_questions": [
-    {
-      "id": "q-marker-name",
-      "question_md": "Should artefacto keep emitting `<!-- loadout:generated` indefinitely, or should plan 6 move both repos to an artefacto marker with loadout accepting either? Keeping it is simplest and costs nothing except a slightly odd name in a file artefacto owns.",
-      "blocking": false
     },
     {
-      "id": "q-skill-name",
-      "question_md": "The skill is named `artefacto-plan` here. If artefacto later gains spec and checklist kinds, would you rather have one `artefacto` skill covering all kinds, or one per kind?",
-      "blocking": false
+      "id": "r-legacy-format",
+      "title": "The deprecated format alias outlives its usefulness",
+      "severity": "low",
+      "mitigation_md": "Accepting the old format string keeps existing plan documents working, but it is a second name for one thing. It is undocumented in the skill reference, prints a deprecation line on every read, and has one fixture holding it. Dropping it later is a one-line change plus that fixture."
     }
-  ]
+  ],
+  "open_questions": []
 }
