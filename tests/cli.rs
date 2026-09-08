@@ -106,3 +106,34 @@ fn check_reports_a_missing_file_as_a_usage_error() {
         .code(2)
         .stderr(contains("/nonexistent/plan.json"));
 }
+
+#[test]
+fn a_missing_file_does_not_hide_the_files_around_it() {
+    let out = bin()
+        .args([
+            "plan",
+            "check",
+            "--json",
+            &fixture("minimal.json"),
+            "/nonexistent/plan.json",
+            &fixture("kitchen-sink.json"),
+        ])
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&out)
+        .expect("a batch still prints JSON even when one file is unreadable");
+    let files = doc["files"].as_array().expect("files array");
+    assert_eq!(files.len(), 3, "every input file gets an entry");
+    assert_eq!(files[0]["ok"], true);
+    assert_eq!(
+        files[1]["ok"], false,
+        "the unreadable file is reported, not skipped"
+    );
+    assert_eq!(
+        files[2]["ok"], true,
+        "checking continues past the unreadable file"
+    );
+}
