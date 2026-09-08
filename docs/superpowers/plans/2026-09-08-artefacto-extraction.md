@@ -1946,14 +1946,21 @@ Append to `tests/skill_examples.rs`:
 
 ```rust
 /// The owner's rule for this project: someone using artefacto will not have loadout
-/// installed and should never encounter its name. Prose that describes the integration
-/// is allowed and lives in the docs; source, assets and fixtures are not.
+/// installed and should never encounter its name. This walks the code and the skill
+/// package — the things artefacto ships and emits.
+///
+/// It deliberately does NOT walk `tests/fixtures/`. Those are sample plan documents,
+/// and one of them is a real plan *about* loadout, so its prose names the product on
+/// almost every line. That is input data, not anything artefacto writes. Output is
+/// covered where it belongs: `render.rs`'s `a_rendered_page_never_mentions_loadout`
+/// renders a fixture and asserts the resulting page is clean, which is the property
+/// that actually matters.
 #[test]
 fn no_source_file_mentions_loadout_outside_the_deprecated_alias() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut offenders = Vec::new();
 
-    for dir in ["src", "skills", "tests/fixtures"] {
+    for dir in ["src", "skills"] {
         let mut stack = vec![root.join(dir)];
         while let Some(path) = stack.pop() {
             if path.is_dir() {
@@ -1969,9 +1976,15 @@ fn no_source_file_mentions_loadout_outside_the_deprecated_alias() {
                 if !line.to_lowercase().contains("loadout") {
                     continue;
                 }
-                // The one sanctioned occurrence: the deprecated format string the
-                // parser still accepts on read. See the spec's naming section.
-                if line.contains("LEGACY_FORMAT") || line.contains("loadout.plan/1") {
+                // Sanctioned occurrences, each deliberate:
+                //  * the deprecated format string the parser accepts on read;
+                //  * the tests that enforce this very rule, which must name what
+                //    they are looking for in order to look for it.
+                if line.contains("LEGACY_FORMAT")
+                    || line.contains("loadout.plan/1")
+                    || line.contains("never_mentions_loadout")
+                    || line.contains("the rendered page mentions loadout")
+                {
                     continue;
                 }
                 offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
@@ -1991,8 +2004,14 @@ fn no_source_file_mentions_loadout_outside_the_deprecated_alias() {
 
 Run: `cargo test --test skill_examples no_source_file_mentions_loadout`
 Expected: PASS after Step 2a. If it fails, it is naming you the exact file and line still
-carrying the name — fix that rather than widening the allowlist. The allowlist exists for
-one thing only: the deprecated format string the parser accepts on read.
+carrying the name — fix that rather than widening the allowlist.
+
+The allowlist is deliberately tiny: the deprecated format string, and the assertions in
+the tests that enforce this rule. If you find yourself wanting to add a third entry,
+that is a signal the code should change instead. One exception you may legitimately hit:
+comments in the ported renderer that reference the old product's own serving concepts
+without naming it. Those do not trip this test; rewrite them anyway if you see them,
+since they describe machinery artefacto does not have.
 
 - [ ] **Step 3: Write the CI workflow**
 
