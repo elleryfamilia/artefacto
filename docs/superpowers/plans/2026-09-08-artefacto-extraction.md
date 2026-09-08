@@ -789,6 +789,7 @@ The moved assets are not neutral: the page **displays "Loadout" as its brand nam
 
 | file | from | to |
 |---|---|---|
+| `src/plan/render.rs` | `title { (plan.meta.title) " — loadout plan" }` | the same with `" — artefacto plan"` — this is the **browser tab title**, the most visible place the name appears |
 | `src/plan/render.rs` | `span.pv-brand-name { "Loadout" }` | `span.pv-brand-name { "artefacto" }` |
 | `src/plan/render.rs` | `assert!(html.contains(">Loadout</span>")` | `assert!(html.contains(">artefacto</span>")` |
 | `src/plan/render.rs` | the comment naming Loadout as the product | rewrite to name artefacto |
@@ -857,6 +858,7 @@ p = pathlib.Path("tests/fixtures/plan/kitchen-sink.html")
 t = p.read_text()
 for a, b in [
     ("<!-- loadout:generated", "<!-- artefacto:generated"),
+    (" — loadout plan</title>", " — artefacto plan</title>"),
     ("loadout.plan-feedback/1", "artefacto.feedback/1"),
     ("loadout.plan/1", "artefacto.plan/1"),
     ("loadoutPlan", "artefactoPlan"),
@@ -876,7 +878,7 @@ for l in leftover[:5]:
 PY
 ```
 
-Expected: `remaining loadout lines: 0`. If any line is printed, the rename map is incomplete — add the missing case to Step 1a as well, so the code and the fixture stay in step.
+Expected: `remaining loadout lines: 0`. This map was run against loadout's actual golden before the plan was written and does reach zero, so a non-zero count means something changed underneath it. If any line is printed, add the missing case to Step 1a as well, so the code and the fixture stay in step.
 
 - [ ] **Step 5: Run the moved tests and confirm only the hash differs**
 
