@@ -1197,7 +1197,9 @@ struct Checked {
     warnings: Vec<model::Issue>,
 }
 
-/// Read and validate one file. Returns the plan plus warnings, or the errors.
+/// Read and validate one file. Returns the plan plus warnings, or the issues that
+/// stopped it — including an `unreadable` issue when the file cannot be opened, so a
+/// batch reports every file instead of aborting on the first IO failure.
 fn check_one(path: &Path, lenient: bool) -> Result<std::result::Result<Checked, Vec<model::Issue>>> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("could not read {}", path.display()))?;
@@ -1533,7 +1535,7 @@ fn render(
     no_open: bool,
     json: bool,
 ) -> Result<()> {
-    let checked = match check_one(file, false)? {
+    let checked = match check_one(file, false) {
         Ok(ok) => ok,
         Err(errors) => {
             for e in &errors {
@@ -1784,7 +1786,7 @@ and add:
 
 ```rust
 fn status(file: &Path, out: Option<&Path>, json: bool) -> Result<()> {
-    let checked = match check_one(file, false)? {
+    let checked = match check_one(file, false) {
         Ok(ok) => ok,
         Err(errors) => {
             for e in &errors {
