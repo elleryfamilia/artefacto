@@ -3,3 +3,4 @@
 pub mod hash;
 pub mod markdown;
 pub mod marker;
+pub mod plan;
