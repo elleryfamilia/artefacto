@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stand up the `artefacto` binary as a standalone static plan renderer, moving the plan module out of loadout with its full test suite green, plus the `--json`, multi-file, `--lenient`, and generated-marker contract work the server phases depend on.
+**Goal:** Stand up the `artefacto` binary as a standalone static plan renderer, moving the plan module out of loadout with its full test suite green, plus the `--json`, multi-file, `--lenient`, and marker-line work the later phases depend on. artefacto emits its own marker and format strings; teaching loadout to accept them is plan 6.
 
-**Architecture:** A single Rust binary. The plan model, validator, deterministic SVG graph, and HTML renderer move across from the loadout repo essentially unedited; only their `crate::` paths change. Three small helpers loadout owns (hash, markdown sanitizer, generated-marker line) are copied rather than shared, because publishing a crate for three files is not worth it. Nothing in this plan starts a server or touches the browser page's behaviour.
+**Architecture:** A single Rust binary. The plan model, validator, deterministic SVG graph, and HTML renderer move across from the loadout repo essentially unedited; only their `crate::` paths change. Two small helpers loadout owns (the hash and the markdown sanitizer) are copied rather than shared, because publishing a crate for two files is not worth it. The generated-marker line is not copied: artefacto defines its own, in its own name. Nothing in this plan starts a server or touches the browser page's behaviour.
 
 **Tech Stack:** Rust 2021, edition floor 1.85. `clap` (derive) for the CLI, `serde` + `serde_json` for the model, `maud` for HTML, `pulldown-cmark` for markdown, `sha2` for hashing. `assert_cmd` + `predicates` for CLI tests.
 
@@ -17,10 +17,11 @@
 - Rust edition 2021, `rust-version = "1.85"`, `[toolchain] channel = "stable"` with `rustfmt` and `clippy`.
 - License MIT. Repository `https://github.com/elleryfamilia/artefacto`.
 - The binary is named `artefacto`.
-- The plan format string stays `loadout.plan/1`. Do not rename it in this plan.
-- The rendered HTML's first line stays byte-identical to loadout's: the prefix `<!-- loadout:generated` followed by ` context=<plan hash> -->`. This is a cross-repo contract, frozen as a fixture in Task 2.
+- **Nothing artefacto writes carries loadout's name.** The generated first line is `<!-- artefacto:generated context=<hash> -->`. Documents artefacto writes declare `artefacto.plan/1`. The word "loadout" belongs only in prose describing the integration, never in output, a format string, a default path, or a message. See spec section 11.1.
+- The parser still **accepts** `loadout.plan/1` on read as a deprecated alias, so plan documents that already exist keep working. It is never written and is not documented in the skill reference.
+- Making loadout accept artefacto's marker is plan 6's job, not this plan's. Do not edit the rosita repository.
 - The plan hash is `sha256:` + lowercase hex of the SHA-256 of the plan's JSON serialization, unchanged from loadout.
-- Golden fixtures move byte-identical. If a golden does not match after a move, the move was wrong. Never regenerate a golden to make a test pass in this plan.
+- Golden fixtures move byte-identical **below the first line**. The first line changes, because it now carries artefacto's marker instead of loadout's. Task 6 asserts that split explicitly. Apart from that one line, never regenerate a golden to make a test pass: a mismatch means the move was wrong.
 - Every task ends green on `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
 - Commit at the end of every task using Conventional Commits.
 
@@ -219,7 +220,7 @@ git commit -m "feat: scaffold the crate and port the plan hash"
 
 ### Task 2: The generated-marker line and its frozen contract fixture
 
-**Why this task exists:** loadout's `load plan status` reads the first line of the rendered HTML and compares the hash in it to the plan's hash. loadout's `GENERATED_MARKER` is only the prefix `<!-- loadout:generated`, so testing the prefix alone would let the two repos drift apart while both test suites stay green. A committed fixture of the exact line is the contract.
+**Why this task exists:** the first line of a rendered page carries the plan's fingerprint, and tools read it back to decide whether a render is stale. artefacto emits its **own** line, `<!-- artefacto:generated … -->`; it does not adopt loadout's. A committed fixture pins the exact bytes, because a prefix-only test would let a producer and a consumer drift apart while both test suites stayed green. Plan 6 teaches loadout to accept this line; that is not this plan's job.
 
 **Files:**
 - Create: `src/marker.rs`, `tests/marker_contract.rs`, `tests/fixtures/marker/first-line.txt`
@@ -234,15 +235,16 @@ git commit -m "feat: scaffold the crate and port the plan hash"
 Create `tests/fixtures/marker/first-line.txt` containing exactly one line and a trailing newline:
 
 ```
-<!-- loadout:generated context=sha256:0000000000000000000000000000000000000000000000000000000000000000 -->
+<!-- artefacto:generated context=sha256:0000000000000000000000000000000000000000000000000000000000000000 -->
 ```
 
 - [ ] **Step 2: Write the failing tests in `tests/marker_contract.rs`**
 
 ```rust
-//! The generated first line is a contract with loadout's `load plan status`,
-//! which parses it to decide whether a render is fresh. Both repos check this
-//! same fixture. Changing it means changing it in both, deliberately.
+//! The generated first line carries the plan's fingerprint, and tools read it
+//! back to decide whether a render is stale. These bytes are frozen: loadout
+//! learns to accept them in a later plan, and pins the same fixture on its
+//! side. Changing them means changing both, deliberately.
 
 use artefacto::marker;
 
@@ -276,7 +278,7 @@ fn extract_hash_reads_the_line_from_a_full_document() {
 #[test]
 fn extract_hash_returns_none_without_a_marker() {
     assert_eq!(marker::extract_hash("<!doctype html><html></html>"), None);
-    assert_eq!(marker::extract_hash("<!-- loadout:generated -->"), None, "no context= token");
+    assert_eq!(marker::extract_hash("<!-- artefacto:generated -->"), None, "right prefix, no context= token");
 }
 ```
 
@@ -290,15 +292,13 @@ Expected: FAIL to compile, `unresolved import \`artefacto::marker\``.
 ```rust
 //! The machine-readable first line of every generated file.
 //!
-//! This is a cross-repo contract. loadout's `load plan status` parses this
-//! line to decide whether a rendered page is fresh for the current plan, and
-//! its studio serves and cleans only files that start with the prefix. The
-//! exact bytes are frozen in `tests/fixtures/marker/first-line.txt`; changing
-//! them requires the same change in loadout.
+//! Tools read this line back to decide whether a rendered page is still fresh
+//! for its plan. The exact bytes are frozen in
+//! `tests/fixtures/marker/first-line.txt`. Anything that consumes artefacto's
+//! output pins the same bytes on its side.
 
-/// Prefix of the machine-readable first line. Matches loadout's
-/// `render::header::GENERATED_MARKER` byte for byte.
-pub const MARKER_PREFIX: &str = "<!-- loadout:generated";
+/// Prefix of the machine-readable first line.
+pub const MARKER_PREFIX: &str = "<!-- artefacto:generated";
 
 /// The complete first line for a document fingerprinted by `hash`.
 /// No trailing newline; the caller joins it to the body.
@@ -343,7 +343,7 @@ Expected: PASS, 4 tests.
 
 - [ ] **Step 7: Prove the fixture actually catches drift**
 
-Temporarily change `MARKER_PREFIX` to `"<!-- artefacto:generated"` and run `cargo test --test marker_contract`. Expected: `emitted_line_matches_the_frozen_fixture` FAILS. Revert the change and confirm the test passes again. Do not commit the temporary change.
+Temporarily change `MARKER_PREFIX` to `"<!-- generated"` and run `cargo test --test marker_contract`. Expected: `emitted_line_matches_the_frozen_fixture` FAILS. Revert the change and confirm the test passes again. Do not commit the temporary change.
 
 - [ ] **Step 8: Commit**
 
@@ -449,7 +449,7 @@ The JSON fixtures are `hostile.json`, `invalid-cycle.json`, `invalid-dangling-re
 - [ ] **Step 2: Create `src/plan/mod.rs`**
 
 ```rust
-//! The `loadout.plan/1` artifact kind: schema, validation, and rendering.
+//! The `artefacto.plan/1` artifact kind: schema, validation, and rendering.
 
 pub mod model;
 ```
@@ -479,6 +479,85 @@ pub mod plan;
 
 Run: `cargo test --lib plan::model`
 Expected: PASS. `model.rs` carries its own unit tests for parse, validate, the id rules, the cycle detector, the size limits, and the advisories.
+
+- [ ] **Step 5a: Rename the format string and keep the old one readable**
+
+The model gates on a format constant before anything else. Change the constant and widen the gate so existing documents still parse.
+
+In `src/plan/model.rs`, replace the constant:
+
+```rust
+/// The format string every document artefacto writes declares.
+pub const FORMAT: &str = "artefacto.plan/1";
+
+/// Accepted on read only, so plan documents written before the rename keep
+/// working. Never written, and deliberately absent from the skill reference.
+pub const LEGACY_FORMAT: &str = "loadout.plan/1";
+```
+
+Then widen the match arm inside `parse` that gates the format, keeping the
+"too new" arm for artefacto's own namespace:
+
+```rust
+    match value.get("format").and_then(|f| f.as_str()) {
+        Some(f) if f == FORMAT => {}
+        Some(f) if f == LEGACY_FORMAT => {
+            eprintln!(
+                "note: \"format\": \"{LEGACY_FORMAT}\" is deprecated; write \"{FORMAT}\" instead"
+            );
+        }
+        Some(f) if f.starts_with("artefacto.plan/") => {
+            return Err(vec![Issue::new("/format", "format_too_new",
+                format!("plan format {f} is newer than this artefacto understands ({FORMAT})"))]);
+        }
+        _ => {
+            return Err(vec![Issue::new(
+                "/format",
+                "bad_format",
+                format!("expected \"format\": \"{FORMAT}\""),
+            )])
+        }
+    }
+```
+
+Update the JSON fixtures to the new string, except one kept as the alias test:
+
+```bash
+cd tests/fixtures/plan
+sed -i '' 's|"loadout.plan/1"|"artefacto.plan/1"|' *.json
+cp minimal.json legacy-format.json
+sed -i '' 's|"artefacto.plan/1"|"loadout.plan/1"|' legacy-format.json
+```
+
+On Linux, `sed -i` takes no argument: drop the `''`.
+
+- [ ] **Step 5b: Test both the new name and the alias**
+
+Add to `mod tests` in `src/plan/model.rs`:
+
+```rust
+    #[test]
+    fn documents_declare_artefactos_own_format() {
+        assert_eq!(FORMAT, "artefacto.plan/1");
+        let parsed = parse(&fixture("minimal.json"), false).expect("new format parses");
+        assert_eq!(parsed.plan.format, FORMAT, "fixtures were migrated to the new name");
+    }
+
+    #[test]
+    fn the_legacy_format_still_parses() {
+        parse(&fixture("legacy-format.json"), false)
+            .expect("documents written before the rename must keep working");
+    }
+
+    #[test]
+    fn an_unrelated_format_is_rejected() {
+        let err = parse(r#"{"format":"something/1","meta":{"id":"a","title":"A"}}"#, false)
+            .expect_err("unknown format is an error");
+        assert_eq!(err[0].code, "bad_format");
+    }
+```
+
+If `Plan` has no public `format` field, drop the second assertion in the first test and note that in the completion report rather than adding the field.
 
 - [ ] **Step 6: Add a fixture-backed test proving the fixtures are reachable and correct**
 
@@ -532,7 +611,7 @@ Expected: PASS, including the three new tests.
 
 ```bash
 git add src/plan/ tests/fixtures/plan/ src/lib.rs
-git commit -m "feat: port the plan model, validator and fixtures"
+git commit -m "feat: port the plan model under artefacto's own format string"
 ```
 
 ---
@@ -560,7 +639,7 @@ cp "$ROSITA/tests/fixtures/plan/kitchen-sink-p-core.svg" tests/fixtures/plan/
 `src/plan/mod.rs`:
 
 ```rust
-//! The `loadout.plan/1` artifact kind: schema, validation, and rendering.
+//! The `artefacto.plan/1` artifact kind: schema, validation, and rendering.
 
 pub mod icons;
 pub mod model;
@@ -675,7 +754,7 @@ Expected: no output.
 `src/plan/mod.rs`:
 
 ```rust
-//! The `loadout.plan/1` artifact kind: schema, validation, and rendering.
+//! The `artefacto.plan/1` artifact kind: schema, validation, and rendering.
 
 pub mod icons;
 pub mod model;
@@ -683,12 +762,45 @@ pub mod render;
 pub mod svg;
 ```
 
-- [ ] **Step 4: Run the moved tests to verify the golden still matches**
+- [ ] **Step 4: Migrate the golden's first line, and only its first line**
+
+The golden `kitchen-sink.html` was generated by loadout, so its first line carries loadout's marker and its embedded plan data carries the old format string. Everything below the first line must be unchanged by this move. Replace the first line, and let the test in Step 5 prove nothing else shifted:
+
+```bash
+python3 - <<'PY'
+import pathlib, re
+p = pathlib.Path("tests/fixtures/plan/kitchen-sink.html")
+lines = p.read_text().split("\n")
+assert lines[0].startswith("<!-- loadout:generated context=sha256:"), lines[0][:60]
+lines[0] = lines[0].replace("<!-- loadout:generated", "<!-- artefacto:generated", 1)
+p.write_text("\n".join(lines))
+print("first line migrated")
+PY
+```
+
+The `context=` hash in that line, and the format string inside the page's embedded plan data, both change too, because Task 4 renamed the format and the hash covers the document. Rather than hand-editing those, regenerate the golden **once** in Step 6 and diff it, which is the only sanctioned regeneration in this plan.
+
+- [ ] **Step 5: Run the moved tests**
 
 Run: `cargo test --lib plan::render`
-Expected: PASS. The golden `kitchen-sink.html` was generated by loadout and must match byte for byte, which proves the marker rewrite in Step 2 produced identical bytes. If it does not match, the rewrite is wrong. Do not regenerate the golden.
+Expected: the golden test FAILS on the hash and the embedded format string. Read the diff and confirm the **only** differences are the first line's prefix, the `context=` hash, and `"format"` inside the embedded plan JSON. If anything else differs, the move is wrong: stop and report it rather than regenerating.
 
-- [ ] **Step 5: Add a test tying the render to the marker contract**
+- [ ] **Step 6: Regenerate the golden once, and prove the diff is only what was expected**
+
+```bash
+cargo test --lib plan::render -- --nocapture 2>&1 | head -40
+```
+
+Capture the failing diff first. Then regenerate:
+
+```bash
+cargo run --quiet -- plan render tests/fixtures/plan/kitchen-sink.json \
+  --out tests/fixtures/plan/kitchen-sink.html --no-open
+```
+
+`plan render` does not exist until Task 8. If you are executing tasks in order, instead write a one-off test that calls `render` and writes the file, run it, then delete it. Either way, record in the completion report the exact set of lines that changed, and confirm the count is three: the marker line, and the `"format"` and hash occurrences inside the embedded plan data.
+
+- [ ] **Step 7: Add a test tying the render to the marker contract**
 
 Append to `mod tests` in `src/plan/render.rs`:
 
@@ -714,17 +826,17 @@ Append to `mod tests` in `src/plan/render.rs`:
     }
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [ ] **Step 8: Run the tests to verify they pass**
 
 Run: `cargo test --lib plan::render`
 Expected: PASS.
 
-- [ ] **Step 7: Verify the whole gate**
+- [ ] **Step 9: Verify the whole gate**
 
 Run: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`
 Expected: all clean.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add src/plan/render.rs src/plan/assets/ src/plan/mod.rs tests/fixtures/plan/kitchen-sink.html tools/build-plan-fonts.py
@@ -1103,7 +1215,7 @@ fn render_writes_a_document_starting_with_the_marker_line() {
         .assert()
         .success();
     let html = std::fs::read_to_string(&out).expect("render wrote the file");
-    assert!(html.starts_with("<!-- loadout:generated context=sha256:"), "first line: {:?}", html.lines().next());
+    assert!(html.starts_with("<!-- artefacto:generated context=sha256:"), "first line: {:?}", html.lines().next());
     assert!(html.contains("<!doctype html>") || html.contains("<!DOCTYPE html>"));
 }
 
@@ -1369,15 +1481,35 @@ cp "$ROSITA/skills/loadout-plan-preview/SKILL.md" skills/artefacto-plan/SKILL.md
 cp "$ROSITA/skills/loadout-plan-preview/reference.md" skills/artefacto-plan/reference.md
 ```
 
-- [ ] **Step 2: Retarget the commands in the skill text**
+- [ ] **Step 2: Remove every trace of loadout from the skill text**
 
-The copied text tells agents to run `load plan …`. Rewrite those to `artefacto plan …`:
+Someone using artefacto will not have loadout and will never have heard of it, so its name must not appear in either file. Rewrite:
 
 - `name:` in the SKILL.md front matter becomes `artefacto-plan`.
-- `load plan` becomes `artefacto plan` throughout both files, including `load plan check --json` and `load plan schema`.
-- The paths `.loadout/workflow/artifacts/plan.json` and `plan-feedback.json` stay as they are. loadout's dispatcher still supplies them, and changing them is plan 6's job.
+- `load plan` becomes `artefacto plan` everywhere, including `check --json` and `schema`.
+- `loadout.plan/1` becomes `artefacto.plan/1`. Do **not** document the deprecated alias; new plans use the new name.
+- `loadout.plan-feedback/1` becomes `artefacto.feedback/1`.
+- The paths `.loadout/workflow/artifacts/plan.json` and `plan-feedback.json` become plain `plan.json` and `plan-feedback.json`, described as "wherever the plan file lives". loadout's dispatcher supplies its own paths in plan 6; the skill must not assume them.
+- Any sentence describing loadout as the thing that renders the page now describes artefacto.
 
-Leave the `loadout.plan/1` and `loadout.plan-feedback/1` format strings untouched. They are the wire format, not a command name.
+Verify nothing is left:
+
+```bash
+rg -ni "loadout" skills/artefacto-plan/
+```
+
+Expected: no output. If a hit remains, rewrite it rather than leaving it.
+
+- [ ] **Step 2a: Write the description so the model invokes the skill**
+
+The skill is meant to be picked up by an agent that has just written a plan, not typed by a person. Make the front matter say when it applies, in those terms. Replace the `description` and `when_to_use` fields with:
+
+```yaml
+description: Turn a development plan into a reviewable, commentable page. Use this whenever you have written or revised a plan and the human is going to read it — you emit a structured plan document and artefacto renders it. Never write the HTML yourself.
+when_to_use: You have just produced a plan, or are revising one after feedback, and a person needs to read or comment on it. Also applies when someone asks to see a plan visually. If a person invokes this skill directly, the plan content already exists: start from what is there rather than asking them to write it.
+```
+
+Keep the rest of the body as it is, apart from the renames in Step 2.
 
 - [ ] **Step 3: Write the failing tests**
 
@@ -1450,7 +1582,18 @@ fn schema_prints_the_reference() {
         .args(["plan", "schema"])
         .assert()
         .success()
-        .stdout(contains("loadout.plan/1"));
+        .stdout(contains("artefacto.plan/1"));
+}
+
+#[test]
+fn no_command_output_mentions_loadout() {
+    // artefacto is a separate project. Someone using it will not have loadout
+    // and should never see its name.
+    for args in [vec!["plan", "schema"], vec!["--help"], vec!["plan", "--help"]] {
+        let out = bin().args(&args).assert().get_output().stdout.clone();
+        let text = String::from_utf8_lossy(&out).to_lowercase();
+        assert!(!text.contains("loadout"), "`{args:?}` mentioned loadout");
+    }
 }
 ```
 
@@ -1563,6 +1706,8 @@ git add src/cli.rs src/commands/plan.rs tests/cli.rs skills/
 git commit -m "feat: add plan status, schema and the skill package"
 ```
 
+The step numbers above shift by two because Steps 2 and 2a were added; renumber them sequentially as you go and keep the order.
+
 ---
 
 ### Task 10: The skill example test and CI
@@ -1612,7 +1757,7 @@ fn reference_json_examples_are_valid() {
             in_block = false;
             // Only whole plan documents are checked; fragments such as the
             // feedback example do not carry the plan format string.
-            if buf.contains("\"loadout.plan/1\"") {
+            if buf.contains("\"artefacto.plan/1\"") {
                 let parsed = model::parse(&buf, false)
                     .unwrap_or_else(|e| panic!("example #{checked} did not parse: {e:?}"));
                 let issues = model::validate(&parsed.plan);
@@ -1678,7 +1823,7 @@ Replace the `## Status` section of `README.md` with:
 ## Status
 
 Early. The static renderer works: `artefacto plan check`, `render`, and
-`status` validate a `loadout.plan/1` document and produce a self-contained
+`status` validate an `artefacto.plan/1` document and produce a self-contained
 HTML page. The interactive server, the page rewrite, and the artifact index
 are not built yet.
 
