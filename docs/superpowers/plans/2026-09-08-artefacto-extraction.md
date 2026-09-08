@@ -512,6 +512,40 @@ Then widen the match arm inside `parse` that gates the format, keeping the
     }
 ```
 
+**Two other places in this file name loadout, and both break if you miss them.**
+
+First, the "format is newer than I understand" error message. It reads `newer than this loadout understands ({FORMAT}) — run \`load update\``, which is user-facing output naming another product and telling the reader to run its command. The replacement gate above already fixes the wording; make sure you took it verbatim.
+
+Second, the test `newer_format_gets_clear_error` builds its input like this:
+
+```rust
+        let newer = fixture("minimal.json").replace("loadout.plan/1", "loadout.plan/2");
+```
+
+Once the fixtures are migrated, that `replace` matches nothing, the document stays valid, and the test fails asserting `format_too_new` on a document that parsed fine. It also asserts the message contains `load update`, which the new message does not say. Rewrite it:
+
+```rust
+    #[test]
+    fn newer_format_gets_clear_error() {
+        let newer = fixture("minimal.json").replace(FORMAT, "artefacto.plan/2");
+        let errs = parse(&newer, false).unwrap_err();
+        assert_eq!(errs[0].code, "format_too_new");
+        assert!(
+            errs[0].message.contains("artefacto.plan/2"),
+            "the error names the version it could not read: {}",
+            errs[0].message
+        );
+    }
+```
+
+When you are done, confirm the file is clean:
+
+```bash
+rg -ni loadout src/plan/model.rs
+```
+
+Expected: exactly one line, the `LEGACY_FORMAT` constant. Anything else is a miss.
+
 Update the JSON fixtures to the new string, except one kept as the alias test:
 
 ```bash
