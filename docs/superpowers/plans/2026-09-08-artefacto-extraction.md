@@ -387,29 +387,21 @@ pub mod marker;
 Run: `cargo test --lib markdown`
 Expected: PASS. The file carries its own `mod tests` covering the sanitizer's threat model, including that raw HTML is neutralized and that `javascript:` link destinations are dropped.
 
-- [ ] **Step 4: Add a regression test for the fail-closed link behaviour**
+- [ ] **Step 4: Confirm the moved tests already cover the threat model, and add nothing**
 
-Append to the `mod tests` block in `src/markdown.rs`:
+Do **not** write new safety tests here. The module arrives with tests that are stronger than anything worth adding:
 
-```rust
-    #[test]
-    fn javascript_scheme_links_are_not_emitted_as_anchors() {
-        let out = render_markdown("[click](javascript:alert(1))");
-        assert!(!out.contains("javascript:"), "javascript: survived: {out}");
-        assert!(!out.contains("<a href"), "unsafe destination still became a link: {out}");
-    }
+- `javascript_links_are_delinked` covers seven hostile destinations — a `javascript:` URL, an upper-case variant, one with a tab injected mid-scheme, a `data:` URL, a `vbscript:` URL, and two protocol-relative URLs — and asserts for each that no `href` survives and the link text is kept.
+- `raw_html_is_neutralized` asserts both that the script tag is gone and that it was escaped to `&lt;script&gt;`, which is the stronger claim.
 
-    #[test]
-    fn raw_html_is_neutralized_to_text() {
-        let out = render_markdown("<script>alert(1)</script>");
-        assert!(!out.contains("<script"), "raw script tag survived: {out}");
-    }
-```
+Read both and confirm they are present and passing. Adding a narrower test beside either one is duplication that asserts less, so it is a defect, not extra safety.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+Record in your report that you checked this and deliberately added nothing.
+
+- [ ] **Step 5: Run the moved tests**
 
 Run: `cargo test --lib markdown`
-Expected: PASS, including the two new tests.
+Expected: PASS, with `javascript_links_are_delinked` and `raw_html_is_neutralized` among them.
 
 - [ ] **Step 6: Verify the gate**
 
