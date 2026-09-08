@@ -8,7 +8,7 @@ fn main() {
         // has already printed what it needs to; anything else is a fresh
         // usage or IO problem and belongs on stderr.
         if err
-            .downcast_ref::<artefacto::commands::plan::PlanInvalid>()
+            .downcast_ref::<artefacto::commands::plan::ReportedFailure>()
             .is_some()
         {
             std::process::exit(1);

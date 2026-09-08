@@ -5,7 +5,7 @@ pub const FORMAT: &str = "artefacto.plan/1";
 
 /// Accepted on read only, so plan documents written before the rename keep
 /// working. Never written, and deliberately absent from the skill reference.
-pub const LEGACY_FORMAT: &str = "loadout.plan/1";
+pub const LEGACY_FORMAT: &str = "loadout.plan/1"; // naming-check: allow
 pub const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
 
 pub const PLAN_FIELDS: &[&str] = &["format", "meta", "phases", "risks", "open_questions"];

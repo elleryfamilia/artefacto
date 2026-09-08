@@ -5,19 +5,19 @@ use crate::plan::model;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-/// A validation error the caller should see as exit code 1.
+/// A failure the command has already reported to the user. Exit code 1.
 #[derive(Debug)]
-pub struct PlanInvalid;
+pub struct ReportedFailure;
 
-impl std::fmt::Display for PlanInvalid {
+impl std::fmt::Display for ReportedFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "plan validation failed")
+        write!(f, "reported failure")
     }
 }
 
-impl std::error::Error for PlanInvalid {}
+impl std::error::Error for ReportedFailure {}
 
-/// A usage or IO problem the command already reported. Exit 2.
+/// A usage or IO problem the command has already reported. Exit code 2.
 #[derive(Debug)]
 pub struct UsageReported;
 
@@ -163,7 +163,7 @@ fn check(files: &[std::path::PathBuf], json: bool, lenient: bool) -> Result<()> 
         return Err(UsageReported.into());
     }
     if any_invalid {
-        return Err(PlanInvalid.into());
+        return Err(ReportedFailure.into());
     }
     Ok(())
 }
@@ -191,7 +191,7 @@ fn render(file: &Path, out: Option<&Path>, no_open: bool, json: bool) -> Result<
             if unreadable {
                 return Err(UsageReported.into());
             }
-            return Err(PlanInvalid.into());
+            return Err(ReportedFailure.into());
         }
     };
 
@@ -256,7 +256,7 @@ fn status(file: &Path, out: Option<&Path>, json: bool) -> Result<()> {
             if unreadable {
                 return Err(UsageReported.into());
             }
-            return Err(PlanInvalid.into());
+            return Err(ReportedFailure.into());
         }
     };
     let plan_hash = model::plan_hash(&checked.plan);
@@ -294,6 +294,6 @@ fn status(file: &Path, out: Option<&Path>, json: bool) -> Result<()> {
     if state == "fresh" {
         Ok(())
     } else {
-        Err(PlanInvalid.into())
+        Err(ReportedFailure.into())
     }
 }
