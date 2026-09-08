@@ -1541,6 +1541,11 @@ fn render(
             for e in &errors {
                 eprintln!("error[{}] {}: {}", e.code, e.path, e.message);
             }
+            // An unreadable file is a usage problem, not an invalid plan.
+            // Same precedence `check` uses, so the commands agree with each other.
+            if errors.iter().any(|e| e.code == "unreadable") {
+                return Err(UsageReported.into());
+            }
             return Err(PlanInvalid.into());
         }
     };
@@ -1791,6 +1796,11 @@ fn status(file: &Path, out: Option<&Path>, json: bool) -> Result<()> {
         Err(errors) => {
             for e in &errors {
                 eprintln!("error[{}] {}: {}", e.code, e.path, e.message);
+            }
+            // An unreadable file is a usage problem, not an invalid plan.
+            // Same precedence `check` uses, so the commands agree with each other.
+            if errors.iter().any(|e| e.code == "unreadable") {
+                return Err(UsageReported.into());
             }
             return Err(PlanInvalid.into());
         }
