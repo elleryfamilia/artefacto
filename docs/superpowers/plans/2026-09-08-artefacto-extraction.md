@@ -1950,18 +1950,47 @@ Expected on a first run before the file exists: the test binary does not exist. 
 
 - [ ] **Step 2a: Sweep the last stale references out of the ported source**
 
-Two leftovers were found during earlier task reviews. Both are in `src/markdown.rs`,
-which was copied verbatim, and neither is a constraint violation — one is test input, the
-other a doc comment. Clean them anyway: this is the task that keeps the repo honest, and
-they are the last places the word survives outside deliberate prose.
+Run this first to see exactly what you are dealing with:
 
-1. The module's top doc comment describes the renderer as "shared by studio and
-   `load plan`". Neither exists here. Rewrite the sentence to describe what the module
-   does in artefacto: it renders untrusted markdown for the plan page.
-2. The test `leading_generated_comments_are_stripped` uses `<!-- loadout:generated x -->`
-   as its sample input, and asserts the output does not contain `loadout:generated`.
-   Change both to artefacto's own marker. `strip_leading_comments` does not inspect the
-   comment's content, so this cannot change behaviour — run the test to confirm.
+```bash
+rg -ni loadout src/ skills/
+```
+
+At the time of writing that returns eight lines. Handle them in three groups.
+
+**Group 1 — rewrite, because the text is now wrong.** These do not merely mention the
+old name; they make claims that stopped being true when the code moved.
+
+1. `src/markdown.rs` — the module's top doc comment describes the renderer as "shared by
+   studio and `load plan`". Neither exists here. Rewrite it to say what the module does
+   in artefacto: it renders untrusted markdown for the plan page.
+2. `src/markdown.rs` — the test `leading_generated_comments_are_stripped` uses
+   `<!-- loadout:generated x -->` as sample input and asserts the output does not contain
+   `loadout:generated`. Change both to artefacto's own marker. `strip_leading_comments`
+   does not inspect the comment's content, so behaviour cannot change — run the test.
+3. `src/plan/render.rs` — the assertion message in
+   `rendered_document_starts_with_the_contract_marker_line` reads "loadout parses this
+   line back to decide whether a render is fresh". That is no longer true: artefacto
+   emits its own marker and nothing else parses it yet. Reword to "tools parse this line
+   back to decide whether a render is fresh".
+
+**Group 2 — exempt, because the test must name what it searches for.** The two
+enforcing tests cannot do their job without the literal string. Append the marker
+comment to each line that needs it, exactly:
+
+```rust
+        // naming-check: allow
+```
+
+Put it on its own line immediately above, or at the end of the line — the check is a
+substring match on the line itself, so the marker must be **on the same line** as the
+mention. Lines needing it: the `LEGACY_FORMAT` constant in `src/plan/model.rs`, and in
+`src/plan/render.rs` the test's name line, its explanatory comment, its assertion
+condition, and its failure message.
+
+**Group 3 — nothing.** After groups 1 and 2, re-run the search. Every remaining hit must
+carry the marker. If one does not, decide honestly which group it belongs to rather than
+adding a marker to make the check quiet.
 
 - [ ] **Step 2b: Add the repo-wide naming check**
 
@@ -1978,6 +2007,9 @@ Append to `tests/skill_examples.rs`:
 /// covered where it belongs: `render.rs`'s `a_rendered_page_never_mentions_loadout`
 /// renders a fixture and asserts the resulting page is clean, which is the property
 /// that actually matters.
+/// A line carrying this marker is exempt. Every exemption is deliberate and visible.
+const ALLOW_MARKER: &str = "naming-check: allow";
+
 #[test]
 fn no_source_file_mentions_loadout_outside_the_deprecated_alias() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1999,15 +2031,10 @@ fn no_source_file_mentions_loadout_outside_the_deprecated_alias() {
                 if !line.to_lowercase().contains("loadout") {
                     continue;
                 }
-                // Sanctioned occurrences, each deliberate:
-                //  * the deprecated format string the parser accepts on read;
-                //  * the tests that enforce this very rule, which must name what
-                //    they are looking for in order to look for it.
-                if line.contains("LEGACY_FORMAT")
-                    || line.contains("loadout.plan/1")
-                    || line.contains("never_mentions_loadout")
-                    || line.contains("the rendered page mentions loadout")
-                {
+                // A line may opt out explicitly, and only explicitly. Matching on
+                // surrounding text instead would quietly widen over time; a marker
+                // has to be typed deliberately and shows up in review.
+                if line.contains(ALLOW_MARKER) {
                     continue;
                 }
                 offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
@@ -2029,12 +2056,14 @@ Run: `cargo test --test skill_examples no_source_file_mentions_loadout`
 Expected: PASS after Step 2a. If it fails, it is naming you the exact file and line still
 carrying the name — fix that rather than widening the allowlist.
 
-The allowlist is deliberately tiny: the deprecated format string, and the assertions in
-the tests that enforce this rule. If you find yourself wanting to add a third entry,
-that is a signal the code should change instead. One exception you may legitimately hit:
-comments in the ported renderer that reference the old product's own serving concepts
-without naming it. Those do not trip this test; rewrite them anyway if you see them,
-since they describe machinery artefacto does not have.
+Exemptions are explicit markers, not pattern matches, so each one had to be typed on
+purpose and shows up in any future diff. If you find yourself adding a marker to a line
+that is not part of the deprecated-alias constant or the enforcing tests, that is a
+signal the code should change instead.
+
+One thing this test deliberately does not catch: comments in the ported renderer that
+describe the old product's serving model without naming it. Those are tracked separately
+and are rewritten when artefacto's own serving model exists to describe accurately.
 
 - [ ] **Step 3: Write the CI workflow**
 
