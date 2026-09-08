@@ -740,7 +740,7 @@ Every hit should be `crate::plan::…` or `crate::hash::…`, which resolve unch
 
 - [ ] **Step 4: Run the moved tests**
 
-Run: `cargo test --lib plan::svg plan::icons`
+Run: `cargo test --lib plan::svg` (`cargo test` takes one name filter, not two — run a second invocation if you also want `plan::icons`)
 Expected: PASS, including the golden comparison against `kitchen-sink-p-core.svg`.
 
 - [ ] **Step 5: Prove the golden is load-bearing**
