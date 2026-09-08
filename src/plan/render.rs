@@ -1405,6 +1405,9 @@ mod tests {
         }
     }
 
+    // The marker sits inside the parameter list because rustfmt moves a trailing
+    // comment off a signature ending in `{`, which would separate it from the name
+    // it exempts and make this test fail on itself.
     #[test]
     fn a_rendered_page_never_mentions_loadout(/* naming-check: allow */) {
         // artefacto is a separate project. Someone using it will not have
