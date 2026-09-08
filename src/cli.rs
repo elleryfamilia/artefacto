@@ -54,4 +54,17 @@ pub enum PlanAction {
         #[arg(long)]
         json: bool,
     },
+    /// Report whether a rendered file is fresh for a plan.
+    Status {
+        /// The plan file.
+        file: PathBuf,
+        /// The rendered HTML to compare against. Defaults to `plan.html`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the plan schema reference.
+    Schema,
 }
