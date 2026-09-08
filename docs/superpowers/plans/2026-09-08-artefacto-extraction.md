@@ -895,7 +895,7 @@ Expected: `remaining loadout lines: 0`. This map was run against loadout's actua
 - [ ] **Step 5: Run the moved tests and confirm only the hash differs**
 
 Run: `cargo test --lib plan::render`
-Expected: the golden test FAILS, and **every** differing line is a plan-hash occurrence. There are two: the `context=` value in the first line, and the `data-plan-fingerprint` attribute on the body.
+Expected: `render_is_deterministic_and_matches_golden` FAILS, and **every** differing line is a plan-hash occurrence. There are two: the `context=` value in the first line, and the `data-plan-fingerprint` attribute on the body.
 
 Read the failure output and confirm that. If any structural markup differs — an element, an attribute other than the fingerprint, a class, any text a reader would see — the move is wrong. Stop and report it rather than regenerating.
 
@@ -904,8 +904,12 @@ Read the failure output and confirm that. If any structural markup differs — a
 The golden test carries an escape hatch: setting `UPDATE_GOLDEN` rewrites the fixture
 instead of asserting against it. Use it rather than editing the file by hand.
 
+The test that owns the golden is `render_is_deterministic_and_matches_golden`. It also
+asserts that rendering twice gives identical output, so you do not need to add a
+determinism test here — it already exists.
+
 ```bash
-UPDATE_GOLDEN=1 cargo test --lib plan::render
+UPDATE_GOLDEN=1 cargo test --lib plan::render::tests::render_is_deterministic_and_matches_golden
 git diff --stat tests/fixtures/plan/kitchen-sink.html
 git diff tests/fixtures/plan/kitchen-sink.html
 ```
