@@ -1992,6 +1992,47 @@ condition, and its failure message.
 carry the marker. If one does not, decide honestly which group it belongs to rather than
 adding a marker to make the check quiet.
 
+- [ ] **Step 2a-bis: Two things that say something untrue**
+
+Both came out of Task 9's review. Neither is a bug, and both are statements that do not
+match what the code does — which is what this task exists to fix.
+
+**1. An error type whose name and message are wrong for one of its two uses.**
+`PlanInvalid` in `src/commands/plan.rs` is documented as "A validation error" and
+displays as "plan validation failed". `status` also returns it to signal a **stale or
+missing render**, where the plan itself may be perfectly valid. It is harmless today only
+because the entry point exits on the downcast without printing the message — so the lie
+is invisible until someone prints it.
+
+Rename it to describe what it actually means, which is what its sibling already means:
+the command already reported the problem, here is the exit code.
+
+- `PlanInvalid` becomes `ReportedFailure`, with the doc comment `/// A failure the
+  command has already reported to the user. Exit code 1.` and a `Display` of
+  `"reported failure"`.
+- `UsageReported` keeps its name and gains a matching doc comment: `/// A usage or IO
+  problem the command has already reported. Exit code 2.`
+- Update every use, in `src/commands/plan.rs` and `src/main.rs`. There is no behaviour
+  change: same types, same exit codes, same silent handling.
+
+Confirm nothing still references the old name:
+
+```bash
+rg -n "PlanInvalid" src/ tests/
+```
+
+Expected: no output.
+
+**2. A sentence in the skill that overstates what `status` checks.** The skill says
+`artefacto plan status` can tell whether feedback is stale. True in practice, not
+literally: `status` never reads the feedback file. It compares the current plan's hash
+against the hash embedded in the rendered page. Those coincide normally and diverge if
+the plan is re-rendered without a fresh feedback capture in between.
+
+Reword that sentence to say what it does: `status` compares the plan against the last
+render, so a mismatch means the feedback you are holding was written against a different
+version of the plan. One or two sentences, and do not invent a command.
+
 - [ ] **Step 2b: Add the repo-wide naming check**
 
 Append to `tests/skill_examples.rs`:
@@ -2055,6 +2096,12 @@ fn no_source_file_mentions_loadout_outside_the_deprecated_alias() {
 Run: `cargo test --test skill_examples no_source_file_mentions_loadout`
 Expected: PASS after Step 2a. If it fails, it is naming you the exact file and line still
 carrying the name — fix that rather than widening the allowlist.
+
+Then run the whole suite, because Step 2a-bis renames a type used across two files:
+
+```bash
+cargo test
+```
 
 Exemptions are explicit markers, not pattern matches, so each one had to be typed on
 purpose and shows up in any future diff. If you find yourself adding a marker to a line
