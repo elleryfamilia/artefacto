@@ -557,7 +557,40 @@ Add to `mod tests` in `src/plan/model.rs`:
     }
 ```
 
-If `Plan` has no public `format` field, drop the second assertion in the first test and note that in the completion report rather than adding the field.
+`Plan` has a public `format: String` field. It is deserialized from the document, serialized back into the rendered page's embedded plan data, and covered by the plan hash. So a legacy document would otherwise carry the old string all the way into artefacto's output, which breaks this plan's global constraint in exactly the case the alias exists to serve.
+
+**Normalize it.** After the format gate accepts a document, overwrite the field with the canonical value before returning. Find where `parse` builds its `Parsed` result and set the field there:
+
+```rust
+    // The alias is accepted on read, never propagated. Normalizing here means
+    // output never carries the old name, and one plan hashes the same however
+    // its source file spelled the format.
+    plan.format = FORMAT.to_string();
+```
+
+Add the test that pins it:
+
+```rust
+    #[test]
+    fn a_legacy_document_is_normalized_to_the_current_format() {
+        let parsed = parse(&fixture("legacy-format.json"), false).expect("alias parses");
+        assert_eq!(
+            parsed.plan.format, FORMAT,
+            "the deprecated name must never survive into the model, the render, or the hash"
+        );
+    }
+
+    #[test]
+    fn format_spelling_does_not_change_the_hash() {
+        let new = parse(&fixture("minimal.json"), false).unwrap().plan;
+        let old = parse(&fixture("legacy-format.json"), false).unwrap().plan;
+        assert_eq!(
+            plan_hash(&new),
+            plan_hash(&old),
+            "legacy-format.json is minimal.json with the old format string; they are one plan"
+        );
+    }
+```
 
 - [ ] **Step 6: Add a fixture-backed test proving the fixtures are reachable and correct**
 
@@ -798,7 +831,7 @@ cargo run --quiet -- plan render tests/fixtures/plan/kitchen-sink.json \
   --out tests/fixtures/plan/kitchen-sink.html --no-open
 ```
 
-`plan render` does not exist until Task 8. If you are executing tasks in order, instead write a one-off test that calls `render` and writes the file, run it, then delete it. Either way, record in the completion report the exact set of lines that changed, and confirm the count is three: the marker line, and the `"format"` and hash occurrences inside the embedded plan data.
+`plan render` does not exist until Task 8, so executing in order means using a temporary test instead: add a `#[test]` that calls `render` and writes the file, run it with `cargo test --lib plan::render -- --ignored regenerate_golden`, then **delete that test before committing**. The commit must not contain it. Record in the completion report the exact set of lines that changed, and confirm the count is three: the marker line, and the `"format"` and hash occurrences inside the embedded plan data.
 
 - [ ] **Step 7: Add a test tying the render to the marker contract**
 
