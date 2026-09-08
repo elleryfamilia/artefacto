@@ -62,8 +62,8 @@ Couplings the extraction has to cut or keep, each with a home in section 10:
 |---|---|
 | `markdown::render_markdown` | markdown fields in the page |
 | `hash::context_hash`, `hash::short` | plan fingerprint |
-| `render::header::GENERATED_MARKER` | the **prefix** `<!-- loadout:generated` (`render/header.rs:9`), not the whole line; the full contract is that prefix plus `context=<plan hash>` |
-| `render::header::extract_context_hash` | `load plan status` compares the hash in the HTML to the plan's hash |
+| `render::header::GENERATED_MARKER` | the **prefix** `<!-- loadout:generated` (`render/header.rs:9`). artefacto does not adopt this string; it emits its own (section 11.1) and rosita learns to accept both in plan 6 |
+| `render::header::extract_context_hash` | `load plan status` compares the hash in the HTML to the plan's hash; it must learn artefacto's prefix |
 | `writer::AtomicWriter`, `ensure_line` | atomic writes and gitignore entries |
 | `config::generated_dir`, `workflow::artifacts_dir` | loadout's paths for plan.html and plan.json |
 | `Prepared`, `Runtime` | loadout's repo and invocation context |
@@ -137,7 +137,8 @@ file only the user can read. The page is the only WebSocket client.
 
 One Rust binary, `artefacto`. Extracted from rosita's plan module. It contains:
 
-- the `loadout.plan/1` model and validator (unchanged)
+- the `artefacto.plan/1` model and validator (the schema is loadout's, unchanged
+  apart from its name; see section 11.1)
 - the deterministic renderer and SVG graph (unchanged)
 - a loopback HTTP + WebSocket server
 - the event log and delivery cursors
@@ -238,7 +239,7 @@ Behaviour added in server mode:
 - a page-level chat composer for questions about the plan as a whole; when
   the pill says `no agent`, the composer says the message will wait
 - open questions rendered as inputs, so answers arrive as data. In v1 an answer
-  is free text, because `loadout.plan/1` questions have no options field
+  is free text, because `artefacto.plan/1` questions have no options field
   (`model.rs:134-139`). An optional `options` list is an additive later change.
 - **Send review** with an **Approve** toggle replaces the clipboard button; the
   clipboard button stays in static export and gains the same toggle
@@ -326,6 +327,16 @@ relative paths and their contents, which is what loadout's lifecycle consumes.
 `artefacto skill --install DIR` writes the package into a staging directory for
 anything that would rather copy files. A single flat text stream could not
 preserve the package, and the pointer from one file to the other would break.
+
+**One skill per artifact kind.** The plan kind ships `artefacto-plan`; a later
+spec kind ships `artefacto-spec`, and so on. Each is small and describes one
+schema, which is what makes it useful to an agent deciding whether it applies.
+
+**The skill is written to be invoked by the model, not typed by a person.** Its
+description says when it applies, so an agent that has just written a plan
+reaches for it on its own. A person typing its name is the secondary path, and
+in that case the content to turn into an artifact already exists, so the skill
+starts from what is there rather than asking the user to produce it.
 
 The content has one generic section and one Claude Code section. loadout's skill
 lifecycle installs it into every agent directory exactly as it does today.
@@ -534,8 +545,9 @@ Code side and cost a second auth path with the token in the transcript.
 
 ### 6.6 The feedback document
 
-`review.submitted` carries `loadout.plan-feedback/2`. It is a superset of
-version 1, so every existing reader keeps working on the fields it knows:
+`review.submitted` carries `artefacto.feedback/1`. Its shape is a superset of
+loadout's old `loadout.plan-feedback/1`, so a reader that knows the old fields
+finds all of them under the new name:
 
 - `verdict` gains `approve` alongside `comment` and `request_changes`
 - `base_revision`: the revision the review was made against
@@ -545,9 +557,10 @@ version 1, so every existing reader keeps working on the fields it knows:
 - `answers[]`: `{question, text}`
 - `reviewed[]`: refs marked reviewed
 
-Static export writes version 2 as well. The bump is safe for an older loadout:
+Static export writes the same document. The rename is safe for an older loadout:
 `warn_stale_feedback` parses the file as untyped JSON and reads only `plan_id`
-and `plan_hash`, never the format string (`plan.rs:243-260`).
+and `plan_hash`, never the format string (`plan.rs:243-260`). Plan 6 updates
+rosita to name the new format where it is mentioned in guidance.
 
 ### 6.7 Persistence and resume
 
@@ -681,20 +694,20 @@ synchronous HTTP handler, and the registry holds up to 30 entries
 one page render, where today it is an in-process parse. It also parses
 leniently (`server.rs:1408`), which is why `check` needs `--lenient`.
 
-**Compatibility contract.** artefacto's rendered HTML must start with the exact
-line rosita's `load plan status` expects: the `<!-- loadout:generated` prefix
-**and** `context=<plan hash>` in loadout's `sha256:…` form. `GENERATED_MARKER`
-is only the prefix (`render/header.rs:9`), so testing the prefix alone is not
-enough. Without the value, studio cannot serve or clean the file and
-`plan status` always reports stale.
+**Compatibility contract, and which side carries it.** artefacto emits
+`<!-- artefacto:generated context=<hash> -->` and knows nothing about loadout.
+Rosita is the integrator, so rosita adapts: plan 6 widens every place it gates
+on its own marker to accept artefacto's too. Those places are `load clean`
+(`commands/plan.rs:135`), studio's serve and clean gate
+(`studio/server.rs:1395-1397`), and `extract_context_hash`
+(`render/header.rs:82`), which `load plan status` uses.
 
 Two independent test suites are not enough on their own, because both can be
-edited to agree with a change that breaks the other side. The contract is a
-**frozen fixture**: a committed sample first line, checked by the producer in
-artefacto and by the consumer in rosita, changed only by a deliberate edit to
-the fixture in both repos. The dispatcher also records the artefacto version it
-was tested against, so a mismatched binary is reported rather than silently
-producing wrong badges.
+edited to agree with a change that breaks the other side. Each repo commits a
+**frozen fixture** of the line: artefacto's pins the line it produces, rosita's
+pins the line it must keep accepting, and they hold the same bytes. The
+dispatcher also records the artefacto version it was tested against, so a
+mismatched binary is reported rather than silently producing wrong badges.
 
 The loadout workflow's plan stage template names `artefacto` directly, so the
 flow survives the skill not surfacing.
@@ -706,25 +719,61 @@ A thin Claude Code marketplace plugin (manifest, the skill, a SessionStart hook
 that checks the binary and reports a pending review) is published from this repo
 for people who do not use loadout. It is v1.1, not v1.
 
-## 11. Extraction from rosita
+## 11. Names, and extraction from rosita
+
+### 11.1 artefacto's name is the only one in its output
+
+artefacto is a separate project. Most people who use it will not have loadout
+installed and will never hear of it. So **nothing artefacto produces carries
+loadout's name**: not the generated first line, not a format string, not a
+default path, not a message. The word "loadout" appears in this repository only
+where an integration is being described, as in section 10.
+
+What artefacto writes:
+
+| thing | value |
+|---|---|
+| generated first line | `<!-- artefacto:generated context=<hash> -->` |
+| plan document format | `artefacto.plan/1` |
+| feedback document format | `artefacto.feedback/1` |
+| event and frame formats | `artefacto.event/1`, `artefacto.frame/1` |
+
+What artefacto reads: the plan parser also accepts `loadout.plan/1` as a
+**deprecated alias**, because plan documents in that format already exist and
+breaking them would be gratuitous. Reading one prints a single deprecation line
+naming the new value. artefacto never writes the old string, and the alias is
+not documented in the skill reference: new plans use `artefacto.plan/1`.
+
+**The compatibility burden moves to loadout, which is the right way round.**
+loadout is the integrator here; artefacto does not know it exists. Plan 6
+teaches rosita to accept `<!-- artefacto:generated` alongside its own marker
+wherever it gates on one today, and to read `artefacto.feedback/1`. Rosita is
+the same owner's project, so the change is cheap there and free for everyone
+else.
+
+This replaces the earlier frozen-fixture contract, which pinned loadout's line
+in artefacto's tests. The fixture stays, but it now freezes **artefacto's** line,
+and rosita gets its own fixture for the line it must keep accepting.
+
+### 11.2 What moves
 
 Moves to artefacto: `src/plan/*` and its assets, the plan logic of
 `src/commands/plan.rs`, `skills/loadout-plan-preview/`, `tests/fixtures/plan/`,
 `tests/skill_examples.rs` (the plan half), `tools/build-plan-fonts.py`, and the
 headless-Chromium browser smoke.
 
-Copied, not shared: `markdown::render_markdown`, the hash helpers, and the
-`GENERATED_MARKER` constant. All are small. Publishing a shared crate is not
-worth it for three items. Rosita's plan module is deleted in the dispatcher PR,
-so drift cannot start; the marker line is tested by value in both repos.
+Copied, not shared: `markdown::render_markdown` and the hash helpers. Both are
+small; publishing a shared crate is not worth it for two items. The marker
+constant is **not** copied: artefacto defines its own (section 11.1). Rosita's
+plan module is deleted in the dispatcher PR, so drift cannot start.
 
 Stays in rosita: `AtomicWriter`, `ensure_line`, the path helpers, `Prepared`,
 `Runtime`, the recents store, and `open_browser` (artefacto gets its own
 copy of the browser-opening logic).
 
-Unchanged in v1: the `loadout.plan/1` format string. The feedback document
-moves to `loadout.plan-feedback/2` as an additive superset (section 6.6).
-Renaming to `artefacto.*` with aliases is a later decision.
+Format strings are artefacto's own from day one (section 11.1), with
+`loadout.plan/1` accepted on read as a deprecated alias so existing plan
+documents keep working.
 
 ## 12. Scope
 
@@ -807,9 +856,12 @@ artifacts.
   answers, and submits → `await` returns the document → `reply` reaches the
   fake page → `push --resolutions` marks threads → a push with a stale
   `base_revision` is refused.
-- A frozen marker fixture, checked by the producer in artefacto and the
-  consumer in rosita, asserting the emitted `context=` **value**, not just the
-  prefix.
+- A frozen marker fixture asserting the emitted line in full, prefix and
+  `context=` value. artefacto pins the line it writes; rosita pins the same
+  bytes as a line it must keep accepting (plan 6).
+- A format-alias test: a document declaring `loadout.plan/1` still parses and
+  prints one deprecation line; every document artefacto writes declares
+  `artefacto.plan/1`.
 - A `--passive live` rate test asserting at most one frame per 30 seconds under
   a synthetic storm, since the earlier count-based bound was arithmetically
   impossible.
@@ -868,8 +920,11 @@ Stated so they can be overridden rather than discovered:
 - port and secret persist per repository across restarts; `clean` rotates
 - no agent-role WebSocket in v1; the CLI is the only agent transport
 - daemon by default, `--foreground` opt-in; self-exit after 30 idle minutes
-- feedback document bumps to `/2` as an additive superset; plan format stays
-  `loadout.plan/1`
+- every string artefacto writes is in its own namespace: the generated line,
+  `artefacto.plan/1`, `artefacto.feedback/1`. `loadout.plan/1` is accepted on
+  read as a deprecated alias and never written. Rosita, as the integrator,
+  carries the compatibility work
+- one skill per artifact kind, written for the model to invoke
 - server mode does not use `localStorage` for review state; static export keeps
   using it exactly as today
 - index posters are **drawn from the plan model**, not screenshotted, so no
