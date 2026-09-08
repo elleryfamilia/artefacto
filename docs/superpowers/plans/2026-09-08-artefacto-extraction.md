@@ -1907,6 +1907,75 @@ fn reference_json_examples_are_valid() {
 Run: `cargo test --test skill_examples`
 Expected on a first run before the file exists: the test binary does not exist. Once written, it must PASS. If `reference_json_examples_are_valid` fails, an example in the copied reference drifted from the model. Fix the example, not the model.
 
+- [ ] **Step 2a: Sweep the last stale references out of the ported source**
+
+Two leftovers were found during earlier task reviews. Both are in `src/markdown.rs`,
+which was copied verbatim, and neither is a constraint violation — one is test input, the
+other a doc comment. Clean them anyway: this is the task that keeps the repo honest, and
+they are the last places the word survives outside deliberate prose.
+
+1. The module's top doc comment describes the renderer as "shared by studio and
+   `load plan`". Neither exists here. Rewrite the sentence to describe what the module
+   does in artefacto: it renders untrusted markdown for the plan page.
+2. The test `leading_generated_comments_are_stripped` uses `<!-- loadout:generated x -->`
+   as its sample input, and asserts the output does not contain `loadout:generated`.
+   Change both to artefacto's own marker. `strip_leading_comments` does not inspect the
+   comment's content, so this cannot change behaviour — run the test to confirm.
+
+- [ ] **Step 2b: Add the repo-wide naming check**
+
+Append to `tests/skill_examples.rs`:
+
+```rust
+/// The owner's rule for this project: someone using artefacto will not have loadout
+/// installed and should never encounter its name. Prose that describes the integration
+/// is allowed and lives in the docs; source, assets and fixtures are not.
+#[test]
+fn no_source_file_mentions_loadout_outside_the_deprecated_alias() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut offenders = Vec::new();
+
+    for dir in ["src", "skills", "tests/fixtures"] {
+        let mut stack = vec![root.join(dir)];
+        while let Some(path) = stack.pop() {
+            if path.is_dir() {
+                for entry in std::fs::read_dir(&path).expect("read dir") {
+                    stack.push(entry.expect("dir entry").path());
+                }
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue; // binary asset, such as an embedded font
+            };
+            for (n, line) in text.lines().enumerate() {
+                if !line.to_lowercase().contains("loadout") {
+                    continue;
+                }
+                // The one sanctioned occurrence: the deprecated format string the
+                // parser still accepts on read. See the spec's naming section.
+                if line.contains("LEGACY_FORMAT") || line.contains("loadout.plan/1") {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "artefacto must not carry loadout's name:\n{}",
+        offenders.join("\n")
+    );
+}
+```
+
+- [ ] **Step 2c: Run it and watch it hold**
+
+Run: `cargo test --test skill_examples no_source_file_mentions_loadout`
+Expected: PASS after Step 2a. If it fails, it is naming you the exact file and line still
+carrying the name — fix that rather than widening the allowlist. The allowlist exists for
+one thing only: the deprecated format string the parser accepts on read.
+
 - [ ] **Step 3: Write the CI workflow**
 
 Create `.github/workflows/ci.yml`:
