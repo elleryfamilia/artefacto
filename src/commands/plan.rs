@@ -2,7 +2,7 @@
 
 use crate::cli::{PlanAction, PlanArgs};
 use crate::plan::model;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
 
 /// A validation error the caller should see as exit code 1.
@@ -36,6 +36,12 @@ pub fn run(args: &PlanArgs) -> Result<()> {
             json,
             lenient,
         } => check(files, *json, *lenient),
+        PlanAction::Render {
+            file,
+            out,
+            no_open,
+            json,
+        } => render(file, out.as_deref(), *no_open, *json),
     }
 }
 
@@ -150,6 +156,55 @@ fn check(files: &[std::path::PathBuf], json: bool, lenient: bool) -> Result<()> 
     }
     if any_invalid {
         return Err(PlanInvalid.into());
+    }
+    Ok(())
+}
+
+fn render(file: &Path, out: Option<&Path>, no_open: bool, json: bool) -> Result<()> {
+    let checked = match check_one(file, false) {
+        Ok(ok) => ok,
+        Err(errors) => {
+            for e in &errors {
+                eprintln!("error[{}] {}: {}", e.code, e.path, e.message);
+            }
+            return Err(PlanInvalid.into());
+        }
+    };
+
+    let cwd = std::env::current_dir().context("could not read the current directory")?;
+    let target = match out {
+        Some(p) => crate::paths::resolve_relative(&cwd, p),
+        None => crate::paths::resolve_relative(&cwd, Path::new("plan.html")),
+    };
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("could not create {}", parent.display()))?;
+    }
+
+    let html = crate::plan::render::render(&checked.plan);
+    std::fs::write(&target, &html)
+        .with_context(|| format!("could not write {}", target.display()))?;
+
+    if json {
+        let doc = serde_json::json!({
+            "ok": true,
+            "path": file.display().to_string(),
+            "out": target.display().to_string(),
+            "plan_hash": model::plan_hash(&checked.plan),
+            "title": checked.plan.meta.title,
+            "phases": checked.plan.phases.len(),
+            "tasks": task_count(&checked.plan),
+        });
+        println!("{}", serde_json::to_string(&doc)?);
+    } else {
+        println!("rendered {}", target.display());
+        for w in &checked.warnings {
+            println!("  warning[{}] {}: {}", w.code, w.path, w.message);
+        }
+    }
+
+    if !no_open {
+        crate::paths::open_browser(&crate::paths::file_url(&target));
     }
     Ok(())
 }
