@@ -759,8 +759,14 @@ and rosita gets its own fixture for the line it must keep accepting.
 
 Moves to artefacto: `src/plan/*` and its assets, the plan logic of
 `src/commands/plan.rs`, `skills/loadout-plan-preview/`, `tests/fixtures/plan/`,
-`tests/skill_examples.rs` (the plan half), `tools/build-plan-fonts.py`, and the
-headless-Chromium browser smoke.
+`tests/skill_examples.rs` (the plan half), and `tools/build-plan-fonts.py`.
+
+**The headless-Chromium browser smoke moves with the page, not with the
+renderer.** It drives the page's `#selftest` harness through identifiers the
+extraction renames, and it is built on the `file://` plus sandboxed-iframe
+harness section 14 already records as unusable for a served page. Since the page
+is rewritten for a re-entrant mount and a server-side store, porting the old
+smoke first would mean writing it twice.
 
 Copied, not shared: `markdown::render_markdown` and the hash helpers. Both are
 small; publishing a shared crate is not worth it for two items. The marker

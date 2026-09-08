@@ -2077,6 +2077,9 @@ git commit -m "feat: keep the skill examples tested and add CI"
 - `artefacto skill --print` and `--install`. Plan 5. Tasks 9 and 10 only put the files on disk and keep them tested.
 - Deleting the plan module from loadout. Plan 6, so the two coexist until the dispatcher lands.
 - cargo-dist release configuration. Plan 5.
+- The headless-Chromium browser smoke. It moves with the page, in plan 3. It drives the page's `#selftest` harness through identifiers Task 6 renames, and its `file://` plus sandboxed-iframe harness cannot test the served page plan 2 introduces, so porting it here would mean writing it twice.
+
+  **What this leaves uncovered, stated plainly:** plan 1 ships with no browser-level test. The golden fixture pins the rendered HTML byte for byte, including the whole embedded script, so any change to the page's markup or behaviour fails a test here. What is *not* covered is whether the page still runs correctly in a real browser. That gap closes in plan 3.
 
 ## Verification for the whole plan
 
