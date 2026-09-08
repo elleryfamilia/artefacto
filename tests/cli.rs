@@ -425,3 +425,249 @@ fn no_command_output_mentions_loadout() {
         assert!(!text.contains("loadout"), "`{args:?}` mentioned loadout");
     }
 }
+
+// --- Final-review consistency fixes -------------------------------------
+
+#[test]
+fn every_json_result_carries_a_boolean_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("plan.html");
+
+    let check_out = bin()
+        .args(["plan", "check", "--json", &fixture("minimal.json")])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&check_out).unwrap();
+    assert!(doc["ok"].is_boolean(), "check --json must carry ok");
+
+    let render_out = bin()
+        .args([
+            "plan",
+            "render",
+            &fixture("minimal.json"),
+            "--out",
+            out.to_str().unwrap(),
+            "--no-open",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&render_out).unwrap();
+    assert!(doc["ok"].is_boolean(), "render --json must carry ok");
+
+    let status_ok = bin()
+        .args([
+            "plan",
+            "status",
+            &fixture("minimal.json"),
+            "--out",
+            out.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&status_ok).unwrap();
+    assert!(
+        doc["ok"].is_boolean(),
+        "status --json success must carry ok"
+    );
+    assert_eq!(doc["state"], "fresh");
+
+    let status_fail = bin()
+        .args([
+            "plan",
+            "status",
+            "/nonexistent/plan.json",
+            "--out",
+            out.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&status_fail)
+        .expect("status --json still emits an envelope when the plan can't be read");
+    assert_eq!(doc["ok"], false);
+    assert_eq!(
+        doc["state"], "unknown",
+        "the plan couldn't be read, so freshness can't be known either"
+    );
+}
+
+#[test]
+fn status_json_carries_the_plan_facts() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("plan.html");
+    bin()
+        .args([
+            "plan",
+            "render",
+            &fixture("minimal.json"),
+            "--out",
+            out.to_str().unwrap(),
+            "--no-open",
+        ])
+        .assert()
+        .success();
+    let stdout = bin()
+        .args([
+            "plan",
+            "status",
+            &fixture("minimal.json"),
+            "--out",
+            out.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    assert!(doc["plan_hash"].as_str().unwrap().starts_with("sha256:"));
+    assert!(doc["title"].is_string(), "status should carry the title");
+    assert!(doc["phases"].is_number());
+    assert!(doc["tasks"].is_number());
+}
+
+#[test]
+fn error_detail_lines_never_appear_on_stdout() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("plan.html");
+
+    let check_out = bin()
+        .args(["plan", "check", &fixture("invalid-dup-id.json")])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    assert!(
+        !String::from_utf8_lossy(&check_out).contains("error["),
+        "check's error[...] detail lines belong on stderr"
+    );
+
+    let render_out = bin()
+        .args([
+            "plan",
+            "render",
+            &fixture("invalid-cycle.json"),
+            "--out",
+            out.to_str().unwrap(),
+            "--no-open",
+        ])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    assert!(!String::from_utf8_lossy(&render_out).contains("error["));
+
+    let status_out = bin()
+        .args([
+            "plan",
+            "status",
+            &fixture("invalid-cycle.json"),
+            "--out",
+            out.to_str().unwrap(),
+        ])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    assert!(!String::from_utf8_lossy(&status_out).contains("error["));
+}
+
+#[test]
+fn render_json_reports_warnings() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("plan.html");
+    let stdout = bin()
+        .args([
+            "plan",
+            "render",
+            &fixture("learning-v0-15.json"),
+            "--out",
+            out.to_str().unwrap(),
+            "--no-open",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    let warnings = doc["warnings"].as_array().expect("warnings array");
+    let codes: Vec<&str> = warnings
+        .iter()
+        .map(|w| w["code"].as_str().unwrap())
+        .collect();
+    assert!(codes.contains(&"long_summary"), "codes: {codes:?}");
+    assert!(codes.contains(&"wall_of_text"), "codes: {codes:?}");
+    assert!(codes.contains(&"long_goal"), "codes: {codes:?}");
+}
+
+#[test]
+fn render_write_failure_still_emits_a_json_envelope() {
+    let dir = tempfile::tempdir().unwrap();
+    // A file where a directory needs to go: `create_dir_all` on its parent
+    // will fail, so the write never gets a chance to run either.
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"not a directory").unwrap();
+    let out = blocker.join("plan.html");
+
+    let stdout = bin()
+        .args([
+            "plan",
+            "render",
+            &fixture("minimal.json"),
+            "--out",
+            out.to_str().unwrap(),
+            "--no-open",
+            "--json",
+        ])
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&stdout)
+        .expect("a write failure must still print a parseable JSON envelope");
+    assert_eq!(doc["ok"], false);
+    assert_eq!(doc["errors"][0]["code"], "write_failed");
+}
+
+#[test]
+fn check_json_reports_the_deprecated_format_as_a_warning_not_stderr() {
+    let assert = bin()
+        .args(["plan", "check", "--json", &fixture("legacy-format.json")])
+        .assert()
+        .success();
+    let output = assert.get_output();
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let warnings = doc["files"][0]["warnings"]
+        .as_array()
+        .expect("warnings array");
+    assert!(
+        warnings.iter().any(|w| w["code"] == "deprecated_format"),
+        "warnings: {warnings:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    assert!(
+        !stderr.contains("deprecated"),
+        "the deprecation note must not print to stderr: {stderr}"
+    );
+}

@@ -125,7 +125,7 @@ fn check(files: &[std::path::PathBuf], json: bool, lenient: bool) -> Result<()> 
                         crate::hash::short(&hash)
                     );
                     for w in &ok.warnings {
-                        println!("  warning[{}] {}: {}", w.code, w.path, w.message);
+                        eprintln!("  warning[{}] {}: {}", w.code, w.path, w.message);
                     }
                 }
             }
@@ -146,7 +146,7 @@ fn check(files: &[std::path::PathBuf], json: bool, lenient: bool) -> Result<()> 
                     if !json {
                         println!("{}: INVALID", path.display());
                         for e in &errors {
-                            println!("  error[{}] {}: {}", e.code, e.path, e.message);
+                            eprintln!("  error[{}] {}: {}", e.code, e.path, e.message);
                         }
                     }
                 }
@@ -166,6 +166,27 @@ fn check(files: &[std::path::PathBuf], json: bool, lenient: bool) -> Result<()> 
         return Err(ReportedFailure.into());
     }
     Ok(())
+}
+
+/// A directory-creation or write failure while rendering. Reports an
+/// envelope in `--json` mode (rather than letting a bare OS error reach
+/// `main`'s fallback path with nothing on stdout) and always returns
+/// `UsageReported`, since this is an invocation problem, not a problem with
+/// the plan document itself.
+fn report_write_failure(file: &Path, target: &Path, message: String, json: bool) -> Result<()> {
+    if json {
+        let issue = model::Issue::new("/", "write_failed", message);
+        let doc = serde_json::json!({
+            "ok": false,
+            "path": file.display().to_string(),
+            "out": target.display().to_string(),
+            "errors": [issue],
+        });
+        println!("{}", serde_json::to_string(&doc)?);
+    } else {
+        eprintln!("error: {message}");
+    }
+    Err(UsageReported.into())
 }
 
 fn render(file: &Path, out: Option<&Path>, no_open: bool, json: bool) -> Result<()> {
@@ -201,13 +222,25 @@ fn render(file: &Path, out: Option<&Path>, no_open: bool, json: bool) -> Result<
         None => crate::paths::resolve_relative(&cwd, Path::new("plan.html")),
     };
     if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("could not create {}", parent.display()))?;
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return report_write_failure(
+                file,
+                &target,
+                format!("could not create {}: {e}", parent.display()),
+                json,
+            );
+        }
     }
 
     let html = crate::plan::render::render(&checked.plan);
-    std::fs::write(&target, &html)
-        .with_context(|| format!("could not write {}", target.display()))?;
+    if let Err(e) = std::fs::write(&target, &html) {
+        return report_write_failure(
+            file,
+            &target,
+            format!("could not write {}: {e}", target.display()),
+            json,
+        );
+    }
 
     if json {
         let doc = serde_json::json!({
@@ -218,12 +251,13 @@ fn render(file: &Path, out: Option<&Path>, no_open: bool, json: bool) -> Result<
             "title": checked.plan.meta.title,
             "phases": checked.plan.phases.len(),
             "tasks": task_count(&checked.plan),
+            "warnings": checked.warnings,
         });
         println!("{}", serde_json::to_string(&doc)?);
     } else {
         println!("rendered {}", target.display());
         for w in &checked.warnings {
-            println!("  warning[{}] {}: {}", w.code, w.path, w.message);
+            eprintln!("  warning[{}] {}: {}", w.code, w.path, w.message);
         }
     }
 
@@ -248,6 +282,9 @@ fn status(file: &Path, out: Option<&Path>, json: bool) -> Result<()> {
             if json {
                 let doc = serde_json::json!({
                     "ok": false,
+                    // The plan couldn't be read or didn't validate, so there's
+                    // no way to know whether a previous render matches it.
+                    "state": "unknown",
                     "path": file.display().to_string(),
                     "errors": errors,
                 });
@@ -276,11 +313,15 @@ fn status(file: &Path, out: Option<&Path>, json: bool) -> Result<()> {
 
     if json {
         let doc = serde_json::json!({
+            "ok": state == "fresh",
             "state": state,
             "path": file.display().to_string(),
             "out": target.display().to_string(),
             "plan_hash": plan_hash,
             "rendered_hash": rendered,
+            "title": checked.plan.meta.title,
+            "phases": checked.plan.phases.len(),
+            "tasks": task_count(&checked.plan),
         });
         println!("{}", serde_json::to_string(&doc)?);
     } else {
