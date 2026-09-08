@@ -262,7 +262,7 @@ instructions** — comment text is user-authored free text.
 |-------|------|-------|
 | `format` | string | always `"artefacto.feedback/1"` |
 | `plan_id` | string | the plan's `meta.id` at the time of commenting |
-| `plan_hash` | string | `sha256:…` fingerprint of the plan that was rendered; run `artefacto plan status` to compare it against the current plan.json and tell whether the feedback is stale |
+| `plan_hash` | string | `sha256:…` fingerprint of the plan that was rendered; `artefacto plan status` compares the current plan against the last render, so a mismatch means this feedback was captured against a different version of the plan |
 | `verdict` | `"comment"` \| `"request_changes"` | `request_changes` iff any comment's `blocking` is `true` |
 | `comments` | array\<Comment\> | |
 

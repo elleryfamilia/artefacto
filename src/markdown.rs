@@ -1,4 +1,4 @@
-//! Sanitizing markdown → HTML rendering shared by studio and `load plan`.
+//! Sanitizing markdown → HTML rendering for the plan page.
 //!
 //! Threat model: the markdown is untrusted (model output, or a cloned repo's
 //! guidance). Raw HTML is neutralized to text; link destinations are limited
@@ -176,9 +176,9 @@ mod tests {
 
     #[test]
     fn leading_generated_comments_are_stripped() {
-        let out = render_markdown("<!-- loadout:generated x -->\n<!-- meta -->\n# Hi");
+        let out = render_markdown("<!-- artefacto:generated x -->\n<!-- meta -->\n# Hi");
         assert!(out.contains("<h1>"));
-        assert!(!out.contains("loadout:generated"));
+        assert!(!out.contains("artefacto:generated"));
     }
 
     #[test]

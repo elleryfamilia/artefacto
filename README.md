@@ -15,8 +15,13 @@ runs on its own.
 
 ## Status
 
-Design phase. Nothing runs yet. The design spec lives in
-`docs/superpowers/specs/`.
+Early. The static renderer works: `artefacto plan check`, `render`, and
+`status` validate an `artefacto.plan/1` document and produce a self-contained
+HTML page. The interactive server, the page rewrite, and the artifact index
+are not built yet.
+
+The design spec is in `docs/superpowers/specs/`, and the implementation plans
+are in `docs/superpowers/plans/`.
 
 ## License
 

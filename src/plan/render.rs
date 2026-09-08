@@ -1406,9 +1406,9 @@ mod tests {
     }
 
     #[test]
-    fn a_rendered_page_never_mentions_loadout() {
+    fn a_rendered_page_never_mentions_loadout(/* naming-check: allow */) {
         // artefacto is a separate project. Someone using it will not have
-        // loadout installed and must never see its name on the page, in a
+        // loadout installed and must never see its name on the page, in a // naming-check: allow
         // storage key, or in an embedded format string.
         let raw = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1418,8 +1418,8 @@ mod tests {
         let plan = crate::plan::model::parse(&raw, false).unwrap().plan;
         let html = render(&plan).to_lowercase();
         assert!(
-            !html.contains("loadout"),
-            "the rendered page mentions loadout"
+            !html.contains("loadout"),            // naming-check: allow
+            "the rendered page mentions loadout"  // naming-check: allow
         );
     }
 
@@ -1443,7 +1443,7 @@ mod tests {
         assert_eq!(
             crate::marker::extract_hash(&html),
             Some(expected),
-            "loadout parses this line back to decide whether a render is fresh"
+            "tools parse this line back to decide whether a render is fresh"
         );
     }
 }
