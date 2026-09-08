@@ -559,14 +559,27 @@ Add to `mod tests` in `src/plan/model.rs`:
 
 `Plan` has a public `format: String` field. It is deserialized from the document, serialized back into the rendered page's embedded plan data, and covered by the plan hash. So a legacy document would otherwise carry the old string all the way into artefacto's output, which breaks this plan's global constraint in exactly the case the alias exists to serve.
 
-**Normalize it.** After the format gate accepts a document, overwrite the field with the canonical value before returning. Find where `parse` builds its `Parsed` result and set the field there:
+**Normalize it.** After the format gate accepts a document, overwrite the field with the canonical value before returning. `parse` ends with a deserialize followed immediately by the `Ok(Parsed { … })`. Make the binding mutable and set the field between them:
 
 ```rust
+    let mut plan: Plan = serde_path_to_error::deserialize(de).map_err(|e| {
+        vec![Issue::new(
+            e.path().to_string(),
+            "invalid_shape",
+            e.inner().to_string(),
+        )]
+    })?;
     // The alias is accepted on read, never propagated. Normalizing here means
     // output never carries the old name, and one plan hashes the same however
     // its source file spelled the format.
     plan.format = FORMAT.to_string();
+    Ok(Parsed {
+        plan,
+        warnings: unknown,
+    })
 ```
+
+That is the whole change: `let plan` becomes `let mut plan`, and one assignment is added before the existing `Ok`.
 
 Add the test that pins it:
 
