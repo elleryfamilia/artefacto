@@ -78,7 +78,7 @@ fn no_source_file_mentions_loadout_outside_the_deprecated_alias() {
                 continue;
             }
             let Ok(text) = std::fs::read_to_string(&path) else {
-                continue; // binary asset, such as an embedded font
+                continue; // not valid UTF-8; none of these exist under src/ or skills/ today
             };
             for (n, line) in text.lines().enumerate() {
                 if !line.to_lowercase().contains("loadout") {
