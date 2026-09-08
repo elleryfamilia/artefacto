@@ -420,9 +420,15 @@ git commit -m "feat: port the sanitizing markdown renderer"
 ### Task 4: The plan model
 
 **Files:**
-- Create: `src/plan/mod.rs`, `src/plan/model.rs`
+- Create: `src/plan/mod.rs`, `src/plan/model.rs`, `src/plan/icons.rs`
 - Create: `tests/fixtures/plan/` (moved fixtures)
 - Modify: `src/lib.rs`
+
+**Why `icons.rs` is here and not in Task 5:** the validator calls
+`crate::plan::icons::is_icon_name` and `icon_names` at three sites in `model.rs`,
+including one inside its own tests. Without the module the crate does not compile, so
+Task 4 cannot reach a green gate on its own. `icons.rs` is 81 lines with no imports and
+no crate references, so it costs nothing to bring along.
 
 **Interfaces:**
 - Consumes: `hash::context_hash` from Task 1.
@@ -433,6 +439,7 @@ git commit -m "feat: port the sanitizing markdown renderer"
 ```bash
 mkdir -p src/plan tests/fixtures/plan
 cp "$ROSITA/src/plan/model.rs" src/plan/model.rs
+cp "$ROSITA/src/plan/icons.rs" src/plan/icons.rs
 cp "$ROSITA/tests/fixtures/plan/"*.json tests/fixtures/plan/
 ```
 
@@ -443,6 +450,7 @@ The JSON fixtures are `hostile.json`, `invalid-cycle.json`, `invalid-dangling-re
 ```rust
 //! The `artefacto.plan/1` artifact kind: schema, validation, and rendering.
 
+pub mod icons;
 pub mod model;
 ```
 
@@ -691,8 +699,11 @@ git commit -m "feat: port the plan model under artefacto's own format string"
 ### Task 5: Icons and the deterministic dependency graph
 
 **Files:**
-- Create: `src/plan/icons.rs`, `src/plan/svg.rs`, `tests/fixtures/plan/kitchen-sink-p-core.svg`
+- Create: `src/plan/svg.rs`, `tests/fixtures/plan/kitchen-sink-p-core.svg`
 - Modify: `src/plan/mod.rs`
+
+**Note:** `icons.rs` moved to Task 4, because `model.rs` calls it and the crate does not
+compile without it. It is already present when this task starts.
 
 **Interfaces:**
 - Consumes: `plan::model::Plan` from Task 4.
@@ -701,7 +712,6 @@ git commit -m "feat: port the plan model under artefacto's own format string"
 - [ ] **Step 1: Copy the modules and the golden**
 
 ```bash
-cp "$ROSITA/src/plan/icons.rs" src/plan/icons.rs
 cp "$ROSITA/src/plan/svg.rs" src/plan/svg.rs
 cp "$ROSITA/tests/fixtures/plan/kitchen-sink-p-core.svg" tests/fixtures/plan/
 ```
@@ -717,6 +727,8 @@ pub mod icons;
 pub mod model;
 pub mod svg;
 ```
+
+`icons` is already declared by Task 4; you are adding `svg`.
 
 - [ ] **Step 3: Check for crate paths that need rewriting**
 
