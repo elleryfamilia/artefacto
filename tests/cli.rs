@@ -137,3 +137,96 @@ fn a_missing_file_does_not_hide_the_files_around_it() {
         "checking continues past the unreadable file"
     );
 }
+
+#[test]
+fn render_writes_a_document_starting_with_the_marker_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("plan.html");
+    bin()
+        .args([
+            "plan",
+            "render",
+            &fixture("minimal.json"),
+            "--out",
+            out.to_str().unwrap(),
+            "--no-open",
+        ])
+        .assert()
+        .success();
+    let html = std::fs::read_to_string(&out).expect("render wrote the file");
+    assert!(
+        html.starts_with("<!-- artefacto:generated context=sha256:"),
+        "first line: {:?}",
+        html.lines().next()
+    );
+    assert!(html.contains("<!doctype html>") || html.contains("<!DOCTYPE html>"));
+}
+
+#[test]
+fn render_json_reports_what_the_dispatcher_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("plan.html");
+    let stdout = bin()
+        .args([
+            "plan",
+            "render",
+            &fixture("kitchen-sink.json"),
+            "--out",
+            out.to_str().unwrap(),
+            "--no-open",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    assert!(doc["plan_hash"].as_str().unwrap().starts_with("sha256:"));
+    assert!(doc["title"].is_string());
+    assert!(doc["phases"].is_number());
+    assert!(doc["tasks"].is_number());
+    assert_eq!(doc["out"], out.display().to_string());
+}
+
+#[test]
+fn render_refuses_an_invalid_plan_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("plan.html");
+    bin()
+        .args([
+            "plan",
+            "render",
+            &fixture("invalid-cycle.json"),
+            "--out",
+            out.to_str().unwrap(),
+            "--no-open",
+        ])
+        .assert()
+        .code(1);
+    assert!(
+        !out.exists(),
+        "a rejected plan must not leave a partial file"
+    );
+}
+
+#[test]
+fn render_resolves_a_relative_out_against_the_invocation_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    bin()
+        .current_dir(dir.path())
+        .args([
+            "plan",
+            "render",
+            &fixture("minimal.json"),
+            "--out",
+            "nested/plan.html",
+            "--no-open",
+        ])
+        .assert()
+        .success();
+    assert!(
+        dir.path().join("nested/plan.html").exists(),
+        "relative --out anchors to cwd"
+    );
+}

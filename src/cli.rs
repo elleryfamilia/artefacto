@@ -40,4 +40,18 @@ pub enum PlanAction {
         #[arg(long)]
         lenient: bool,
     },
+    /// Render a plan to a self-contained HTML file.
+    Render {
+        /// The plan file to render.
+        file: PathBuf,
+        /// Where to write the HTML. Relative paths anchor to the current directory.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Do not open the rendered file in a browser.
+        #[arg(long)]
+        no_open: bool,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }

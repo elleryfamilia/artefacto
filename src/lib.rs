@@ -5,4 +5,5 @@ pub mod commands;
 pub mod hash;
 pub mod markdown;
 pub mod marker;
+pub mod paths;
 pub mod plan;
