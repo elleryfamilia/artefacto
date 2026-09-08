@@ -1982,9 +1982,22 @@ comment to each line that needs it, exactly:
         // naming-check: allow
 ```
 
-Put it on its own line immediately above, or at the end of the line — the check is a
-substring match on the line itself, so the marker must be **on the same line** as the
-mention. Lines needing it: the `LEGACY_FORMAT` constant in `src/plan/model.rs`, and in
+**It must be on the same line as the mention.** The check is a substring match on each
+line in isolation, with no look-behind, so a marker on the line above exempts nothing.
+
+One line needs care. `rustfmt` moves a trailing comment off a function signature that
+ends in `{`, which would separate the marker from the test's own name and make the check
+fail on itself. For that line, put the marker inside the empty parameter list, which the
+formatter leaves alone:
+
+```rust
+fn a_rendered_page_never_mentions_loadout(/* naming-check: allow */) {
+```
+
+and add a comment above it explaining why, or someone will later tidy it into a trailing
+comment and quietly break the test.
+
+Lines needing the marker: the `LEGACY_FORMAT` constant in `src/plan/model.rs`, and in
 `src/plan/render.rs` the test's name line, its explanatory comment, its assertion
 condition, and its failure message.
 
