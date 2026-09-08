@@ -15,6 +15,10 @@ pub fn resolve_relative(cwd: &Path, path: &Path) -> PathBuf {
 
 /// A `file://` URL for `path`, percent-encoding the characters that break
 /// browsers. Spaces are the common case; `#` and `?` would truncate the URL.
+///
+/// Builds POSIX file URLs; it is not correct for Windows paths (drive
+/// letters, `\` separators), matching `open_browser`'s macOS/Linux-only
+/// support.
 pub fn file_url(path: &Path) -> String {
     let mut url = String::from("file://");
     for byte in path.to_string_lossy().bytes() {
@@ -43,12 +47,16 @@ pub fn open_browser(url: &str) {
         c.arg(url);
         c
     };
+    // macOS and Linux are the supported platforms. Elsewhere, do nothing rather
+    // than construct a file:// URL this code cannot correctly escape for a
+    // platform it never runs on — the caller has already printed the path.
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    let mut cmd = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", "", url]);
-        c
-    };
+    {
+        let _ = url;
+        return;
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let _ = cmd
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

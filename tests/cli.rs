@@ -248,3 +248,50 @@ fn render_reports_an_unreadable_plan_as_a_usage_error() {
         .stderr(predicates::str::contains("/nonexistent/plan.json"));
     assert!(!dir.path().join("plan.html").exists(), "nothing is written");
 }
+
+#[test]
+fn render_json_reports_a_failure_as_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .args([
+            "plan",
+            "render",
+            &fixture("invalid-cycle.json"),
+            "--out",
+            dir.path().join("plan.html").to_str().unwrap(),
+            "--no-open",
+            "--json",
+        ])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value =
+        serde_json::from_slice(&out).expect("--json emits a JSON envelope even on failure");
+    assert_eq!(doc["ok"], false);
+    assert!(!doc["errors"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn render_json_reports_an_unreadable_plan_as_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .args([
+            "plan",
+            "render",
+            "/nonexistent/plan.json",
+            "--out",
+            dir.path().join("plan.html").to_str().unwrap(),
+            "--no-open",
+            "--json",
+        ])
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&out).expect("JSON on stdout");
+    assert_eq!(doc["ok"], false);
+    assert_eq!(doc["errors"][0]["code"], "unreadable");
+}
