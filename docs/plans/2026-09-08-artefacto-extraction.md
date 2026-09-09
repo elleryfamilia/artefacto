@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust 2021, edition floor 1.85. `clap` (derive) for the CLI, `serde` + `serde_json` for the model, `maud` for HTML, `pulldown-cmark` for markdown, `sha2` for hashing. `assert_cmd` + `predicates` for CLI tests.
 
-**Spec:** `docs/superpowers/specs/2026-09-06-artefacto-design.md`
+**Spec:** `docs/specs/2026-09-06-artefacto-design.md`
 
 **Source repo:** loadout lives at `/Users/ellery/_git/rosita`. Referred to below as `$ROSITA`. Nothing in this plan modifies it. Removing loadout's copy happens in a later plan, so the two coexist until then.
 
@@ -2173,8 +2173,8 @@ Early. The static renderer works: `artefacto plan check`, `render`, and
 HTML page. The interactive server, the page rewrite, and the artifact index
 are not built yet.
 
-The design spec is in `docs/superpowers/specs/`, and the implementation plans
-are in `docs/superpowers/plans/`.
+The design spec is in `docs/specs/`, and the implementation plans
+are in `docs/plans/`.
 ```
 
 - [ ] **Step 5: Run the full gate**

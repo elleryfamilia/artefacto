@@ -20,8 +20,8 @@ Early. The static renderer works: `artefacto plan check`, `render`, and
 HTML page. The interactive server, the page rewrite, and the artifact index
 are not built yet.
 
-The design spec is in `docs/superpowers/specs/`, and the implementation plans
-are in `docs/superpowers/plans/`.
+The design spec is in `docs/specs/`, and the implementation plans
+are in `docs/plans/`.
 
 ## License
 
