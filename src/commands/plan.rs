@@ -333,8 +333,14 @@ fn status(file: &Path, out: Option<&Path>, json: bool) -> Result<()> {
     } else {
         match state {
             "fresh" => println!("render: fresh ({})", target.display()),
-            "stale" => println!("render: stale — re-run `artefacto plan render`"),
-            _ => println!("render: none — run `artefacto plan render`"),
+            "stale" => println!(
+                "render: stale ({}) — re-run `artefacto plan render`",
+                target.display()
+            ),
+            _ => println!(
+                "render: none ({}) — run `artefacto plan render`",
+                target.display()
+            ),
         }
     }
 
