@@ -469,7 +469,10 @@ fn every_json_result_carries_a_boolean_ok() {
         .stdout
         .clone();
     let doc: serde_json::Value = serde_json::from_slice(&check_out).unwrap();
-    assert!(doc["ok"].is_boolean(), "check --json must carry ok");
+    assert_eq!(
+        doc["ok"], true,
+        "check --json on a valid plan must report ok: true"
+    );
 
     let render_out = bin()
         .args([
@@ -487,7 +490,10 @@ fn every_json_result_carries_a_boolean_ok() {
         .stdout
         .clone();
     let doc: serde_json::Value = serde_json::from_slice(&render_out).unwrap();
-    assert!(doc["ok"].is_boolean(), "render --json must carry ok");
+    assert_eq!(
+        doc["ok"], true,
+        "render --json on a successful render must report ok: true"
+    );
 
     let status_ok = bin()
         .args([
@@ -504,9 +510,9 @@ fn every_json_result_carries_a_boolean_ok() {
         .stdout
         .clone();
     let doc: serde_json::Value = serde_json::from_slice(&status_ok).unwrap();
-    assert!(
-        doc["ok"].is_boolean(),
-        "status --json success must carry ok"
+    assert_eq!(
+        doc["ok"], true,
+        "status --json on a fresh render must report ok: true"
     );
     assert_eq!(doc["state"], "fresh");
 
