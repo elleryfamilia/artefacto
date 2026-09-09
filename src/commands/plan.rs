@@ -189,6 +189,12 @@ fn report_write_failure(file: &Path, target: &Path, message: String, json: bool)
     Err(UsageReported.into())
 }
 
+/// Whether to open the rendered page. A JSON caller is a program, not a
+/// person, so it never wants a window — even without `--no-open`.
+fn should_open(no_open: bool, json: bool) -> bool {
+    !no_open && !json
+}
+
 fn render(file: &Path, out: Option<&Path>, no_open: bool, json: bool) -> Result<()> {
     let checked = match check_one(file, false) {
         Ok(ok) => ok,
@@ -261,7 +267,7 @@ fn render(file: &Path, out: Option<&Path>, no_open: bool, json: bool) -> Result<
         }
     }
 
-    if !no_open {
+    if should_open(no_open, json) {
         crate::paths::open_browser(&crate::paths::file_url(&target));
     }
     Ok(())
@@ -336,5 +342,30 @@ fn status(file: &Path, out: Option<&Path>, json: bool) -> Result<()> {
         Ok(())
     } else {
         Err(ReportedFailure.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_open;
+
+    #[test]
+    fn opens_by_default() {
+        assert!(should_open(false, false));
+    }
+
+    #[test]
+    fn no_open_flag_suppresses_it() {
+        assert!(!should_open(true, false));
+    }
+
+    #[test]
+    fn json_suppresses_it_even_without_no_open() {
+        assert!(!should_open(false, true));
+    }
+
+    #[test]
+    fn no_open_and_json_together_still_suppress_it() {
+        assert!(!should_open(true, true));
     }
 }
