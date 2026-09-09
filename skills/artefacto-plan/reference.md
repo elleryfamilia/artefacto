@@ -251,6 +251,35 @@ parses and validates cleanly.
 
 ```
 
+## Command contract
+
+Four subcommands under `artefacto plan`:
+
+| command | does |
+|---------|------|
+| `check <files...>` | validates one or more plan files against this schema |
+| `render <file>` | validates, then writes a self-contained HTML page |
+| `status <file>` | reports whether a previously rendered page still matches the plan |
+| `schema` | prints this reference |
+
+`check`, `render`, and `status` all accept `--json`. `render` also takes
+`--out <path>` (default `plan.html`) and `--no-open`; `--json` implies
+`--no-open` too, since a program reading JSON on stdout never wants a
+browser window opened for it. `check` also takes `--lenient` (see above).
+
+Exit codes, uniform across commands:
+
+| code | meaning |
+|------|---------|
+| 0 | success |
+| 1 | the document read fine but failed validation, or a render is stale or missing |
+| 2 | a usage or IO problem: an unreadable file, a bad argument, a failed write |
+
+Every JSON result carries a boolean `ok`. `status --json` additionally
+always carries `state`, one of `fresh`, `stale`, `none`, or `unknown`
+(`unknown` when the plan itself couldn't be read or validated, so
+freshness can't be determined either).
+
 ## Feedback contract
 
 The rendered page's "Copy feedback" button builds one JSON document,
