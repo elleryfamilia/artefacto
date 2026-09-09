@@ -258,14 +258,18 @@ Four subcommands under `artefacto plan`:
 | command | does |
 |---------|------|
 | `check <files...>` | validates one or more plan files against this schema |
-| `render <file>` | validates, then writes a self-contained HTML page |
-| `status <file>` | reports whether a previously rendered page still matches the plan |
+| `render <file>` | validates, then writes a self-contained HTML page to `--out <path>` (default `plan.html`) |
+| `status <file>` | reports whether a previously rendered page still matches the plan; `--out <path>` picks which rendered file to compare against (default `plan.html`, same as `render`) |
 | `schema` | prints this reference |
 
+If you render to a custom `--out` path, pass that same path to `status`, or
+it will compare against the default location and report the render as
+missing.
+
 `check`, `render`, and `status` all accept `--json`. `render` also takes
-`--out <path>` (default `plan.html`) and `--no-open`; `--json` implies
-`--no-open` too, since a program reading JSON on stdout never wants a
-browser window opened for it. `check` also takes `--lenient` (see above).
+`--no-open`; `--json` implies `--no-open` too, since a program reading JSON
+on stdout never wants a browser window opened for it. `check` also takes
+`--lenient` (see above).
 
 Exit codes, uniform across commands:
 
