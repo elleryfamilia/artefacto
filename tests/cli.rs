@@ -414,15 +414,43 @@ fn schema_prints_the_reference() {
 #[test]
 fn no_command_output_mentions_loadout() {
     // artefacto is a separate project. Someone using it will not have loadout
-    // and should never see its name.
-    for args in [
+    // and should never see its name — including when their plan.json still
+    // carries loadout's old format string, and including whatever a command
+    // writes to stderr, not just stdout.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("plan.html");
+    let out_str = out.to_str().unwrap().to_string();
+    let legacy = fixture("legacy-format.json");
+
+    let cases: Vec<Vec<&str>> = vec![
         vec!["plan", "schema"],
         vec!["--help"],
         vec!["plan", "--help"],
-    ] {
-        let out = bin().args(&args).assert().get_output().stdout.clone();
-        let text = String::from_utf8_lossy(&out).to_lowercase();
-        assert!(!text.contains("loadout"), "`{args:?}` mentioned loadout");
+        vec!["plan", "check", legacy.as_str()],
+        vec!["plan", "check", "--json", legacy.as_str()],
+        vec![
+            "plan",
+            "render",
+            "--json",
+            legacy.as_str(),
+            "--out",
+            out_str.as_str(),
+        ],
+    ];
+
+    for args in cases {
+        let assert = bin().args(&args).assert().success();
+        let output = assert.get_output();
+        let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+        assert!(
+            !stdout.contains("loadout"),
+            "`{args:?}` mentioned loadout on stdout: {stdout}"
+        );
+        assert!(
+            !stderr.contains("loadout"),
+            "`{args:?}` mentioned loadout on stderr: {stderr}"
+        );
     }
 }
 
