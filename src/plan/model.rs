@@ -229,7 +229,7 @@ pub fn parse(input: &str, lenient: bool) -> Result<Parsed, Vec<Issue>> {
             format_warning = Some(Issue::new(
                 "/format",
                 "deprecated_format",
-                format!("\"{LEGACY_FORMAT}\" is deprecated; write \"{FORMAT}\" instead"),
+                format!("the plan's format string is deprecated; write \"{FORMAT}\" instead"),
             ));
         }
         Some(f) if f.starts_with("artefacto.plan/") => {
