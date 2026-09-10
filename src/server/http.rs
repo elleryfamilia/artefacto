@@ -41,6 +41,7 @@ pub struct Shared {
     pub commit: Mutex<()>,
     pub log: Mutex<EventLog>,
     pub core: Mutex<Core>,
+    pub sockets: crate::server::socket::PageSockets,
     pub secret: String,
     /// Derived from `secret`, so it survives a restart. Never the secret.
     pub page_cookie: String,
@@ -57,6 +58,7 @@ impl Shared {
                 bootstrap: HashMap::new(),
                 last_request_at: Instant::now(),
             }),
+            sockets: Default::default(),
             page_cookie: derive_credential(&secret, "page-cookie"),
             secret,
             port,
@@ -103,7 +105,10 @@ pub fn run(shared: Arc<Shared>, server: Arc<tiny_http::Server>, idle: Duration) 
 /// be able to hold the daemon open, and a page connected over a WebSocket
 /// sends no further HTTP requests but is very much present.
 fn should_self_exit(shared: &Arc<Shared>, idle: Duration) -> bool {
-    // Page and lease counts join this predicate as those subsystems land.
+    if crate::server::socket::page_count(shared) > 0 {
+        return false;
+    }
+    // The lease joins this predicate when that subsystem lands.
     let quiet = {
         let core = shared.core.lock().unwrap();
         core.last_request_at.elapsed()
@@ -122,6 +127,15 @@ fn handle(shared: Arc<Shared>, request: Request) {
     }
     let url = request.url().to_string();
 
+    if url == "/ws" {
+        return crate::server::socket::handle_upgrade(&shared, request);
+    }
+    if let Some(token) = url.strip_prefix("/b/") {
+        return crate::server::page::handle_bootstrap(&shared, request, token);
+    }
+    if let Some(artifact) = url.strip_prefix("/a/") {
+        return crate::server::page::serve_page(&shared, request, artifact);
+    }
     if url == "/healthz" {
         let _ = request.respond(json_response(200, "{\"ok\":true}"));
         return;

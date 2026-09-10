@@ -15,4 +15,6 @@ pub mod daemon;
 pub mod event;
 pub mod http;
 pub mod log;
+pub mod page;
+pub mod socket;
 pub mod state_dir;

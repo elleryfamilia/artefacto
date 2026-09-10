@@ -189,3 +189,185 @@ pub fn wait_for(mut cond: impl FnMut() -> bool, what: &str) {
     }
     panic!("timed out waiting: {what}");
 }
+
+// ---------------------------------------------------------------------------
+// In-process server, for tests that need to reach into `Shared` — broadcasting
+// a frame, counting pages, inspecting the log. The lifecycle tests drive the
+// real binary instead; both are real servers over real TCP.
+// ---------------------------------------------------------------------------
+
+use artefacto::server::http::{run, Shared};
+use std::sync::Arc;
+
+pub struct InProcess {
+    pub port: u16,
+    pub shared: Arc<Shared>,
+    pub dir: Option<tempfile::TempDir>,
+    server: Arc<tiny_http::Server>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl InProcess {
+    pub fn start() -> InProcess {
+        InProcess::start_with_idle(std::time::Duration::from_secs(3600))
+    }
+
+    pub fn start_with_idle(idle: std::time::Duration) -> InProcess {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let secret = artefacto::server::state_dir::new_secret();
+        InProcess::boot(dir, secret, idle)
+    }
+
+    fn boot(dir: tempfile::TempDir, secret: String, idle: std::time::Duration) -> InProcess {
+        let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").expect("bind"));
+        let port = server.server_addr().to_ip().expect("ip").port();
+        let shared = Arc::new(Shared::new(dir.path(), secret, port).expect("shared"));
+        let s = Arc::clone(&server);
+        let sh = Arc::clone(&shared);
+        let thread = std::thread::spawn(move || run(sh, s, idle));
+        InProcess {
+            port,
+            shared,
+            dir: Some(dir),
+            server,
+            thread: Some(thread),
+        }
+    }
+
+    /// Stop this server and start a new one over the **same** state directory
+    /// and secret. Everything the new server knows, it read from the log.
+    pub fn restart(mut self) -> InProcess {
+        let dir = self.dir.take().expect("a harness restarts once per step");
+        let secret = self.shared.secret.clone();
+        self.shutdown();
+        InProcess::boot(dir, secret, std::time::Duration::from_secs(3600))
+    }
+
+    fn shutdown(&mut self) {
+        self.shared.request_stop();
+        self.server.unblock();
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+
+    pub fn origin(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    pub fn get(&self, path: &str, headers: &[(&str, &str)]) -> String {
+        let mut req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n", self.port);
+        for (k, v) in headers {
+            req.push_str(&format!("{k}: {v}\r\n"));
+        }
+        req.push_str("Connection: close\r\n\r\n");
+        raw(self.port, &req)
+    }
+
+    pub fn mint(&self, artifact: &str) -> String {
+        artefacto::server::page::mint_bootstrap(&self.shared, artifact).expect("valid id")
+    }
+
+    /// Walks the real bootstrap redirect and returns the cookie it set. Not a
+    /// shortcut through `Shared`: a harness that skips the code under test
+    /// proves nothing.
+    pub fn session_cookie(&self, artifact: &str) -> String {
+        let token = self.mint(artifact);
+        let response = self.get(&format!("/b/{token}"), &[]);
+        response
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("set-cookie:"))
+            .and_then(|l| l.split_once(": ").map(|(_, v)| v))
+            .and_then(|v| v.split(';').next())
+            .expect("bootstrap must set a cookie")
+            .trim()
+            .to_string()
+    }
+
+    pub fn page_count(&self) -> usize {
+        artefacto::server::socket::page_count(&self.shared)
+    }
+
+    /// A frame carrying one real event; spec 6.1 says a frame has one or more.
+    pub fn broadcast_test_frame(&self, seq: u64) {
+        let event = artefacto::server::event::Event {
+            format: artefacto::server::event::EVENT_FORMAT.to_string(),
+            seq,
+            ts: "2026-09-09T00:00:00Z".to_string(),
+            artifact: "plan:x".to_string(),
+            revision: 1,
+            actor: artefacto::server::event::Actor::Reviewer,
+            r#type: "thread.opened".to_string(),
+            data: serde_json::json!({ "thread": "c-1" }),
+        };
+        let frame = artefacto::server::event::Frame::of(vec![event]);
+        artefacto::server::socket::broadcast(&self.shared, &frame);
+    }
+
+    pub fn connect_page(&self) -> FakePage {
+        let cookie = self.session_cookie("plan:x");
+        self.connect_page_raw(Some(&cookie), Some(&self.origin()))
+            .expect("a cookie and a matching origin must be enough")
+    }
+
+    pub fn connect_page_raw(
+        &self,
+        cookie: Option<&str>,
+        origin: Option<&str>,
+    ) -> Result<FakePage, String> {
+        use tungstenite::client::IntoClientRequest;
+        let mut req = format!("ws://127.0.0.1:{}/ws", self.port)
+            .into_client_request()
+            .map_err(|e| e.to_string())?;
+        if let Some(c) = cookie {
+            req.headers_mut().insert("Cookie", c.parse().unwrap());
+        }
+        if let Some(o) = origin {
+            req.headers_mut().insert("Origin", o.parse().unwrap());
+        }
+        // Keep the stream type tungstenite returns. Unwrapping it and
+        // rebuilding with `from_raw_socket` discards the codec's buffer,
+        // losing any frame that arrived right after the handshake.
+        tungstenite::connect(req)
+            .map(|(ws, _)| FakePage { ws })
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Drop for InProcess {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+pub struct FakePage {
+    ws: tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
+}
+
+impl FakePage {
+    /// Bounded, so a regression is a failing test rather than a hung job.
+    pub fn next_frame(&mut self) -> serde_json::Value {
+        self.set_deadline(Some(std::time::Duration::from_secs(5)));
+        loop {
+            match self.ws.read().expect("the socket must stay open") {
+                tungstenite::Message::Text(t) => {
+                    return serde_json::from_str(&t).expect("frames are JSON")
+                }
+                tungstenite::Message::Close(_) => panic!("the server closed the socket"),
+                _ => continue,
+            }
+        }
+    }
+
+    /// True when nothing arrives within `d`.
+    pub fn no_frame_within(&mut self, d: std::time::Duration) -> bool {
+        self.set_deadline(Some(d));
+        self.ws.read().is_err()
+    }
+
+    fn set_deadline(&mut self, d: Option<std::time::Duration>) {
+        if let tungstenite::stream::MaybeTlsStream::Plain(s) = self.ws.get_mut() {
+            let _ = s.set_read_timeout(d);
+        }
+    }
+}
