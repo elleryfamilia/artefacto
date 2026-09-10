@@ -27,10 +27,11 @@
 
 ## Plan set
 
-This is plan 1 of 6. The spec's v1 covers several subsystems that each ship working software on their own, so it is split rather than written as one document:
+This is plan 1 of 7. The spec's v1 covers several subsystems that each ship working software on their own, so it is split rather than written as one document. Item 2 was written as one plan, reviewed, and split in two: it drew 42 findings, and they clustered on the seam between transport and the event model.
 
 1. **Extraction** (this plan) — the binary, the moved renderer, static commands.
-2. **Server core** — event log, sequence and cursors, lease and session tokens, HTTP and WebSocket, security, `serve`/`stop`/`status`/`open`, and the agent verbs against a fake page client.
+2. **2a: Server transport and lifecycle** (`2026-09-09-artefacto-server-transport.md`) — state directory, event log, HTTP and WebSocket, loopback security, `serve`/`stop`/`status`/`open`, the daemon. Ships a server you can start and open a page against.
+   **2b: The event model and agent verbs** (`2026-09-09-artefacto-event-model.md`) — the fold, page ingress, lease and session tokens, delivery cursors, `push`/`events`/`await`/`ack`/`reply`/`resolve`, presence, the feedback document. Tested against a fake page client.
 3. **The page** — re-entrant mount, server-side store, in-place revision swap, threads, chat, submit.
 4. **The artifact index** — registry, drawn posters, `list`, the index page.
 5. **Skill package and releases** — `skill --print` manifest, `skill --install`, cargo-dist.
