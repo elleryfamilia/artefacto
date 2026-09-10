@@ -54,6 +54,9 @@ const OUTBOUND_QUEUE: usize = 256;
 /// nudge, so a stale count is not harmless.
 const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// The first frame on every socket, carrying the page's own id.
+pub const HELLO_FORMAT: &str = "artefacto.hello/1";
+
 /// `Request::upgrade` hands back a boxed `ReadWrite`, which does not itself
 /// implement `Read` and `Write`. Delegating through a newtype is the fix.
 struct Sock(Box<dyn tiny_http::ReadWrite + Send>);
@@ -159,6 +162,15 @@ pub fn handle_upgrade(shared: &Arc<Shared>, request: Request) {
         .lock()
         .unwrap()
         .push(PageHandle { id, tx });
+
+    // Always the first frame. The page needs its own id so it can put it in
+    // the commands it POSTs; `broadcast_except` then skips it, and it does not
+    // count its own change twice.
+    let hello = serde_json::json!({ "format": HELLO_FORMAT, "page": id }).to_string();
+    if ws.send(Message::text(hello)).is_err() {
+        shared.sockets.pages.lock().unwrap().retain(|p| p.id != id);
+        return;
+    }
 
     // This thread owns the socket for its whole life and only ever writes.
     // There is no reader, so nothing can be blocked by a page that is simply

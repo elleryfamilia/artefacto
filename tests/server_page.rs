@@ -211,6 +211,7 @@ fn a_quiet_page_does_not_block_a_broadcast() {
     // never sends anything, which is what a page being read looks like.
     let s = InProcess::start();
     let mut page = s.connect_page();
+    page.hello();
     s.broadcast_test_frame(7);
     let frame = page.next_frame();
     assert_eq!(frame["format"], "artefacto.frame/1");
@@ -234,6 +235,8 @@ fn two_pages_both_receive_a_broadcast() {
     let s = InProcess::start();
     let mut a = s.connect_page();
     let mut b = s.connect_page();
+    a.hello();
+    b.hello();
     wait_for(|| s.page_count() == 2, "both pages registered");
     s.broadcast_test_frame(3);
     assert_eq!(a.next_frame()["seq"], 3);

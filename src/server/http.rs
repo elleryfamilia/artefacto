@@ -40,6 +40,11 @@ pub struct Core {
     /// the reviewer's is separate, because an agent polling every 90 seconds
     /// is not the reviewer doing anything.
     pub last_request_at: Instant,
+    /// When the reviewer last did anything, marked by ingress. Separate from
+    /// `last_request_at` on purpose: an `await` long poll is an HTTP request
+    /// every 90 seconds, so one field for both would mean the idle nudge could
+    /// never fire while an agent was attached.
+    pub last_reviewer_activity_at: Instant,
 }
 
 pub struct Shared {
@@ -68,6 +73,7 @@ impl Shared {
                 review,
                 bootstrap: HashMap::new(),
                 last_request_at: Instant::now(),
+                last_reviewer_activity_at: Instant::now(),
             }),
             sockets: Default::default(),
             page_cookie: derive_credential(&secret, "page-cookie"),
@@ -144,8 +150,11 @@ fn handle(shared: Arc<Shared>, request: Request) {
     if let Some(token) = url.strip_prefix("/b/") {
         return crate::server::page::handle_bootstrap(&shared, request, token);
     }
-    if let Some(artifact) = url.strip_prefix("/a/") {
-        return crate::server::page::serve_page(&shared, request, artifact);
+    if let Some(rest) = url.strip_prefix("/a/") {
+        if let Some(artifact) = rest.strip_suffix("/cmd") {
+            return crate::server::ingress::handle_command(&shared, request, artifact);
+        }
+        return crate::server::page::serve_page(&shared, request, rest);
     }
     if url == "/healthz" {
         let _ = request.respond(json_response(200, "{\"ok\":true}"));

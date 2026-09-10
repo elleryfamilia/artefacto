@@ -371,3 +371,110 @@ impl FakePage {
         }
     }
 }
+
+impl InProcess {
+    /// Push a minimal valid plan straight through the committer, so tests that
+    /// need an artifact do not need the whole `push` command.
+    pub fn seed_artifact(&self) -> String {
+        use artefacto::server::event::Actor;
+        use artefacto::server::http::Committer;
+        let c = Committer::open(&self.shared);
+        c.append(
+            "plan:demo",
+            1,
+            Actor::Agent,
+            "revision.published",
+            serde_json::json!({
+                "plan": {
+                    "format": "artefacto.plan/1",
+                    "meta": { "id": "demo", "title": "Demo" },
+                    "phases": [{ "id": "p-one", "tasks": [{ "id": "t-a" }, { "id": "t-b" }] }]
+                },
+                "plan_hash": "sha256:abc",
+                "source_path": "/tmp/demo.json",
+                "summary": "first"
+            }),
+        )
+        .expect("seed");
+        "plan:demo".to_string()
+    }
+
+    pub fn last_seq(&self) -> u64 {
+        self.shared.log.lock().unwrap().last_seq()
+    }
+
+    pub fn thread_count(&self) -> usize {
+        artefacto::server::http::with_review(&self.shared, |r| {
+            r.artifacts
+                .get("plan:demo")
+                .map(|a| a.threads.len())
+                .unwrap_or(0)
+        })
+    }
+
+    pub fn thread_status(&self, id: &str) -> String {
+        artefacto::server::http::with_review(&self.shared, |r| {
+            r.artifacts
+                .get("plan:demo")
+                .and_then(|a| a.thread(id))
+                .map(|t| t.status.as_str().to_string())
+                .unwrap_or_else(|| "missing".to_string())
+        })
+    }
+
+    pub fn reviewer_idle_for(&self) -> std::time::Duration {
+        self.shared
+            .core
+            .lock()
+            .unwrap()
+            .last_reviewer_activity_at
+            .elapsed()
+    }
+
+    /// POST a command the way the page will, with the cookie and a strict
+    /// Origin. Returns the parsed reply.
+    pub fn post_cmd(
+        &self,
+        cookie: &str,
+        artifact: &str,
+        body: serde_json::Value,
+    ) -> serde_json::Value {
+        let payload = body.to_string();
+        let req = format!(
+            "POST /a/{artifact}/cmd HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {cookie}\r\n\
+             Origin: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n{payload}",
+            self.port,
+            self.origin(),
+            payload.len()
+        );
+        let response = raw(self.port, &req);
+        let body = response.split("\r\n\r\n").nth(1).unwrap_or("");
+        serde_json::from_str(body).unwrap_or_else(|e| panic!("reply was not json: {e}\n{response}"))
+    }
+
+    /// A raw POST, so a test can send a wrong Origin or a bad method.
+    pub fn post_cmd_raw(&self, headers: &str, artifact: &str, body: &str) -> String {
+        raw(
+            self.port,
+            &format!(
+                "POST /a/{artifact}/cmd HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{headers}\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                self.port,
+                body.len()
+            ),
+        )
+    }
+}
+
+impl FakePage {
+    /// The first frame every socket sends, carrying this page's own id.
+    pub fn hello(&mut self) -> u64 {
+        let frame = self.next_frame();
+        assert_eq!(
+            frame["format"], "artefacto.hello/1",
+            "hello is always first"
+        );
+        frame["page"].as_u64().expect("a page id")
+    }
+}
