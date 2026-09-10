@@ -27,6 +27,10 @@ maud = "0.26"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 sha2 = "0.10"
 anyhow = "1"
+tiny_http = "0.12"
+tungstenite = "0.30"
+libc = "0.2.189"
+getrandom = "0.4.3"
 
 [dev-dependencies]
 assert_cmd = "2"

@@ -7,3 +7,5 @@ pub mod markdown;
 pub mod marker;
 pub mod paths;
 pub mod plan;
+
+pub mod server;

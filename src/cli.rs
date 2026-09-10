@@ -18,6 +18,29 @@ pub struct Cli {
 pub enum Command {
     /// Work with plan artifacts.
     Plan(PlanArgs),
+    /// Start the review server for this repository.
+    Serve(ServeArgs),
+    /// Stop the running server.
+    Stop,
+    /// Report what the server is doing.
+    Status {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct ServeArgs {
+    /// Bind this port instead of the recorded one.
+    #[arg(long)]
+    pub port: Option<u16>,
+    /// Stay in the foreground instead of daemonizing.
+    #[arg(long)]
+    pub foreground: bool,
+    /// Do not open a browser.
+    #[arg(long)]
+    pub no_open: bool,
 }
 
 #[derive(Args, Debug)]
