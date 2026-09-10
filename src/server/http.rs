@@ -13,7 +13,9 @@
 //! No blocking operation runs while `core` or `sockets` is held: no socket
 //! write, no `fsync`, no long poll, no browser launch.
 
+use crate::server::event::{Actor, Event};
 use crate::server::log::EventLog;
+use crate::server::review::Review;
 use crate::server::state_dir::derive_credential;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -28,6 +30,10 @@ use tiny_http::{Header, Request, Response};
 pub const SELF_EXIT: Duration = Duration::from_secs(30 * 60);
 
 pub struct Core {
+    /// Every piece of review state, folded from the log. Never written
+    /// directly: `Committer` is the only path, so this and the log cannot
+    /// disagree.
+    pub review: Review,
     /// Bootstrap token -> (artifact, issued).
     pub bootstrap: HashMap<String, (String, Instant)>,
     /// Last authenticated CLI request. Only one of the two activity clocks:
@@ -51,10 +57,15 @@ pub struct Shared {
 
 impl Shared {
     pub fn new(dir: &Path, secret: String, port: u16) -> Result<Shared> {
+        let log = EventLog::open(dir)?;
+        // The single source of truth, read once at start. Everything the
+        // server knows about a review, it read from here.
+        let review = crate::server::fold::fold(log.since(0));
         Ok(Shared {
             commit: Mutex::new(()),
-            log: Mutex::new(EventLog::open(dir)?),
+            log: Mutex::new(log),
             core: Mutex::new(Core {
+                review,
                 bootstrap: HashMap::new(),
                 last_request_at: Instant::now(),
             }),
@@ -231,4 +242,70 @@ pub fn json_response(status: u16, body: &str) -> Response<Cursor<Vec<u8>>> {
 pub fn error_response(status: u16, code: &str, message: &str) -> Response<Cursor<Vec<u8>>> {
     let body = serde_json::json!({ "ok": false, "error": { "code": code, "message": message } });
     json_response(status, &body.to_string())
+}
+
+/// The mutation gate: the only way to append to the log.
+///
+/// Holding it spans deciding, appending, and folding. That is the point.
+/// Appending under the log lock, releasing it, and folding under `core` as two
+/// separate critical sections lets two threads interleave — A appends, B
+/// appends and folds, A folds — after which the in-memory `Review` is no
+/// longer `fold(log)`. Nothing detects that at the time; it surfaces later as
+/// a thread with the wrong status or an id handed out twice.
+///
+/// It also makes read-decide-write atomic, which ingress needs: assigning
+/// `c-<n>` and checking a `client_id` for a duplicate have to happen in the
+/// same breath as the append, or two tabs race.
+///
+/// Lock order: `commit` is outermost, then `log`, then `core`. Never hold
+/// `core` across the append's `fsync` — this type does not.
+pub struct Committer<'a> {
+    shared: &'a Shared,
+    _gate: std::sync::MutexGuard<'a, ()>,
+}
+
+impl<'a> Committer<'a> {
+    pub fn open(shared: &'a Shared) -> Committer<'a> {
+        let gate = shared.commit.lock().unwrap();
+        Committer {
+            shared,
+            _gate: gate,
+        }
+    }
+
+    /// Read the folded state while the gate is held, so a decision taken here
+    /// is still true when the append lands.
+    pub fn with_review<R>(&self, f: impl FnOnce(&Review) -> R) -> R {
+        let core = self.shared.core.lock().unwrap();
+        f(&core.review)
+    }
+
+    /// Append one event and fold it. The two happen under this gate, so the
+    /// log and the `Review` move together.
+    pub fn append(
+        &self,
+        artifact: &str,
+        revision: u32,
+        actor: Actor,
+        kind: &str,
+        data: serde_json::Value,
+    ) -> Result<Event> {
+        // `log` is held across fsync — that is why it is its own lock — but
+        // `core` is not held at the same time.
+        let event = {
+            let mut log = self.shared.log.lock().unwrap();
+            log.append(artifact, revision, actor, kind, data)?
+        };
+        {
+            let mut core = self.shared.core.lock().unwrap();
+            crate::server::fold::apply(&mut core.review, &event);
+        }
+        Ok(event)
+    }
+}
+
+/// Read the folded state without intending to change it. Takes `core` only.
+pub fn with_review<R>(shared: &Shared, f: impl FnOnce(&Review) -> R) -> R {
+    let core = shared.core.lock().unwrap();
+    f(&core.review)
 }
