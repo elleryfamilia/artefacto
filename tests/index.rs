@@ -661,7 +661,7 @@ fn a_render_of_a_live_artifact_keeps_the_reviews_facts() {
     let index_path = l.repo.state_dir().join("index.json");
     let mut file: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&index_path).unwrap()).unwrap();
-    file["artifacts"][0]["revised_at"] = serde_json::json!("2026-09-01T00:00:00Z");
+    file["artifacts"][0]["revised_at"] = serde_json::json!("2026-08-01T00:00:00Z");
     std::fs::write(&index_path, file.to_string()).unwrap();
 
     let out = render(&l.repo, &l.plan, "plan.html");
@@ -670,10 +670,10 @@ fn a_render_of_a_live_artifact_keeps_the_reviews_facts() {
     assert_eq!(row["revision"], 1, "still the pushed revision: {row}");
     assert_eq!(row["open_threads"], 1);
     assert_eq!(
-        row["revised_at"], "2026-09-01T00:00:00Z",
+        row["revised_at"], "2026-08-01T00:00:00Z",
         "the revision's time, not the render's"
     );
-    assert_eq!(row["age"], "on 2026-09-01");
+    assert_eq!(row["age"], "on 2026-08-01");
     assert_eq!(
         row["rendered_path"],
         real(&l.repo).join("plan.html").display().to_string()
