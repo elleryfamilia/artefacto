@@ -368,7 +368,7 @@ artefacto reply  --session TOKEN (--thread ID | --artifact ID) [--nudge] (<text>
 artefacto resolve <thread-id> --session TOKEN (--changed | --declined) [--note TEXT]
 
 artefacto skill (--print | --install DIR)
-artefacto clean
+artefacto clean [--json]             # --json added in plan 4, as every other command has it
 ```
 
 Behaviour that matters:
