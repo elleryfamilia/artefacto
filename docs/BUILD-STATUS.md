@@ -21,8 +21,8 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-410 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
-clean. Fifty-two of the tests run the served page in a headless Chromium;
+413 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+clean. Fifty-five of the tests run the served page in a headless Chromium;
 they skip with a printed line on a machine without one (see "Plan 3" below).
 
 | area | file | notes |
@@ -293,7 +293,7 @@ one the tests print a skip line and pass, and `ARTEFACTO_REQUIRE_BROWSER=1`
 makes that a failure. **CI must install a Chromium or set that variable**, or
 the browser suite is silently green.
 
-The fifty-two tests cover the loop end to end and the races spec 14 names:
+The fifty-five tests cover the loop end to end and the races spec 14 names:
 a push while typing (draft kept, `opened_revision` is the old one), a draft
 and a thread whose element was removed (recovery panel, re-anchoring when it
 returns), focus and caret across a push, scroll anchored to an element across
@@ -542,8 +542,38 @@ before "gone" (bounded); a re-push during a socket outage can flicker the
 "gone" notice once; the end-of-backoff wording says whether HTTP answered.
 
 The mutation pass caught five of six (two after adding the assertions they
-lacked). The survivor is the summary handler's exclusion of error lines,
-which the line's own click handler makes redundant.
+lacked). The survivor was the summary handler's exclusion of error lines,
+which the line's own click handler made redundant; round eleven removed it.
+
+## Review round eleven: the fifth fix slice, reviewed fresh
+
+A seventh fresh reviewer read commit `270cdef` and drove it. Two confirmed
+defects, one a regression from round ten, and three test findings, all
+closed in commit `3403a82`:
+
+1. **A push after a sent chat message left the open panel with nowhere to
+   write.** Round ten's lazy composer stores no draft until typed into, and
+   a body swap restores composers from drafts only. An open panel now always
+   gets a composer after the drafts are restored.
+2. **The superseded-probe timer could probe again on a live socket.** A
+   superseding resync that swapped the body reconnected the socket through
+   mount; the timer then ran the probe anyway, and a failed snapshot read as
+   "server gone" while frames were still arriving. A superseded probe now
+   counts as an answered one, bounded like it; nothing schedules a reconnect
+   while a socket is open; Retry clears the notice it answers.
+3. **Three waits were satisfied before the reply they named**, because the
+   pending-mark count counts keys, not replies. They wait on the page's
+   buffer and applied counts.
+4. **The lost block in a resync had no test**; a test found it also left a
+   pending mark behind, which it now clears.
+5. **The summary handler's exclusion of error lines was dead code**; the
+   line's `preventDefault` is the mechanism. Removed, with the redundant
+   `stopPropagation`.
+
+The mutation pass caught three of five. The survivors are the two
+live-socket guards: with the timer gone, a superseded probe's own
+`connect()` is a no-op on a live socket, so nothing reaches them. They stay
+as defence.
 
 ## Where the code diverges from plan 2b, with the reason
 
@@ -704,7 +734,11 @@ chat send, the toggle error never cleared, and changed-to-declined not
 counted. Round ten's fixes: superseded read as gone, the error line's click
 not stopped, (survived, redundant) the summary handler not ignoring error
 lines, the buffer drained in arrival order, a post-send chat composer
-storing an empty draft, and a lost page left catching up.
+storing an empty draft, and a lost page left catching up. Round eleven's
+fixes: an open panel left without a composer after a swap, (survived,
+redundant) a reconnect scheduled on a live socket, superseded read as
+failed, a lost page keeping its pending marks, and (survived, redundant) a
+probe result applied on a live socket.
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,
