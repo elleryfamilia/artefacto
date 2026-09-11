@@ -359,6 +359,20 @@ fn a_cursor_survives_clean_and_new_events_number_past_the_old_mark() {
     assert_eq!(after["last_seq"], last_seq + 1);
     assert!(after["artifacts"].as_array().unwrap().is_empty());
 
+    // The record that keeps the numbering is the server's own business:
+    // an agent reading its backlog from the kept cursor hears nothing.
+    let backlog = repo.run(&["events"]);
+    backlog.success();
+    let lines: Vec<&str> = backlog.stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "the session line and no frame: {}",
+        backlog.stdout
+    );
+    assert!(lines[0].contains("artefacto.session/1"));
+    assert!(!backlog.stdout.contains("log.cleaned"));
+
     // A fresh push numbers past everything the old log ever held, so the
     // kept cursor still points below it.
     let sink = plan_in(&repo, "kitchen-sink.json", "sink.json");
