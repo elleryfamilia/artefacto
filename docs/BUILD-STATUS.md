@@ -21,8 +21,8 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-409 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
-clean. Fifty-eight of the tests run the served page in a headless Chromium;
+413 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+clean. Sixty-one of the tests run the served page in a headless Chromium;
 they skip with a printed line on a machine without one (see "Plan 3" below).
 
 | area | file | notes |
@@ -293,7 +293,7 @@ one the tests print a skip line and pass, and `ARTEFACTO_REQUIRE_BROWSER=1`
 makes that a failure. **CI must install a Chromium or set that variable**, or
 the browser suite is silently green.
 
-The fifty-eight tests cover the loop end to end and the races spec 14 names:
+The sixty-one tests cover the loop end to end and the races spec 14 names:
 a push while typing (draft kept, `opened_revision` is the old one), a draft
 and a thread whose element was removed (recovery panel, re-anchoring when it
 returns), focus and caret across a push, scroll anchored to an element across
@@ -608,6 +608,31 @@ is the polish and test-strength level, and a ninth round would be paid for
 in the same coin as the last three: one narrow finding, one regression from
 fixing it. The judgement is recorded here rather than tested for: the
 next real finding on the page will come from use, not from another read.
+
+## What the first real use found
+
+The owner opened the page against a real daemon after the twelve rounds and
+found three things in the first minute that no review had (commit
+`4320e9b`):
+
+1. **Send review worked and looked like it did nothing.** The log held four
+   `review.submitted` events, one per click; the only sign had been small
+   grey text in the bar. A sent review now puts a notice at the top saying
+   what went out, pulses the button, stamps the time, and relabels the
+   button "Send again".
+2. **A phase's comment landed after the phase's last task**, where it read
+   as a comment on that task. A phase's threads and composers sit under the
+   phase's own header, above its tasks.
+3. **A comment and an answer looked like two different things, and an
+   answer could not be edited or removed.** Both are one card now; answers
+   have Edit and Remove, and the feedback document leaves an emptied answer
+   out.
+
+Every one of these was visible in a screenshot, which is what the reviews
+never took. The browser harness can take one now (`Page::screenshot`), and
+the orientation banner on a served page says "send your review" rather
+than "copy your feedback". The lesson goes with the one from round twelve:
+the reviews found what a read finds; what a look finds is different.
 
 ## Where the code diverges from plan 2b, with the reason
 
