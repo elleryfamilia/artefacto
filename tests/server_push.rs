@@ -473,10 +473,27 @@ fn a_push_frame_carries_the_rendered_body_to_pages_and_nothing_to_agents() {
         "the event itself is what the log holds"
     );
 
-    let out = repo.run(&["await", "--timeout", "2s", "--agent", "codex", "--takeover"]);
-    let r: serde_json::Value = serde_json::from_str(out.success().stdout.trim()).unwrap();
+    // `events` prints frames whole, so it is where a body would leak. An
+    // agent never hears agent events, so a reviewer's chat closes the frame.
+    server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "chat.send", "client_id": "cid-2", "text": "seen it",
+            "opened_revision": 2,
+        }),
+    );
+    let out = repo.run(&["events", "--agent", "codex", "--takeover"]);
+    out.success();
+    let frames: Vec<serde_json::Value> = out
+        .stdout
+        .lines()
+        .skip(1)
+        .map(|l| serde_json::from_str(l).expect("a frame per line"))
+        .collect();
+    assert!(!frames.is_empty(), "the backlog has the push in it");
     assert!(
-        r.get("html").is_none(),
+        frames.iter().all(|f| f.get("html").is_none()),
         "an agent's frame comes from the log and carries no body"
     );
     assert!(
