@@ -1550,9 +1550,16 @@
   function refKind(ref) { return String(ref).split(":")[0]; }
 
   function findRef(root, ref) {
-    const els = root.querySelectorAll("[data-plan-ref]");
+    return findByAttr(root, "[data-plan-ref]", "data-plan-ref", ref);
+  }
+
+  /* The first element under `root` matching `selector` whose `attr` is
+     exactly `value`. Compared as text, never built into a selector: refs
+     and ids are data. */
+  function findByAttr(root, selector, attr, value) {
+    const els = root.querySelectorAll(selector);
     for (let i = 0; i < els.length; i++) {
-      if (els[i].getAttribute("data-plan-ref") === ref) return els[i];
+      if (els[i].getAttribute(attr) === value) return els[i];
     }
     return null;
   }
@@ -1608,6 +1615,12 @@
       lastPing: 0,
       previousTitle: null,
       own: {},
+      /* last_seq of the newest snapshot applied. A reply at or below it
+         describes an event the snapshot already held. */
+      snapshotSeq: 0,
+      /* Reviewed marks with a send in flight: ref -> { on, count }. The
+         page shows the reviewer's choice until the last reply is in. */
+      pendingMarks: {},
       timers: {},
       applied: 0,
       ui: { chatOpen: false },
@@ -1645,6 +1658,7 @@
 
     function post(cmd) {
       const body = Object.assign({ page: S.pageId }, cmd);
+      const isWrite = cmd.cmd !== "ping";
       function attempt(n) {
         return fetchBounded(S.cmdUrl, {
           method: "POST",
@@ -1660,6 +1674,10 @@
             return new Promise(function (resolve) { setTimeout(resolve, 250 * Math.pow(2, n)); })
               .then(function () { return attempt(n + 1); });
           }
+          /* The reply is lost, but the write may have landed: the server
+             skips this page when it broadcasts its own command, so only a
+             snapshot can show it. */
+          if (isWrite && !S.lost && S.connected) resync();
           throw e;
         });
       }
@@ -1686,6 +1704,10 @@
           ev.data.client_id = cmd.client_id;
           if (S.syncing) {
             S.buffer.push({ format: "artefacto.frame/1", seq: reply.seq, events: [ev], own: true });
+          } else if (reply.seq <= S.snapshotSeq) {
+            /* Committed before the newest snapshot was taken, and the
+               reply arrived after the snapshot was applied: already in. */
+            renderAll();
           } else {
             core.applyEvent(S.state, ev);
             if (reply.seq > S.state.lastSeq) S.state.lastSeq = reply.seq;
@@ -1755,11 +1777,22 @@
         /* The handshake's status is invisible to script, so a cookie that
            stopped working looks exactly like a server that stopped
            answering. One request tells them apart. */
+        let answered = false;
         fetchBounded(S.stateUrl, { credentials: "same-origin" })
-          .then(function (r) { if (r.status === 401 || r.status === 403) sessionLost(); })
+          .then(function (r) {
+            if (r.status === 401 || r.status === 403) { sessionLost(); return null; }
+            if (!r.ok) return null;
+            return r.json();
+          })
+          .then(function (snap) {
+            /* HTTP answers but the socket would not: take the state and
+               try the socket again from the top. */
+            if (snap) { answered = true; applySnapshot(snap); drain(snap.last_seq || 0); }
+          })
           .catch(function () { /* nothing answered */ })
           .then(function () {
             if (S.lost) return;
+            if (answered) { S.attempts = 0; connect(); return; }
             S.gone = true;
             notice("gone", S.stopping
               ? "The server stopped. Run `artefacto serve`, then reload this page."
@@ -1834,14 +1867,21 @@
       const fresh = core.fromSnapshot(snap);
       const previous = S.state;
       S.state = fresh;
+      S.snapshotSeq = Math.max(S.snapshotSeq, fresh.lastSeq);
       const title = function (state) {
         return state.plan && state.plan.meta ? state.plan.meta.title : null;
       };
       if (fresh.revision > previous.revision && previous.revision > 0) {
         /* A revision the page never saw as a frame: the banner still
-           belongs to the reviewer, so it is built from the snapshot. */
+           belongs to the reviewer, so it is built from the snapshot, and
+           the threads it addressed are read off the two states. */
         S.previousTitle = title(previous);
-        revisionNotice({ data: { summary: snap.summary } }, []);
+        const resolved = fresh.threads.filter(function (t) {
+          if (t.status !== "changed" && t.status !== "declined") return false;
+          const was = previous.threads.find(function (x) { return x.id === t.id; });
+          return !was || (was.status !== "changed" && was.status !== "declined");
+        }).map(function (t) { return { type: "thread.resolved", data: { thread: t.id, status: t.status } }; });
+        revisionNotice({ data: { summary: snap.summary } }, resolved);
       }
       const fingerprint = document.body.getAttribute("data-plan-fingerprint") || "";
       if (snap.html && snap.plan_hash && snap.plan_hash !== fingerprint) {
@@ -1856,7 +1896,12 @@
        of this page's own client ids is skipped: the page applied that
        write from its reply. */
     function applyFrame(frame, cursor) {
+      /* The socket carries every artifact's frames. An event that names
+         another artifact is not this review's: its thread would count
+         here and its push would swap this body. Events with no artifact
+         (presence, the stop) are about the server, and apply. */
       const events = frame.own ? frame.events : (frame.events || []).filter(function (e) {
+        if (e.artifact && e.artifact !== S.artifact) return false;
         return !(e.data && e.data.client_id && S.own[e.data.client_id]);
       });
       const before = { title: S.state.plan && S.state.plan.meta ? S.state.plan.meta.title : null };
@@ -2154,10 +2199,10 @@
       root.querySelectorAll(".reviewed-toggle").forEach(function (label) {
         const ref = label.getAttribute("data-reviewed-for");
         const box = label.querySelector("input");
-        /* A mark whose send is in flight keeps what the reviewer chose;
-           the reply will settle it. */
-        if (label.hasAttribute("data-pending")) return;
-        const on = S.state.reviewed.indexOf(ref) >= 0;
+        /* A mark whose send is in flight shows what the reviewer chose,
+           across a body swap too; the last reply settles it. */
+        const pending = S.pendingMarks[ref];
+        const on = pending ? pending.on : S.state.reviewed.indexOf(ref) >= 0;
         box.checked = on;
         label.querySelector(".reviewed-toggle-text").textContent = on ? "Reviewed" : "Mark reviewed";
         const container = label.closest("[data-plan-ref]");
@@ -2268,6 +2313,9 @@
         : "These threads' elements are no longer in the plan.";
       renderThreadsIn(panel.querySelector(".pv-threads-orphaned"), orphans);
       const list = panel.querySelector(".pv-recovery-drafts");
+      const key = drafts.map(function (d) { return d.id; }).join(" ");
+      if (list.getAttribute("data-drafts") === key) return;
+      list.setAttribute("data-drafts", key);
       list.replaceChildren();
       drafts.forEach(function (d) {
         const row = el("div", { class: "pv-orphan-draft", dataset: { composer: d.id } });
@@ -2310,8 +2358,9 @@
       if (!S.root) return null;
       if (d.kind === "chat") return document.querySelector(".pv-chat-composers");
       if (d.kind === "comment" || d.kind === "answer") {
-        const target = findRef(S.root, d.ref);
-        return target ? target.querySelector(".pv-composers") : null;
+        /* By ref, not by descent: a phase contains its tasks, and the
+           first `.pv-composers` under a phase is its first task's. */
+        return findByAttr(S.root, ".pv-composers", "data-composers-for", d.ref);
       }
       const t = S.state.threads.find(function (x) { return x.id === d.thread; });
       if (!t) return null;
@@ -2429,6 +2478,8 @@
       for (const id in map) {
         const d = map[id];
         if (!draftTarget(d)) continue;
+        /* A message half-written is not hidden behind a closed panel. */
+        if (d.kind === "chat" && !S.ui.chatOpen) { S.ui.chatOpen = true; renderChat(); }
         openComposer({ id: d.id, clientId: d.clientId, kind: d.kind, ref: d.ref, thread: d.thread,
           revision: d.revision, text: d.text, blocking: d.blocking, quote: d.quote, silent: true });
       }
@@ -2468,7 +2519,7 @@
             el("p", { class: "pv-answer-text" })));
         }
         boxHost.appendChild(el("div", { class: "pv-threads", dataset: { threadsFor: ref } }));
-        boxHost.appendChild(el("div", { class: "pv-composers" }));
+        boxHost.appendChild(el("div", { class: "pv-composers", dataset: { composersFor: ref } }));
       });
 
       /* Reviewed marks on phase and task heads, as the static page has. */
@@ -2480,13 +2531,21 @@
         label.addEventListener("click", function (e) { e.stopPropagation(); });
         box.addEventListener("change", function () {
           const on = box.checked;
-          label.setAttribute("data-pending", "");
+          const mark = S.pendingMarks[ref] || { on: on, count: 0 };
+          mark.on = on;
+          mark.count++;
+          S.pendingMarks[ref] = mark;
+          const settle = function () {
+            mark.count--;
+            if (mark.count <= 0) delete S.pendingMarks[ref];
+            renderReviewed();
+          };
           send({ cmd: "element.reviewed", ref: ref, on: on })
-            .then(function () { label.removeAttribute("data-pending"); renderReviewed(); })
+            .then(settle)
             .catch(function (e) {
-              label.removeAttribute("data-pending");
-              box.checked = !on;
-              failed(label, e);
+              settle();
+              const current = findByAttr(document, ".reviewed-toggle", "data-reviewed-for", ref);
+              if (current) failed(current, e);
             });
         });
         return label;

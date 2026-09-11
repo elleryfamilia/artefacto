@@ -1048,18 +1048,27 @@ fn a_write_made_while_catching_up_is_kept_whichever_side_of_the_snapshot_it_land
         let mut page = browser.new_page();
         page.navigate(&s.url);
         connected(&mut page);
+        comment(&mut page, "task:t-a", "before");
         catch_up_with(&s, &mut page, mode);
 
-        comment(&mut page, "task:t-a", text);
+        // A reply, not a comment: opening a thread is idempotent by id and
+        // would hide a double apply.
+        reply(&mut page, "c-1", text);
         connected(&mut page);
         assert_eq!(
             page.eval("document.querySelectorAll('.thread').length"),
             1,
+            "{mode}: one thread"
+        );
+        assert_eq!(
+            page.eval(
+                "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length"
+            ),
+            2,
             "{mode}: the page's own write survives the snapshot, once"
         );
-        assert_eq!(s.server().thread_count(), 1);
         assert_eq!(
-            debug(&mut page)["threads"][0]["messages"][0],
+            debug(&mut page)["threads"][0]["messages"][1],
             format!("reviewer: {text}")
         );
         let errors = page.errors();
@@ -1402,5 +1411,347 @@ fn a_lost_cookie_reads_as_signed_out_not_as_a_gone_server() {
     assert_eq!(
         page.eval("document.querySelector('.feedback-bar-send').disabled"),
         true
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-notice[data-kind=\"lost\"] code').textContent"),
+        "artefacto open",
+        "the command to run is set as code, not as literal backticks"
+    );
+}
+
+// --- the fix slice, reviewed fresh --------------------------------------------
+
+#[test]
+fn another_artifacts_events_do_not_touch_this_page() {
+    // The socket carries every artifact's frames. A comment on another
+    // plan must not count here, and its push must not swap this body.
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let other = s.repo.path().join("other.json");
+    std::fs::write(
+        &other,
+        std::fs::read_to_string(s.repo.path().join("plan.json"))
+            .unwrap()
+            .replace("\"id\": \"demo\"", "\"id\": \"other\"")
+            .replace("Demo plan", "Other plan"),
+    )
+    .unwrap();
+    let out = s.repo.run(&[
+        "plan",
+        "push",
+        other.to_str().unwrap(),
+        "--json",
+        "--no-open",
+        "--session",
+        &s.session,
+    ]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    let cookie = s.server().session_cookie("plan:other");
+    s.server().post_cmd(
+        &cookie,
+        "plan:other",
+        serde_json::json!({
+            "cmd": "thread.open", "client_id": "cid-other", "ref": "task:t-a",
+            "text": "on the other plan", "opened_revision": 1,
+        }),
+    );
+    std::fs::write(
+        &other,
+        std::fs::read_to_string(&other)
+            .unwrap()
+            .replace("Other plan", "Other plan, revised"),
+    )
+    .unwrap();
+    let out = s.repo.run(&[
+        "plan",
+        "push",
+        other.to_str().unwrap(),
+        "--json",
+        "--no-open",
+        "--session",
+        &s.session,
+        "--base-revision",
+        "1",
+    ]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+
+    // The page has seen both frames go by: its high-water mark moved.
+    page.wait_until(
+        &format!(
+            "window.artefactoPlan.debug().lastSeq >= {}",
+            s.server().last_seq()
+        ),
+        "the frames to have been delivered",
+    );
+    assert_eq!(page.eval("document.querySelectorAll('.thread').length"), 0);
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-count').textContent"),
+        "0 threads"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-head h1').textContent"),
+        "Demo plan"
+    );
+    assert_eq!(page.text("document.body.dataset.artefactoRevision"), "1");
+    assert_eq!(debug(&mut page)["revision"], 1);
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"revision\"]')"),
+        false
+    );
+}
+
+#[test]
+fn a_phase_comment_opens_on_the_phase_not_its_first_task() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // A task composer first, so a lookup by descent would find it.
+    page.click("[data-plan-ref=\"task:t-config-flag\"] .comment-btn");
+    page.click("[data-plan-ref=\"phase:p-core\"] .comment-btn");
+    assert_eq!(
+        page.eval("document.querySelectorAll('.composer').length"),
+        2
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-composers[data-composers-for=\"phase:p-core\"] .composer') !== null"),
+        true,
+        "the phase's composer is in the phase's own host"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-composers[data-composers-for=\"phase:p-core\"] .composer').closest('.task')"),
+        serde_json::Value::Null,
+        "and not inside a task card"
+    );
+    page.type_into(
+        ".pv-composers[data-composers-for=\"phase:p-core\"] .composer textarea",
+        "on the phase",
+    );
+    page.click(".pv-composers[data-composers-for=\"phase:p-core\"] .composer .composer-send");
+    page.wait_until(
+        "document.querySelectorAll('.composer').length === 1",
+        "the phase comment sent",
+    );
+    assert_eq!(
+        s.server().last_event_of_type("thread.opened")["data"]["ref"],
+        "phase:p-core"
+    );
+}
+
+#[test]
+fn a_reviewed_mark_in_flight_survives_a_push() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    shape_fetch(&mut page, "/cmd", "hold-response", 2500);
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    support::wait_for(
+        || s.server().count_events("element.reviewed") == 1,
+        "the mark landed",
+    );
+
+    s.edit_plan("Demo plan", "Demo plan, revised");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "revision 2",
+    );
+    let toggle = "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle')";
+    assert_eq!(
+        page.eval(&format!("{toggle}.querySelector('input').checked")),
+        true,
+        "the reviewer's choice, across the swap"
+    );
+    assert_eq!(
+        page.text(&format!(
+            "{toggle}.querySelector('.reviewed-toggle-text').textContent"
+        )),
+        "Reviewed"
+    );
+
+    // And once the held reply lands, still.
+    std::thread::sleep(std::time::Duration::from_millis(3000));
+    assert_eq!(
+        page.eval(&format!("{toggle}.querySelector('input').checked")),
+        true
+    );
+    assert_eq!(debug(&mut page)["reviewed"][0], "task:t-a");
+}
+
+#[test]
+fn a_push_does_not_reset_the_activity_clock() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.eval("window.artefactoPlan.settings.pingEveryMs = 400");
+    std::thread::sleep(std::time::Duration::from_millis(450));
+
+    s.edit_plan("Demo plan", "Demo plan, revised");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "revision 2",
+    );
+    page.eval("(function(){ document.dispatchEvent(new Event('scroll')); return true; })()");
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    assert_eq!(
+        s.server().ping_count(),
+        1,
+        "the window had passed before the push; the swap does not restart it"
+    );
+}
+
+#[test]
+fn a_request_that_never_answers_is_reported_and_the_write_still_appears() {
+    // The fetch deadline turns a wedged request into an error the reviewer
+    // can see; and since the write may have landed, the page looks.
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.eval("window.artefactoPlan.settings.fetchTimeoutMs = 200");
+    // The request goes out; the response never comes back; only the
+    // deadline's abort settles the promise.
+    page.eval(
+        "(function(){ const orig = window.fetch; window.fetch = function (u, o) { \
+           if (!String(u).endsWith('/cmd')) return orig(u, o); \
+           orig(u, Object.assign({}, o, { signal: undefined })).catch(function () {}); \
+           return new Promise(function (res, rej) { if (o && o.signal) o.signal.addEventListener('abort', function () { rej(new DOMException('aborted', 'AbortError')); }); }); \
+         }; return true; })()",
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .comment-btn");
+    page.type_into(
+        "[data-plan-ref=\"task:t-a\"] .composer textarea",
+        "into a black hole",
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .composer .composer-send");
+    page.wait_until(
+        "document.querySelector('.composer .pv-error')",
+        "the composer to report the failure",
+    );
+    assert!(page
+        .text("document.querySelector('.composer .pv-error').textContent")
+        .starts_with("Not sent"));
+    assert_eq!(s.server().thread_count(), 1, "the write landed");
+    page.wait_until(
+        "document.querySelectorAll('.thread[data-thread=\"c-1\"]').length === 1",
+        "the page to find the write it could not hear about",
+    );
+}
+
+#[test]
+fn send_review_cannot_be_sent_twice_while_in_flight() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    shape_fetch(&mut page, "/cmd", "hold-response", 1500);
+    // The second click forces the button back on, the way a frame arriving
+    // mid-flight once did.
+    page.eval(
+        "(function(){ const b = document.querySelector('.feedback-bar-send'); b.click(); b.disabled = false; b.click(); return true; })()",
+    );
+    support::wait_for(
+        || s.server().count_events("review.submitted") == 1,
+        "one submission",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    assert_eq!(
+        s.server().count_events("review.submitted"),
+        1,
+        "and only one"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-send').textContent"),
+        "Send review"
+    );
+}
+
+#[test]
+fn a_revision_learned_from_a_snapshot_reports_what_it_addressed() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    comment(&mut page, "task:t-a", "please change this");
+    catch_up_with(&s, &mut page, "hold-request");
+
+    // The push lands while the snapshot request is held, so the page
+    // learns of revision 2 from the snapshot and skips the buffered frame.
+    let resolutions = s.repo.path().join("resolutions.json");
+    std::fs::write(
+        &resolutions,
+        serde_json::json!([{ "thread": "c-1", "status": "changed", "note": "done" }]).to_string(),
+    )
+    .unwrap();
+    s.edit_plan("Demo plan", "Demo plan, revised");
+    s.push(1, &["--resolutions", resolutions.to_str().unwrap()]);
+    connected(&mut page);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "revision 2",
+    );
+    let banner =
+        page.text("document.querySelector('.pv-notice[data-kind=\"revision\"]').textContent");
+    assert!(banner.starts_with("Revision 2 pushed"), "{banner}");
+    assert!(banner.contains("1 addressed"), "{banner}");
+    assert_eq!(
+        page.text("document.querySelector('.thread[data-thread=\"c-1\"]').dataset.status"),
+        "changed"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-notice[data-kind=\"revision\"]').length"),
+        1,
+        "one banner, from the snapshot, not a second from the skipped frame"
+    );
+}
+
+#[test]
+fn a_chat_draft_is_visible_after_a_reload() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".feedback-bar-chat");
+    page.type_into(".pv-chat .composer textarea", "half a question");
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.eval("document.querySelector('.pv-chat').hidden"),
+        false,
+        "the panel opens for its draft"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-chat .composer textarea').value"),
+        "half a question"
     );
 }
