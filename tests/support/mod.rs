@@ -691,6 +691,11 @@ impl InProcess {
         self.events_of_type(kind).len()
     }
 
+    /// How many activity pings pages have sent.
+    pub fn ping_count(&self) -> u64 {
+        self.shared.core.lock().unwrap().reviewer_pings
+    }
+
     /// Pretend a page has been here, so the away clock is allowed to start.
     pub fn mark_page_seen(&self) {
         self.shared.core.lock().unwrap().page_seen = true;

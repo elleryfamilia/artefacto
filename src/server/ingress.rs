@@ -196,6 +196,9 @@ pub fn handle_command(shared: &Arc<Shared>, mut request: Request, artifact: &str
     // reviewer doing anything, and one field for both would mean the idle
     // nudge could never fire while an agent was attached.
     mark_reviewer_activity(shared);
+    if matches!(command, Command::Ping) {
+        shared.core.lock().unwrap().reviewer_pings += 1;
+    }
 
     let outcome = commit_command(shared, artifact, &command);
     match outcome {

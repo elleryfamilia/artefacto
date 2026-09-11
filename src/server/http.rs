@@ -46,6 +46,9 @@ pub struct Core {
     /// one field for both would mean the idle nudge could never fire while an
     /// agent was attached.
     pub last_reviewer_activity_ms: i64,
+    /// How many `ping` commands pages have sent. The page throttles them to
+    /// one per 30 seconds (spec 6.2), and this is how a test sees that.
+    pub reviewer_pings: u64,
     /// The idle nudge has fired for this quiet period. Cleared by activity.
     pub idle_fired: bool,
     /// The away nudge has fired. Cleared when a page comes back.
@@ -117,6 +120,7 @@ impl Shared {
                 bootstrap: HashMap::new(),
                 last_request_at: Instant::now(),
                 last_reviewer_activity_ms: 0,
+                reviewer_pings: 0,
                 idle_fired: false,
                 away_fired: false,
                 page_gone_since_ms: None,

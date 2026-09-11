@@ -922,3 +922,46 @@ fn a_reconnect_catches_up_without_duplicating_anything() {
     assert!(errors.is_empty(), "{}", errors.join("\n"));
     repo.stop();
 }
+
+#[test]
+fn activity_pings_are_throttled_and_mark_the_reviewer_active() {
+    // Spec 6.2: activity is a throttled page ping on scroll, keys, pointer
+    // and visibility, at most one per 30 seconds. The window is shortened
+    // here so the throttle itself can be watched.
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    assert_eq!(
+        s.server().ping_count(),
+        0,
+        "arriving is activity; no ping is needed for it"
+    );
+
+    page.eval("window.artefactoPlan.settings.pingEveryMs = 400");
+    // Arrival started the clock; the first ping waits for the window.
+    std::thread::sleep(std::time::Duration::from_millis(450));
+    s.server().mark_reviewer_activity_at(-1_000_000);
+    let scroll = "(function(){ document.dispatchEvent(new Event('scroll')); return true; })()";
+    page.eval(scroll);
+    support::wait_for(|| s.server().ping_count() == 1, "the first ping");
+    assert!(
+        s.server().reviewer_idle_for() < std::time::Duration::from_secs(5),
+        "a scroll is activity"
+    );
+
+    // Inside the window: nothing more, however much the reviewer moves.
+    for _ in 0..5 {
+        page.eval("(function(){ document.dispatchEvent(new KeyboardEvent('keydown')); document.dispatchEvent(new Event('pointermove')); return true; })()");
+    }
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    assert_eq!(s.server().ping_count(), 1, "one ping per window");
+
+    // Past it: one more.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    page.eval(scroll);
+    support::wait_for(|| s.server().ping_count() == 2, "the next window's ping");
+}

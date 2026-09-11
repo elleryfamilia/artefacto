@@ -1542,8 +1542,10 @@
   /* Reconnect schedule. Eight tries over about half a minute, then the
      page says so rather than spinning forever. */
   const BACKOFF_MS = [500, 1000, 2000, 4000, 8000, 8000, 8000, 8000];
-  /* Spec 6.2: at most one activity ping per 30 seconds. */
-  const PING_EVERY_MS = 30000;
+  /* Spec 6.2: at most one activity ping per 30 seconds. A setting rather
+     than a constant so a browser test can watch the throttle without
+     waiting half a minute per ping. */
+  core.settings = { pingEveryMs: 30000 };
 
   function createSession(artifact) {
     const S = {
@@ -1643,7 +1645,7 @@
 
     function ping() {
       const now = Date.now();
-      if (now - S.lastPing < PING_EVERY_MS || S.lost) return;
+      if (now - S.lastPing < core.settings.pingEveryMs || S.lost) return;
       S.lastPing = now;
       post({ cmd: "ping" }).catch(function () { /* activity is best effort */ });
     }
