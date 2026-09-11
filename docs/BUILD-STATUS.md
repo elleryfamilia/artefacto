@@ -21,8 +21,8 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-399 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
-clean. Forty-one of the tests run the served page in a headless Chromium;
+407 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+clean. Forty-nine of the tests run the served page in a headless Chromium;
 they skip with a printed line on a machine without one (see "Plan 3" below).
 
 | area | file | notes |
@@ -262,6 +262,12 @@ page, the browser harness, and the page itself.
   frames; an event naming another artifact is dropped before the fold, so
   another plan's comment does not count here and its push does not swap
   this body. Events with no artifact (presence, the stop) apply.
+- **One fold path.** Every event — a socket frame, a buffered reply, a
+  direct reply — passes through `applyEvents`, which applies the artifact
+  filter, the own-client-id filter, and a per-key highest-seq rule for
+  set-valued writes (a reviewed mark per element, an answer per question),
+  so two replies for one mark settle on the server's value whichever order
+  they arrive in. The buffer drains in log order.
 - **A push swaps the body**, mounts again, and restores disclosure by element
   id, focus and caret by composer id, and scroll by element anchor. Every
   composer keeps its draft in sessionStorage under an id minted when it
@@ -287,7 +293,7 @@ one the tests print a skip line and pass, and `ARTEFACTO_REQUIRE_BROWSER=1`
 makes that a failure. **CI must install a Chromium or set that variable**, or
 the browser suite is silently green.
 
-The forty-one tests cover the loop end to end and the races spec 14 names:
+The forty-nine tests cover the loop end to end and the races spec 14 names:
 a push while typing (draft kept, `opened_revision` is the old one), a draft
 and a thread whose element was removed (recovery panel, re-anchoring when it
 returns), focus and caret across a push, scroll anchored to an element across
@@ -473,6 +479,39 @@ on a failed resync: a write made while catching up always has a higher seq
 than anything applied before, so both branches behave the same and the rule
 cannot be reached.
 
+## Review round nine: the third fix slice, reviewed fresh
+
+A fifth fresh reviewer read commit `919b46f` and drove it. Five confirmed
+defects, all fixed with a browser test each (commit `95a9f1a`):
+
+1. **The per-key seq rule guarded only the direct-reply path.** A frame from
+   another tab, or a buffered own reply drained after a newer one, bypassed
+   it, so an older reply still won. Every event now passes through one
+   function, and the buffer drains in log order.
+2. **The end-of-backoff probe applied a snapshot without marking the page as
+   catching up**, so a write whose reply landed while the probe's request
+   was in flight was dropped by the snapshot: the same shape as round six's
+   first defect, in a path round seven had added. The probe is now an
+   ordinary resync.
+3. **A toggle's error line was appended inside its label**, so reading it
+   flipped the mark. It sits after the label.
+4. **Five changes from round eight had no test.** Four do now (the failed
+   resync's own cursor remains unreachable, above).
+5. **A `/state` 404 set the page lost without re-rendering** the pill and
+   the bar.
+
+Suspicions adopted: three tests that depended on fixed delays now hold
+responses until the test releases them; a socket that opens and closes at
+once no longer resets the retry budget (it comes back only after the socket
+has stayed open three seconds); the "gone" notice says whether HTTP answers;
+a sent chat message leaves a fresh composer in the open panel.
+
+The mutation pass caught seven of nine. The survivors: the buffer sort is
+redundant with the per-key rule for set-valued writes and no test asserts
+message order across a drain; and the "probe not marked as catching up"
+mutation was a no-op, because the probe is now the resync that marks it —
+the test's wait for that state is the rule.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
@@ -624,6 +663,12 @@ fixes: a chat draft reopening the panel every render, set-valued replies
 applied in arrival order, a pending mark dropped while syncing, probe cycles
 unbounded, the probe never recovering, a snapshot-covered reply applied
 again, and (survived, unreachable) own replies skipped on a failed resync.
+Round nine's fixes: the per-key rule not applied to frames, (survived,
+redundant) the buffer drained in arrival order, (survived, a no-op mutation)
+the probe not marked as catching up, the error line inside the label, the
+retry budget reset on every open, a 404 not rendered, no composer after a
+chat send, the toggle error never cleared, and changed-to-declined not
+counted.
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,
