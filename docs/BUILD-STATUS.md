@@ -21,9 +21,9 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-368 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
-clean. Seventeen of the tests run the served page in a headless Chromium; they
-skip with a printed line on a machine without one (see "Plan 3" below).
+385 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+clean. Twenty-seven of the tests run the served page in a headless Chromium;
+they skip with a printed line on a machine without one (see "Plan 3" below).
 
 | area | file | notes |
 |---|---|---|
@@ -242,14 +242,20 @@ page, the browser harness, and the page itself.
   plan a revision event carries. A frame, a snapshot, and the page's own
   command reply all go through it.
 - **The server is the only store.** Nothing on a served page reads
-  localStorage. Every command carries a client id; the page applies its own
-  write from the reply, because the broadcast skips the page that posted. A
-  reply with `seq: 0` is the server saying it already did this, and the page
-  resyncs rather than guess.
+  localStorage for review state. Every command carries a client id, minted
+  when its composer opens and stored with the draft, so a send repeated after
+  a swap, a reload, or a retry is the same command. The page applies its own
+  write from the reply, because the broadcast skips the page that posted; a
+  socket frame carrying one of the page's own client ids is skipped too,
+  because after a reconnect a write in flight may have named the old socket.
+  A reply with `seq: 0` is the server saying it already did this, and the
+  page resyncs rather than guess.
 - **Catch-up.** On every socket open the page fetches `/state`, replaces its
-  state, then drains the frames buffered meanwhile, skipping *logged* events
-  with `seq <= last_seq` and never skipping announced ones (`agent.attached`,
-  `agent.detached`, `nudge`, `server.stopping`), which borrow that seq.
+  state, then drains what was buffered meanwhile — socket frames and the
+  page's own replies alike — skipping *logged* events with `seq <= last_seq`
+  and never skipping announced ones (`agent.attached`, `agent.detached`,
+  `nudge`, `server.stopping`), which borrow that seq. A resync started while
+  another is in flight supersedes it.
 - **A push swaps the body**, mounts again, and restores disclosure by element
   id, focus and caret by composer id, and scroll by element anchor. Every
   composer keeps its draft in sessionStorage under an id minted when it
@@ -275,13 +281,18 @@ one the tests print a skip line and pass, and `ARTEFACTO_REQUIRE_BROWSER=1`
 makes that a failure. **CI must install a Chromium or set that variable**, or
 the browser suite is silently green.
 
-The seventeen tests cover the loop end to end and the races spec 14 names: a
-push while typing (draft kept, `opened_revision` is the old one), a draft and
-a thread whose element was removed (recovery panel, re-anchoring when it
+The twenty-seven tests cover the loop end to end and the races spec 14 names:
+a push while typing (draft kept, `opened_revision` is the old one), a draft
+and a thread whose element was removed (recovery panel, re-anchoring when it
 returns), focus and caret across a push, scroll anchored to an element across
-a push that inserts a phase above, two tabs on one artifact, and duplicate
-suppression after a real daemon restart. The static export's own `#selftest`
-harness runs in the same browser, which is the smoke rosita had.
+a push that inserts a phase above, two tabs on one artifact, duplicate
+suppression after a real daemon restart, a write made while catching up on
+either side of the snapshot, a frame received while catching up, the page's
+own write delivered back to it, a push and a reload during a send, and a
+lost cookie. Tests shape the page's `fetch` from inside the page (hold a
+request, hold a response, drop a response) to put a write on a chosen side
+of a snapshot. The static export's own `#selftest` harness runs in the same
+browser, which is the smoke rosita had.
 
 ### What only running could establish
 
@@ -329,6 +340,53 @@ Two suspicions adopted: broadcasts now run under the gate (frames could reach a
 page out of log order), and hello no longer carries `last_seq`. One left: the
 snapshot has no revision summary, which only matters if the banner had to
 survive a reload.
+
+## Review round six: the page, reviewed fresh
+
+A fresh reviewer on a different model read the page slice (commits `94c133c`,
+`ee7a5cd`) and drove it in a real Chromium with probe tests. Nine confirmed
+defects, all fixed with a browser test each (commit `cce2067`):
+
+1. **The page's own write was lost when a resync snapshot landed after the
+   reply.** A reply that arrives while catching up is now buffered as a
+   one-event frame with the seq the server assigned; the snapshot's `last_seq`
+   decides whether it is already inside.
+2. **A push during an in-flight send left the sent composer open, and a
+   second click sent a new client id.** The client id is minted with the
+   draft, and the reply closes every composer with that draft's id.
+3. **A thread was rendered once per acceptance row of its task**, because
+   every row carries the task's ref. Threads and composers live on the first
+   element carrying a ref; a row's button still quotes the row.
+4. **A write posted with the old socket's id after a reconnect was broadcast
+   to the new socket and applied twice.** A frame carrying one of the page's
+   own client ids is skipped, and a closed socket forgets its id.
+5. **A reply, ask or edit draft was invisible after a reload**, because drafts
+   were restored before the threads existed. They are restored after every
+   render.
+6. **A push while typing in the chat panel hid the panel.** Its open state
+   lives in the session.
+7. **Reply and Ask on an unanchored thread did nothing.** The recovery panel's
+   thread host is keyed and kept, and a composer opens there.
+8. **A lost cookie on reconnect read as "server gone".** The handshake's 401 is
+   invisible to script; one `/state` request at the end of the backoff tells
+   the two apart.
+9. **No fetch had a deadline, and Send review re-enabled mid-flight.**
+
+Suspicions adopted: a resync generation counter, a banner for a revision
+learned from a snapshot (the fold now keeps the summary and `/state` returns
+it), a pending reviewed mark keeps the reviewer's choice, a swap no longer
+delays the next ping, a `/state` 404 marks the page lost, notices render their
+backtick spans as code. Left as is: the theme toggle reads localStorage on a
+served page — a viewer preference, not review state.
+
+The review also found that two of the original tests could not detect the
+server broadcasting to the poster, because opening a thread is idempotent by
+id; both now assert on a reply as well. The mutation pass over the fixes
+caught nine of eleven. The two survivors are redundancy: the chat panel's
+creation-time `hidden` is re-applied by `renderChat` (removing both fails the
+test), and the server's skip-the-poster rule is now shadowed by the page's
+own-client-id filter, which is the robust direction — a page that hears its
+own write once more is unaffected.
 
 ## Where the code diverges from plan 2b, with the reason
 
@@ -403,13 +461,16 @@ Stated plainly, because a passing suite is not the same as a covered one.
   stress test in `server_page.rs` catches a reordering skew longer than an
   fsync and nothing shorter; the rule (broadcast under the gate) is held by
   reasoning.
-- **The page's use of hello's presence is not load-bearing**: the `/state`
-  snapshot fetched right after carries it too, so removing the page's hello
-  handling fails no test. The server side is tested.
-- **Not exercised in a browser**: the lost-session (401) notice, the "gone"
-  notice after eight failed reconnects, a reply with `seq: 0` (a retried
-  client id) triggering a resync, and the recovery panel's Discard for a
-  reply draft whose thread was deleted by another tab.
+- **Two page rules are shadowed by another rule** and survive mutation: the
+  page's use of hello's presence (the `/state` snapshot carries it too) and
+  the server's `broadcast_except` (the page filters its own client ids). Both
+  server halves are tested on their own.
+- **Not exercised in a browser**: the "gone" notice after eight failed
+  reconnects against a server that is really absent, the resync generation
+  counter (two resyncs in flight), the fetch deadline firing, and the
+  recovery panel's Discard for a reply draft whose thread was deleted by
+  another tab. A reply with `seq: 0` is exercised only through the
+  reload-mid-send test, which reaches it by way of a repeated client id.
 - **The poisoned log has no test.** `EventLog` refuses every append after a
   failed write, and nothing exercises that path: there is no way to make a
   write fail from a test without a hook that exists only for tests.
@@ -461,7 +522,12 @@ stopping notice never clearing, no ping throttle. Review fixes: the page
 registered after the 101, the query not stripped, any id or extra segment
 served as a page, the placeholder id unescaped, the fragment without markers,
 strict parse on the read path, a render failure as JSON, and broadcasts after
-the gate with a 40 ms skew.
+the gate with a 40 ms skew. Page fixes: the own reply applied straight into a
+state about to be replaced, own client ids not filtered, the client id minted
+per send, the composer closed by its captured node, threads on every element,
+drafts not restored after a render, the chat open state never applied, no
+composer on an unanchored thread, a lost cookie read as gone, and catch-up
+applying buffered frames blindly.
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,
