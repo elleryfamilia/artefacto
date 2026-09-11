@@ -1882,6 +1882,7 @@ fn reviewed_mark_replies_out_of_order_settle_on_the_servers_value() {
     connected(&mut page);
     // The first reply (on) is held until released; the second (off)
     // arrives first.
+    let applied_before = debug(&mut page)["applied"].as_u64().unwrap();
     shape_fetch(&mut page, "/cmd", "hold-first-release", 0);
     page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
     support::wait_for(
@@ -1898,7 +1899,10 @@ fn reviewed_mark_replies_out_of_order_settle_on_the_servers_value() {
         false
     );
     page.wait_until(
-        "window.artefactoPlan.debug().pending === 1",
+        &format!(
+            "window.artefactoPlan.debug().applied === {}",
+            applied_before + 1
+        ),
         "the off reply to be in",
     );
     release(&mut page);
@@ -2137,12 +2141,15 @@ fn an_older_own_reply_does_not_win_over_a_newer_frame_or_a_newer_buffered_reply(
         "off landed",
     );
     page.wait_until(
-        "window.artefactoPlan.debug().pending === 1",
-        "the off reply to be in",
+        "window.artefactoPlan.debug().buffered === 1",
+        "the off reply to be buffered",
     );
-    release(&mut page);
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    release(&mut page);
+    release_path(&mut page, "/cmd");
+    page.wait_until(
+        "window.artefactoPlan.debug().buffered === 2",
+        "the on reply to be buffered after it",
+    );
+    release_path(&mut page, "/state");
     connected(&mut page);
     assert_eq!(
         page.eval("window.artefactoPlan.debug().reviewed.length"),
@@ -2177,8 +2184,8 @@ fn a_write_during_the_end_of_backoff_probe_is_kept() {
         "the mark landed",
     );
     page.wait_until(
-        "window.artefactoPlan.debug().pending === 1",
-        "the reply to be in",
+        "window.artefactoPlan.debug().buffered === 1",
+        "the reply to be buffered",
     );
     release(&mut page);
     page.wait_until(
@@ -2543,4 +2550,145 @@ fn buffered_replies_drain_in_log_order() {
         serde_json::json!(["reviewer: the comment", "reviewer: one", "reviewer: two"]),
         "log order, not arrival order"
     );
+}
+
+// --- the round-ten fix slice, reviewed fresh ----------------------------------
+
+#[test]
+fn a_push_after_a_sent_chat_message_leaves_the_panel_with_a_composer() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".feedback-bar-chat");
+    page.type_into(".pv-chat .composer textarea", "first");
+    page.click(".pv-chat .composer .composer-send");
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 1",
+        "the message shown",
+    );
+    assert_eq!(
+        page.eval("Object.keys(window.artefactoPlan.debug().drafts).length"),
+        0
+    );
+
+    s.edit_plan("Demo plan", "Demo plan, revised");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "revision 2",
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-chat').hidden"),
+        false,
+        "still open"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-chat .composer textarea')"),
+        true,
+        "and still somewhere to write"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-chat .composer').length"),
+        1
+    );
+}
+
+#[test]
+fn a_probe_never_runs_on_a_live_socket() {
+    // A socket-only outage, a push while it is down, and a retried write's
+    // reply during the probe: the superseding resync swaps the body, whose
+    // mount reconnects. Nothing may then probe on that live socket and read
+    // a failed snapshot as the server being gone.
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.eval("window.artefactoPlan.settings.backoffMs = [30, 30, 300]; window.artefactoPlan.settings.stableAfterMs = 100000");
+    failing_sockets(&mut page, 3);
+    shape_fetch(&mut page, "/state", "hold-release", 0);
+    artefacto::server::socket::close_all(&s.server().shared);
+    page.wait_until(
+        "(window.__releasers || []).length > 0",
+        "the probe's snapshot request in flight",
+    );
+    s.edit_plan("Demo plan", "Demo plan, revised");
+    s.push(1, &[]);
+    answer_json(
+        &mut page,
+        "/cmd",
+        200,
+        "{\"ok\":true,\"client_id\":\"x\",\"assigned\":null,\"seq\":0,\"error\":null}",
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    page.wait_until(
+        "(window.__releasers || []).length >= 2",
+        "the overtaking resync in flight",
+    );
+    release(&mut page);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        release(&mut page);
+        let d = debug(&mut page);
+        if d["connected"] == true && d["syncing"] == false && d["revision"] == 2 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the page did not get through: {d}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // Every later snapshot fails. Connected, nothing should ask for one.
+    answer_with(&mut page, "/state", 500, 1_000);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let d = debug(&mut page);
+    assert_eq!(d["connected"], true);
+    assert_eq!(d["gone"], false, "no probe ran on the live socket: {d}");
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"gone\"]')"),
+        false
+    );
+    assert_eq!(page.eval("window.__calls"), 0, "no snapshot was requested");
+}
+
+#[test]
+fn a_lost_page_is_not_left_catching_up() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.eval("window.artefactoPlan.settings.backoffMs = [30, 30, 30]");
+    failing_sockets(&mut page, 1_000_000);
+    // The probe's snapshot is a 404, and a slow one.
+    answer_with(&mut page, "/state", 404, 1_000);
+    shape_fetch(&mut page, "/state", "hold-release", 0);
+    artefacto::server::socket::close_all(&s.server().shared);
+    page.wait_until(
+        "(window.__releasers || []).length > 0",
+        "the probe's request in flight",
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    page.wait_until(
+        "window.artefactoPlan.debug().buffered === 1",
+        "the reply buffered while catching up",
+    );
+    release(&mut page);
+    page.wait_until(
+        "window.artefactoPlan.debug().lost",
+        "the page to learn it is lost",
+    );
+    let d = debug(&mut page);
+    assert_eq!(d["syncing"], false, "{d}");
+    assert_eq!(d["buffered"], 0, "{d}");
+    assert_eq!(d["pending"], 0, "{d}");
 }
