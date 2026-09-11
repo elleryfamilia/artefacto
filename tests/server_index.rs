@@ -276,6 +276,19 @@ fn a_corrupt_or_unreadable_registry_is_said_on_the_page_not_shown_as_empty() {
     let page = server.get("/", &[("Cookie", &cookie)]);
     assert!(page.contains("newer artefacto"), "{page}");
     assert!(!page.contains("No artifacts yet"), "{page}");
+
+    std::fs::write(
+        &index_path,
+        r#"{"format":"artefacto.index/1","artifacts":[{"id":"plan:odd","revision":"bad"}]}"#,
+    )
+    .unwrap();
+    let page = server.get("/", &[("Cookie", &cookie)]);
+    assert!(
+        page.contains("1 row in index.json could not be read"),
+        "{page}"
+    );
+    assert!(!page.contains("No artifacts yet"), "{page}");
+    assert_eq!(page.matches("<li class=\"ix-row").count(), 0);
 }
 
 #[test]

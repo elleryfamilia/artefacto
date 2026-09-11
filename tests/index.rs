@@ -776,3 +776,53 @@ fn a_server_over_a_newer_index_says_so_once_in_its_log() {
         "said once: {log}"
     );
 }
+
+#[test]
+fn list_over_only_unreadable_rows_says_so_and_not_no_artifacts() {
+    let repo = Repo::new();
+    let index_path = repo.state_dir().join("index.json");
+    std::fs::create_dir_all(repo.state_dir()).unwrap();
+    std::fs::write(
+        &index_path,
+        r#"{"format":"artefacto.index/1","artifacts":[{"id":"plan:demo","revision":"bad"}]}"#,
+    )
+    .unwrap();
+    let text = repo.run(&["list"]);
+    text.success();
+    assert!(
+        text.stderr
+            .contains("1 row in index.json could not be read"),
+        "{}",
+        text.stderr
+    );
+    assert!(
+        !text.stdout.contains("no artifacts yet"),
+        "the two would contradict: {}",
+        text.stdout
+    );
+    let listed = list(&repo);
+    assert_eq!(listed["unreadable_rows"], 1);
+    assert_eq!(listed["artifacts"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn a_second_repair_keeps_the_first_kept_aside_copy() {
+    let repo = Repo::new();
+    let plan = plan_in(&repo, "minimal.json", "plan.json");
+    let index_path = repo.state_dir().join("index.json");
+    std::fs::create_dir_all(repo.state_dir()).unwrap();
+    std::fs::write(&index_path, "{first").unwrap();
+    render(&repo, &plan, "plan.html");
+    std::fs::write(&index_path, "{second").unwrap();
+    render(&repo, &plan, "plan.html");
+    let dir = repo.state_dir();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("index.json.corrupt")).unwrap(),
+        "{first"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("index.json.corrupt.1")).unwrap(),
+        "{second"
+    );
+    assert_eq!(list(&repo)["artifacts"].as_array().unwrap().len(), 1);
+}

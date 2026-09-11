@@ -338,8 +338,9 @@ impl Index {
         fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
         if self.corrupt && path.exists() {
             // Whatever was there is not thrown away: a file that was not an
-            // index may still be something the user wants to look at.
-            let aside = self.dir.join("index.json.corrupt");
+            // index may still be something the user wants to look at. Nor is
+            // an earlier copy: a second repair keeps its own.
+            let aside = aside_path(&self.dir);
             fs::rename(&path, &aside)
                 .with_context(|| format!("keeping {} aside", path.display()))?;
         }
@@ -352,6 +353,19 @@ impl Index {
         fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))?;
         Ok(())
     }
+}
+
+/// `index.json.corrupt`, or the first free `index.json.corrupt.N` when one
+/// is already there.
+fn aside_path(dir: &Path) -> PathBuf {
+    let base = dir.join("index.json.corrupt");
+    if !base.exists() {
+        return base;
+    }
+    (1..)
+        .map(|n| dir.join(format!("index.json.corrupt.{n}")))
+        .find(|p| !p.exists())
+        .expect("the naturals do not run out")
 }
 
 /// What a write did. `ReadOnlyNewer` is the one refusal that is not an
@@ -409,6 +423,12 @@ pub fn record_with(
         }
     }
     index.entries.retain(|e| e.id != entry.id);
+    // A row this binary could not read under the same id is replaced too:
+    // the id now has a row that can be read, and two rows with one id is
+    // a registry that lists one and can never clear the other.
+    index
+        .unreadable
+        .retain(|row| row.get("id") != Some(&serde_json::Value::from(entry.id.as_str())));
     index.entries.insert(0, entry);
     index.save()?;
     Ok(Outcome::Recorded)
@@ -429,9 +449,12 @@ pub fn remove(dir: &Path, id: &str) -> Result<Removed> {
     if index.readonly {
         return Ok(Removed::ReadOnlyNewer);
     }
-    let before = index.entries.len();
+    let before = index.entries.len() + index.unreadable.len();
     index.entries.retain(|e| e.id != id);
-    if index.entries.len() == before {
+    index
+        .unreadable
+        .retain(|row| row.get("id") != Some(&serde_json::Value::from(id)));
+    if index.entries.len() + index.unreadable.len() == before {
         return Ok(Removed::Absent);
     }
     index.save()?;
@@ -628,7 +651,7 @@ mod tests {
         for junk in [
             "{not json",
             r#"{"format":"artefacto.feedback/1","artifacts":[]}"#,
-            r#"{"format":"artefacto.index/1","artifacts":[{"id":"plan:x"}]}"#,
+            r#"{"format":"artefacto.index/1","artifacts":{"not":"a list"}}"#,
             "",
         ] {
             fs::write(&path, junk).unwrap();
@@ -641,6 +664,58 @@ mod tests {
             let text = fs::read_to_string(&path).unwrap();
             assert!(text.contains(INDEX_FORMAT), "{text}");
         }
+    }
+
+    #[test]
+    fn one_unreadable_row_is_carried_not_corrupt_and_gives_way_to_its_own_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(INDEX_FILE);
+        fs::write(
+            &path,
+            r#"{"format":"artefacto.index/1","artifacts":[{"id":"plan:x","revision":"bad"},{"id":"plan:y"}]}"#,
+        )
+        .unwrap();
+        let index = Index::load(dir.path());
+        assert!(!index.is_corrupt());
+        assert_eq!(index.unreadable_rows(), 2);
+        assert!(index.is_empty());
+
+        // A row for another id carries both through.
+        record(dir.path(), entry("plan:a", "2026-09-10T00:00:00Z"), None).unwrap();
+        let index = Index::load(dir.path());
+        assert_eq!(index.unreadable_rows(), 2, "kept as they were");
+        assert_eq!(index.entries().len(), 1);
+
+        // A row for the same id replaces the one that could not be read.
+        record(dir.path(), entry("plan:x", "2026-09-10T00:00:00Z"), None).unwrap();
+        let index = Index::load(dir.path());
+        assert_eq!(index.unreadable_rows(), 1, "plan:x is one row again");
+        assert_eq!(index.entries().len(), 2);
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("\"id\": \"plan:x\"").count(), 1, "{text}");
+
+        // And removing an id the user names forgets the unreadable row too.
+        assert_eq!(remove(dir.path(), "plan:y").unwrap(), Removed::Removed);
+        assert_eq!(Index::load(dir.path()).unreadable_rows(), 0);
+    }
+
+    #[test]
+    fn every_repair_keeps_its_own_copy_of_the_corrupt_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(INDEX_FILE);
+        fs::write(&path, "first junk").unwrap();
+        record(dir.path(), entry("plan:a", "2026-09-10T00:00:00Z"), None).unwrap();
+        fs::write(&path, "second junk").unwrap();
+        record(dir.path(), entry("plan:b", "2026-09-10T00:00:00Z"), None).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("index.json.corrupt")).unwrap(),
+            "first junk"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("index.json.corrupt.1")).unwrap(),
+            "second junk",
+            "the second repair keeps its own copy"
+        );
     }
 
     #[test]

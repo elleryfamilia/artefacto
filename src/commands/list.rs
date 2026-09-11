@@ -31,10 +31,13 @@ pub fn list(json: bool) -> Result<()> {
         println!("{doc}");
         return Ok(());
     }
-    for note in notes(&index) {
+    let notes = notes(&index);
+    for note in &notes {
         eprintln!("{note}");
     }
-    if rows.is_empty() && !index.is_readonly() && !index.is_corrupt() {
+    // "No artifacts yet" is for a registry with nothing in it, not for one
+    // whose rows could not be read: the two would contradict each other.
+    if rows.is_empty() && notes.is_empty() {
         println!("no artifacts yet; render or push a plan");
     }
     for row in &rows {
