@@ -16,6 +16,7 @@ pub mod event;
 pub mod fold;
 pub mod http;
 pub mod ingress;
+pub mod lease;
 pub mod log;
 pub mod page;
 pub mod review;

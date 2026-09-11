@@ -403,6 +403,46 @@ impl InProcess {
         self.shared.log.lock().unwrap().last_seq()
     }
 
+    /// Every logged event of one type, as JSON.
+    pub fn events_of_type(&self, kind: &str) -> Vec<serde_json::Value> {
+        let log = self.shared.log.lock().unwrap();
+        log.since(0)
+            .iter()
+            .filter(|e| e.r#type == kind)
+            .map(|e| serde_json::to_value(e).expect("an event serializes"))
+            .collect()
+    }
+
+    pub fn last_event_of_type(&self, kind: &str) -> serde_json::Value {
+        self.events_of_type(kind)
+            .pop()
+            .unwrap_or_else(|| panic!("no {kind} event was logged"))
+    }
+
+    /// Push the lease's freshness clock into the past.
+    ///
+    /// The clock is signed milliseconds since the server started, so this
+    /// cannot underflow the way `Instant` subtraction would on a machine
+    /// booted minutes ago.
+    pub fn age_lease(&self, by: std::time::Duration) {
+        let mut core = self.shared.core.lock().unwrap();
+        core.lease_seen_ms -= by.as_millis() as i64;
+    }
+
+    /// A bearer-authenticated `/cli/` GET, raw, so a test can assert on what
+    /// the response does *not* contain as well as what it does.
+    pub fn cli_raw(&self, route: &str) -> String {
+        self.get(
+            &format!("/cli/{route}"),
+            &[("Authorization", &format!("Bearer {}", self.shared.secret))],
+        )
+    }
+
+    /// Is the accept loop still running? `false` once the server self-exited.
+    pub fn serving(&self) -> bool {
+        self.thread.as_ref().is_some_and(|t| !t.is_finished())
+    }
+
     pub fn thread_count(&self) -> usize {
         artefacto::server::http::with_review(&self.shared, |r| {
             r.artifacts

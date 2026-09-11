@@ -45,6 +45,17 @@ pub struct Core {
     /// every 90 seconds, so one field for both would mean the idle nudge could
     /// never fire while an agent was attached.
     pub last_reviewer_activity_at: Instant,
+    /// When the lease holder was last heard from, in milliseconds since
+    /// [`Shared::now_ms`]'s origin. Written only by `lease`.
+    ///
+    /// Signed, and relative to this server's start, because the two obvious
+    /// alternatives cannot express the values this needs to hold. `Instant`
+    /// subtraction panics on underflow, and on a machine booted two minutes
+    /// ago "five minutes ago" is not a representable `Instant` at all.
+    ///
+    /// It is not folded from the log on purpose: liveness is about this
+    /// process, so a replayed lease starts its TTL fresh.
+    pub lease_seen_ms: i64,
 }
 
 pub struct Shared {
@@ -57,6 +68,8 @@ pub struct Shared {
     /// Derived from `secret`, so it survives a restart. Never the secret.
     pub page_cookie: String,
     pub port: u16,
+    /// The origin every lease age is measured from. See [`Shared::now_ms`].
+    epoch: Instant,
     stopping: AtomicBool,
 }
 
@@ -74,13 +87,24 @@ impl Shared {
                 bootstrap: HashMap::new(),
                 last_request_at: Instant::now(),
                 last_reviewer_activity_at: Instant::now(),
+                lease_seen_ms: 0,
             }),
             sockets: Default::default(),
             page_cookie: derive_credential(&secret, "page-cookie"),
             secret,
             port,
+            epoch: Instant::now(),
             stopping: AtomicBool::new(false),
         })
+    }
+
+    /// Monotonic milliseconds since this server started.
+    ///
+    /// The lease's clock. Signed so that every difference taken against it is
+    /// ordinary integer arithmetic that cannot panic, and monotonic so that a
+    /// wall-clock change cannot expire a lease or keep a dead one alive.
+    pub fn now_ms(&self) -> i64 {
+        self.epoch.elapsed().as_millis() as i64
     }
 
     pub fn stopping(&self) -> bool {
@@ -125,7 +149,12 @@ fn should_self_exit(shared: &Arc<Shared>, idle: Duration) -> bool {
     if crate::server::socket::page_count(shared) > 0 {
         return false;
     }
-    // The lease joins this predicate when that subsystem lands.
+    // An agent in poll mode sends one request every 90 seconds and nothing in
+    // between, so the request clock alone would call it absent. The lease is
+    // what says it is still there.
+    if crate::server::lease::current(shared).is_some() {
+        return false;
+    }
     let quiet = {
         let core = shared.core.lock().unwrap();
         core.last_request_at.elapsed()
@@ -185,6 +214,9 @@ fn cli_route(shared: &Arc<Shared>, request: Request, rest: &str) {
                 "port": shared.port,
                 "last_seq": last_seq,
                 "artifacts": [],
+                // `Holder` has no token field, so this route cannot leak one.
+                // Spec 5: `status --json` never prints the session token.
+                "lease": crate::server::lease::current(shared),
             });
             let _ = request.respond(json_response(200, &body.to_string()));
         }
@@ -214,8 +246,7 @@ pub fn host_ok(req: &Request, port: u16) -> bool {
     header(req, "Host").is_some_and(|h| h == format!("127.0.0.1:{port}"))
 }
 
-/// Compared without an early return, so timing does not leak how much of the
-/// secret was right.
+/// The bearer guard for every `/cli/` route.
 pub fn bearer_ok(req: &Request, secret: &str) -> bool {
     let Some(value) = header(req, "Authorization") else {
         return false;
@@ -226,7 +257,9 @@ pub fn bearer_ok(req: &Request, secret: &str) -> bool {
     constant_time_eq(given.as_bytes(), secret.as_bytes())
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+/// Compared without an early return, so timing does not leak how much of a
+/// credential was right. Used for the bearer secret and for session tokens.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

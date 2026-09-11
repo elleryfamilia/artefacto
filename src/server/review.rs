@@ -1,13 +1,10 @@
 //! The live state of a review: what the log folds into.
 //!
 //! Every type here is rebuilt from the log on start, so nothing in it may be
-//! the only copy of anything. The one exception is [`LeaseRecord::taken_at`],
-//! which is a monotonic `Instant` and therefore meaningless across a restart;
-//! see its comment.
+//! the only copy of anything.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Instant;
 
 /// Which transport an agent is holding the lease with.
 ///
@@ -36,19 +33,21 @@ impl Mode {
     }
 }
 
-#[derive(Debug, Clone)]
+/// Everything the log says about the current lease, and nothing else.
+///
+/// There is deliberately **no timestamp here**. When the holder was last heard
+/// from is server-local liveness, not history: it lives in `Core.lease_seen_ms`
+/// and starts fresh on every restart. A replayed lease therefore gets a full
+/// TTL, which is correct — the agent has to call again regardless.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseRecord {
     pub name: String,
     pub generation: u64,
+    /// The session token. Never printed by `status`; see `lease::Holder`.
     pub token: String,
+    /// Recorded in [`Mode::Live`] only.
     pub pid: Option<u32>,
     pub mode: Mode,
-    /// Not folded from the log: an `Instant` is monotonic from an arbitrary
-    /// origin, so a value written before a restart means nothing after one. A
-    /// replayed lease starts its TTL fresh, which is correct — the agent has
-    /// to call again regardless, and a wall clock would be wrong across a
-    /// suspend.
-    pub taken_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,8 +139,7 @@ pub struct Review {
 
 impl Review {
     /// A comparable projection, for asserting that a restart rebuilt exactly
-    /// what was there. Deliberately excludes the lease's `taken_at`, which is
-    /// not folded and is not meant to survive.
+    /// what was there. The token is left out so a snapshot can be printed.
     pub fn snapshot(&self) -> serde_json::Value {
         serde_json::json!({
             "artifacts": self.artifacts,

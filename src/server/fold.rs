@@ -20,7 +20,6 @@ use crate::server::event::{Actor, Event};
 use crate::server::review::{
     plan_refs, Artifact, LeaseRecord, Message, Mode, Review, Thread, ThreadStatus,
 };
-use std::time::Instant;
 
 pub fn fold(events: &[Event]) -> Review {
     let mut review = Review::default();
@@ -285,7 +284,6 @@ fn lease_taken(review: &mut Review, event: &Event) {
             .and_then(|p| p.as_u64())
             .map(|p| p as u32),
         mode,
-        taken_at: Instant::now(),
     });
     review.lease_generation = review.lease_generation.max(generation);
 }
