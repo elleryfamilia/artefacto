@@ -337,16 +337,7 @@ fn cli_route(shared: &Arc<Shared>, request: Request, route: &str, query: &Query)
         "resolve" => crate::server::verbs::handle_resolve(shared, request, query),
         "open" => crate::server::page::handle_open(shared, request, query),
         "status" => {
-            let last_seq = shared.log.lock().unwrap().last_seq();
-            let body = serde_json::json!({
-                "ok": true,
-                "port": shared.port,
-                "last_seq": last_seq,
-                "artifacts": [],
-                // `Holder` has no token field, so this route cannot leak one.
-                // Spec 5: `status --json` never prints the session token.
-                "lease": crate::server::lease::current(shared),
-            });
+            let body = crate::server::status::status_json(shared);
             let _ = request.respond(json_response(200, &body.to_string()));
         }
         "stop" => {

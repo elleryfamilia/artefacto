@@ -175,9 +175,59 @@ pub fn status(json: bool) -> Result<()> {
     if json {
         println!("{value}");
     } else {
-        println!("port {}  last_seq {}", value["port"], value["last_seq"]);
+        print!("{}", status_text(&value));
     }
     Ok(())
+}
+
+/// The JSON, as lines a person reads. Same facts, no token.
+fn status_text(value: &serde_json::Value) -> String {
+    let s = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+    let mut out = format!(
+        "port {}  last_seq {}  state {}\n",
+        value["port"],
+        value["last_seq"],
+        s(&value["state_dir"])
+    );
+    let artifacts = value["artifacts"].as_array().cloned().unwrap_or_default();
+    if artifacts.is_empty() {
+        out.push_str("no artifacts yet; push a plan\n");
+    }
+    for a in &artifacts {
+        out.push_str(&format!(
+            "{}  \"{}\"  revision {}  threads: {} open, {} unanchored  submitted: {}\n",
+            s(&a["id"]),
+            s(&a["title"]),
+            a["revision"],
+            a["open_threads"],
+            a["unanchored_threads"],
+            if a["submitted"] == true { "yes" } else { "no" }
+        ));
+    }
+    match value["lease"].as_object() {
+        Some(lease) => out.push_str(&format!(
+            "agent: {} ({}, {}s ago, acked {})\n",
+            s(&lease["agent"]),
+            s(&lease["mode"]),
+            lease["age_secs"],
+            lease["acked_seq"]
+        )),
+        None => out.push_str("agent: none\n"),
+    }
+    let reviewer = &value["reviewer"];
+    out.push_str(&format!(
+        "reviewer: {} page(s) open{}\n",
+        reviewer["pages"],
+        if reviewer["away"] == true {
+            ", away"
+        } else if reviewer["idle"] == true {
+            ", idle"
+        } else {
+            ""
+        }
+    ));
+    out.push_str(&format!("follow: {}\n", s(&value["follow"]["command"])));
+    out
 }
 
 /// `artefacto open`: a fresh one-time link, and the browser on it.
