@@ -508,3 +508,72 @@ fn a_push_frame_carries_the_rendered_body_to_pages_and_nothing_to_agents() {
     );
     let _ = server;
 }
+
+#[test]
+fn a_resolution_that_repeats_a_threads_state_is_not_appended_again() {
+    // Spec 7: every handler must be safe to run twice. A push that carries
+    // resolutions the server already holds — the agent's push replayed
+    // after a crash — must not put a second note on the reviewer's page.
+    let (repo, server, plan) = attached();
+    let first = push_json(&repo, &plan, &[]);
+    let session = first["session"].as_str().unwrap();
+    let cookie = server.session_cookie("plan:demo");
+    server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "thread.open", "client_id": "cid-1", "ref": "task:t-a",
+            "text": "why?", "blocking": false, "opened_revision": 1,
+        }),
+    );
+    let resolutions = repo.path().join("resolutions.json");
+    std::fs::write(
+        &resolutions,
+        r#"[{"thread":"c-1","status":"changed","note":"done"}]"#,
+    )
+    .unwrap();
+    let push_with = |base: &str| {
+        let res = resolutions.to_str().unwrap();
+        push_json(
+            &repo,
+            &plan,
+            &[
+                "--session",
+                session,
+                "--base-revision",
+                base,
+                "--resolutions",
+                res,
+            ],
+        )
+    };
+    push_with("1");
+    assert_eq!(server.count_events("thread.resolved"), 1);
+
+    // The same resolutions again, with the next revision.
+    push_with("2");
+    assert_eq!(
+        server.count_events("thread.resolved"),
+        1,
+        "a repeated resolution is dropped, not appended"
+    );
+    assert_eq!(server.thread_status("c-1"), "changed");
+
+    // A different note is new information and is recorded.
+    std::fs::write(
+        &resolutions,
+        r#"[{"thread":"c-1","status":"changed","note":"done, and tested"}]"#,
+    )
+    .unwrap();
+    push_with("3");
+    assert_eq!(server.count_events("thread.resolved"), 2);
+    // And so is a change of mind.
+    std::fs::write(
+        &resolutions,
+        r#"[{"thread":"c-1","status":"declined","note":"done, and tested"}]"#,
+    )
+    .unwrap();
+    push_with("4");
+    assert_eq!(server.count_events("thread.resolved"), 3);
+    assert_eq!(server.thread_status("c-1"), "declined");
+}

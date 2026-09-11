@@ -68,6 +68,22 @@ pub struct EventLog {
     poisoned: bool,
 }
 
+/// Whether this state directory's log holds an artifact: something was
+/// pushed here once, so there is a review to open or resume. A log that
+/// holds only lease and cursor records — `serve` followed by an `await` —
+/// is not one. A substring test, because the log is compact serde output
+/// and the type field is written exactly this way; reading every record
+/// through the parser just to answer a yes/no would cost the same as
+/// starting the server this is deciding whether to start. On bytes, not a
+/// decoded string: a torn tail can end inside a multibyte character, and a
+/// log the server would truncate and serve must not read as empty here.
+pub fn has_artifact(dir: &Path) -> bool {
+    const MARK: &[u8] = b"\"type\":\"revision.published\"";
+    std::fs::read(dir.join("events.ndjson"))
+        .map(|bytes| bytes.windows(MARK.len()).any(|w| w == MARK))
+        .unwrap_or(false)
+}
+
 impl EventLog {
     pub fn open(dir: &Path) -> Result<EventLog> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;

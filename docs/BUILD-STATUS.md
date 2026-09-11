@@ -1,6 +1,6 @@
 # Server build status
 
-Current as of 2026-09-11, branch `feat/server-spine`.
+Current as of 2026-09-11, branch `feat/skill`.
 
 ## Why this file exists
 
@@ -21,7 +21,7 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-413 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+449 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
 clean. Sixty-one of the tests run the served page in a headless Chromium;
 they skip with a printed line on a machine without one (see "Plan 3" below).
 
@@ -47,6 +47,10 @@ they skip with a printed line on a machine without one (see "Plan 3" below).
 | the served page | `src/server/page.rs` | the rendered plan at `/a/<artifact>`, the JSON snapshot at `/a/<artifact>/state`, both read under the commit gate |
 | the page itself | `src/plan/assets/plan.js`, `plan.css` | one pure fold, a re-entrant `mount(root)`, the socket client, POSTed commands, composers with drafts, the body swap and its restore, presence, notices, the recovery panel; the static export in the same file |
 | the browser harness | `tests/support/browser.rs`, `tests/browser.rs` | headless Chromium over the DevTools protocol, tungstenite as the client |
+| `open` | `src/commands/serve.rs`, `src/server/page.rs` | a fresh one-time link over the CLI route; starts the server if none |
+| `status --json` | `src/server/status.rs` | artifacts, threads, cursors, presence, and the follow line, read at one moment |
+| the skill | `src/commands/skill.rs`, `skills/artefacto-plan/` | `--print` manifest and `--install DIR`; the package is compiled in |
+| the skill's proofs | `tests/skill_package.rs`, `tests/skill_loop.rs` | every prescribed command parses; the loop runs against a real daemon in both modes |
 
 ## What only running could establish
 
@@ -634,6 +638,360 @@ the orientation banner on a served page says "send your review" rather
 than "copy your feedback". The lesson goes with the one from round twelve:
 the reviews found what a read finds; what a look finds is different.
 
+## Plan 5: `open`, `status --json`, and the skill
+
+Spec 4.5 and 7, with `open` and the fuller `status --json` from spec 5 built
+first because the skill needs both. Three slices, each built, tested,
+mutated, and committed before the next; then the prose; then a hand-drive.
+
+### What was built
+
+- **`artefacto open [--artifact ID] [--no-open] [--json]`.** Asks the server
+  for a fresh bootstrap link over the authenticated CLI route
+  (`POST /cli/open`), prints it, and opens the browser unless `--no-open` or
+  `--json`. With no name it follows `reply`'s rule: one artifact needs no
+  name, several do. An id the fold does not know is refused (exit 2) rather
+  than minted for, because a link that lands on the placeholder page is a
+  link that lied. **It starts the server if none is running**, as `push`
+  does: the page's advice for a dead link or a gone server is "run
+  `artefacto open`", and after a self-exit the log is still there, so one
+  command should be enough.
+- **`status --json`** now carries what spec 5 lists: each artifact with its
+  kind, title, revision, hash, source and feedback paths, `submitted`, open,
+  unanchored and blocking counts, page-level chat, answer and reviewed
+  counts; every lease's cursor; the holder with its age and `acked_seq`;
+  reviewer presence (`pages`, `present`, `seen`, `last_activity_secs`,
+  `idle`, `away`); and the follow line as both `follow.command` and
+  `follow.argv`, under the holder's name. The artifacts and `last_seq` are
+  read under the commit gate, as `/state` reads them, so they describe one
+  moment. Beyond the spec's list: each artifact's **thread list with its
+  messages**, and the page-level chat, as `{actor, text, ts}` in log order,
+  because spec 7's rule 3 ("check the thread for an existing agent reply
+  first") was not executable from anything an agent could run. The token is
+  never in the output; `Holder` has no field for it. The text mode prints
+  the same facts in five lines.
+- **`artefacto skill --print | --install DIR`.** The manifest is
+  `{"format":"artefacto.skill/1","artefacto":"<version>","skills":[{"name",
+  "files":[{"path","contents"}]}]}`; the directory form writes the same
+  files, replacing what is there. Both are `include_str!` of
+  `skills/artefacto-plan/`, so a binary is a complete distribution of the
+  skill that matches it, and `plan schema` prints the same reference.
+- **The skill.** `SKILL.md` is written to be invoked by the model, with a
+  description that says when it applies, a generic section (push, the poll
+  loop, act by the frame's last event, acknowledge, address a review with
+  `--resolutions`), and a Claude Code section (arm a Monitor on the follow
+  line, `ack` after each frame, `PushNotification` on `away`, `TaskStop`
+  when done, and what each monitor exit code means). `reference.md` keeps
+  its schema half unchanged and replaces the command half with the real
+  surface: synopsis, every result's shape, the event table with each type's
+  `data` and whether it wakes the agent, the feedback document as the server
+  writes it, the resolutions file, and `status --json`.
+
+### How the prose is kept honest
+
+- **Every command line in a fenced `bash` block of either file is parsed by
+  the real clap definition** (`tests/skill_package.rs`), after `<seq>` and
+  `"$SESSION"` placeholders are filled. A synopsis lives in a `text` block,
+  which the extractor ignores. Renaming a flag in the binary, or misspelling
+  one in the prose, fails the test; both were mutated to prove it.
+- **`tests/skill_loop.rs` drives a real daemon with exactly the commands the
+  skill prescribes**, in both modes. Monitor mode: push with no server, arm
+  the `follow.argv` status prints, the session line equals the push's
+  token, a chat frame with its passive event, the thread's messages before
+  and after the reply, `ack` twice, the submitted frame's document equals the
+  file on disk, a revision with resolutions in one push, exit 7 on a stale
+  base, kill the follow, exit 6 on the dead token, re-arm without
+  `--session` and resume at the cursor with nothing replayed, exit 0 on
+  `stop`. Poll mode: rejoin by name with no token, the same frame again
+  without `--ack`, the cursor moving with it, the page-level chat's
+  messages before and after a reply, and a submitted review acknowledged by
+  the next call. A third test ages a waiting lease past its TTL and drives
+  the recovery the skill prescribes. The reviewer's cookie comes from `open`, as a browser's would;
+  nothing reaches into the server.
+- **The reference's JSON plan examples still validate** under the real
+  deserializer, as before.
+
+### What only running could establish
+
+1. **macOS has no `timeout`.** The first hand-drive's follow never started
+   and every later step read an empty file. A harness fact, not a product
+   one; the second drive used a background process and `kill -9`.
+2. **A departed page is noticed only on a failed write**, so a status test
+   that closes a page must drive writes (`broadcast_test_frame`) as the
+   loop and page tests already do, or wait twenty seconds for the
+   heartbeat.
+3. **A "last actor" rule survived its own test** with one page-level
+   message, where first and last coincide, and was caught only by the loop
+   test; the review then found the rule itself wrong (round thirteen), and
+   the field is gone.
+
+### Where this diverges from the spec, with the reason
+
+- `open` has `--no-open` and `--json`, which spec 5 did not list; every
+  other browser-opening command has them, and a test cannot open a
+  browser. Recorded in the spec's CLI surface. It starts the server only
+  when the state directory's log holds an artifact (a `revision.published`
+  record, found by a byte search that survives a torn tail); with nothing
+  ever pushed it starts nothing and says so.
+- `--agent` refuses an empty name, a leading `-`, and control characters.
+  The name comes back out of `status --json` as a command line, and a name
+  clap could not read back is a follow line that cannot be armed. The rule
+  lives in the lease (`lease::valid_name`), which every claim passes
+  through, so a caller speaking HTTP with the bearer is refused the same
+  way (400, `invalid_agent`, exit 2); the CLI's parser delegates to it.
+- `await` and `events` results carry `cursor`, where the call started
+  reading, alongside `seq`, the acknowledgement point. The `events` session
+  record's `seq` is that cursor, which is what spec 5 calls it.
+- The follow line is unscoped: `artefacto events --follow --agent <name>`,
+  no `--artifact`. The status route does not know which artifact the
+  caller is working on, and a scoped follow would miss another artifact's
+  review on the same server.
+- `status --json` prints more than spec 5 lists (above). Nothing it lists
+  is missing.
+- The manifest's shape is this plan's choice; spec 4.5 says only "a JSON
+  manifest of relative paths and their contents".
+
+### What is not covered by a test
+
+- **`open_browser` is never exercised**: every test passes `--no-open` or
+  `--json`, because a test that opened a real browser would open one on the
+  developer's machine. The rule that `--json` implies no browser is a unit
+  test on `should_open`, shared with `render`.
+- **The Claude Code section describes another tool.** Monitor,
+  PushNotification and TaskStop are named from their current definitions;
+  no test runs them. The follow line, the session line, and the per-frame
+  `ack` are what the loop test proves.
+- **`reviewer.idle` and `reviewer.away` are not in the loop test.** The
+  nudge command parses, and the events themselves are tested in
+  `server_loop.rs`; the skill's handling of them is prose.
+- **A follow whose server dies without a `stop` also exits 0** (the follow
+  treats a vanished server as the stop, by design). The skill says exit 0
+  means the server stopped and tells the agent to push or `serve` if the
+  review is still open, which covers both, but the two are not told apart.
+- `status --json`'s `answers` count has no fixture with a question behind
+  it in the status test; it mirrors `feedback.rs`'s non-empty rule, which
+  is tested there. `last_activity_secs` is asserted to exist, not for its
+  value. The `cursor` on `await`'s synthesised unreachable timeout is
+  asserted nowhere: no test reaches that path.
+- **The `revision_seq` hazard is prose only.** Nothing stops an agent from
+  running `ack --seq <revision_seq>` and skipping reviewer events it never
+  saw. A server-side guard (refuse an ack beyond the highest seq delivered
+  to that name) would make the rule structural; it is noted, not built,
+  because delivery is not logged and the guard would have a hole across a
+  restart.
+
+### The hand-drive
+
+Against a real daemon in a scratch repository with the built binary, twice.
+First: push with no server, `status` in both modes, `open --json` and the
+cookie from its link, a thread and a chat from the page, `reply`,
+`resolve`, a push with resolutions, a stale push refused with exit 7 and a
+message naming `status --json`, `stop`, then `status` exiting 4. Second,
+the monitor half: the follow line copied from `status`, its session line
+carrying the push's token and the lease live with the follow's pid, the
+chat frame with its passive event first, the thread's messages showing the
+reply, `ack`, the submitted frame naming the feedback file, the agent's
+own push not delivered back, `kill -9` releasing the lease within half a
+second, the dead token refused with exit 6 and a message saying why, the
+re-armed follow's session line at the acknowledged cursor with a
+generation-2 token, and `stop` exiting it 0 with nothing printed but that
+line.
+
+### Review round thirteen: plan 5, reviewed fresh
+
+A fresh reviewer on a different model read the five commits against the
+spec in a detached worktree, followed SKILL.md step by step against a real
+daemon, ran a five-and-a-half-minute lease-expiry experiment and a hostile
+agent-name experiment, and found the locking sound, no credential in
+`status`, the open route gated, the manifest as described, and every spec 7
+rule present. Five confirmed defects, two suspicions, ten prose findings,
+and eight test-strength findings. What changed:
+
+1. **The "check first" rule lost the second of two back-to-back questions**
+   (high). The skill said: if the thread's last message is yours, skip.
+   After answering the first of two questions the last message is the
+   agent's and the second is unanswered, and no seq comparison can tell the
+   two apart either, because the reply to the first comes after the second
+   in the log. `status --json` now carries every thread's `messages` and
+   the page-level `chat` as arrays of `{actor, text, ts}` in log order, and
+   the rule is what spec 7 literally says: read the thread and reply to what
+   is unanswered. `last_actor` and `chat_last_actor` are gone; they invited
+   the wrong check. The loop test drives two questions in a row and asserts
+   the data the rule reads.
+2. **The poll loop was told the wrong recovery for its own expired token.**
+   Five minutes without a call releases a waiting lease, and every call
+   with the old token then exits 6 — the same code as "another agent holds
+   it" — where the skill said to consider `--takeover`. One rule for both
+   modes now: call again without `--session` under the same name; if that
+   answers, its token is the new one and the cursor was kept; if it exits 6
+   too, another agent has the review. A test ages the lease and drives the
+   recovery.
+3. **An agent name starting with `-` produced an unrunnable follow line.**
+   clap refuses a hyphen-leading value in separated form, and `--agent=-x`
+   was the one way to choose such a name. `--agent` now refuses an empty
+   name, a leading `-`, and control characters, on every command that
+   takes it.
+4. **`open` on a repository with nothing pushed started a daemon and
+   abandoned it** for half an hour. It starts one only when the state
+   directory's log holds an artifact; otherwise it says "push a plan first"
+   and starts nothing. The test that had run `serve` first hid this; it now
+   runs `serve`, an `await`, and `stop` first — a state directory and a log
+   with a lease record in it, and no artifact — and asserts no server was
+   started.
+5. `revision_seq` is the seq of the **last** event the push appended (the
+   last resolution, when there are any), not of `revision.published`. The
+   prose said the latter.
+
+Suspicion adopted: **the session record's `seq` was the first poll's result
+seq, not the cursor.** With a frame pending when a follow re-armed, the line
+named that frame's seq; an agent that took it for its position and
+acknowledged it would have skipped the frame. The `await` and `events`
+results now carry `cursor` (where the call started reading), the session
+line prints that, and the loop test re-arms with a chat pending and asserts
+the line's seq is the acknowledged cursor and the pending frame follows.
+The hand-drive's "at the acknowledged cursor" had been true only because
+nothing was pending.
+
+Prose findings adopted: the Monitor example lacked the tool's required
+`timeout_ms`; `PushNotification` is "if available" in both places; a
+redelivered `review.submitted` has a check-first step (round fourteen then
+rewrote it); `--base-revision` after exit 7
+is stated once, plainly (the re-read revision is the new base); a restart
+after exit 0 is `artefacto serve`, not a push that mints a revision the
+reviewer sees; "the next call exits 4" holds only when the server is gone;
+`quote` is `""` in the event and `null` in the document. Test-strength
+findings adopted: the open route's 401 is asserted; the two paths that had
+failed by hand are driven. Left as is, and noted: the negative
+`no_frame_within` assertions (the positive frame that follows each one
+covers them); the reference contributes no `bash` block to the parse test
+(its synopsis was checked against `--help` by hand, flag for flag);
+`--json` implies `--no-open` for `open` and `render` but not `push`, which
+opens the reviewer's browser on the first push by design; `ack --seq
+<revision_seq>` is accepted by the server, recorded above as prose-only by
+decision.
+
+The second suspicion — that `PushNotification` might not exist as a tool —
+is answered by its definition in this harness; the prose says "if
+available" because another harness may lack it.
+
+### Review round fourteen: the fix slice, reviewed fresh
+
+A fresh reviewer on a different model read the fix slice, ran a real
+five-and-a-half-minute expiry, drove every follow case for the session
+line's cursor, and ran five mutations against the new tests (all caught).
+Seven confirmed defects, one medium and six low, three of them regressions
+from the fix slice; all closed:
+
+1. **The new check-first step for a review skipped an `approve` with
+   nothing open** (medium, regression). "Every comment the review lists as
+   open is already resolved" is vacuously true of a review that lists none,
+   which is the ordinary end of a review, so a literal reader never reached
+   "say so and stop". The same step also skipped a review whose threads had
+   been resolved in place with `resolve --changed` when the push that
+   carries the change never landed (low, regression). The step now has four
+   cases: no open comment, go to the verdict; all resolved and the
+   artifact's revision above the review's `base_revision`, addressed and
+   landed, skip; all resolved and the revision unchanged, push now;
+   otherwise address what is open. The revision comparison alone was not
+   enough either: a chat answered with a push between the review and its
+   frame would read as "already addressed".
+2. **`open` still started a daemon for a log with only lease records**
+   (`serve`, one `await`, `stop`). The check is now for an artifact in the
+   log, not for bytes; the test leaves exactly that log behind.
+3. **The name rule lived only in the CLI**: a bearer holder speaking HTTP
+   could still record `-x`. Already closed, in the commit after the
+   reviewer's worktree was cut: `lease::valid_name` runs inside
+   `lease::acquire`, the CLI's parser delegates to it, and the refusal maps
+   to 400 `invalid_agent` (exit 2) through the lease error's own table,
+   which every refusal site — `push`'s included, since round fifteen —
+   reads. A server test sends the reviewer's own requests and asserts
+   nothing was written.
+4. **The two exit-4 rows still said push** while the new exit-0 bullet said
+   `serve` (regression). Both say `serve` now.
+5. `await`'s synthesised unreachable timeout carried no `cursor`, and the
+   reference never named the field. Both fixed.
+6. The record said the no-log test no longer ran `serve` first; it does,
+   then `stop`. The sentence is fixed and the test now leaves a lease
+   record in the log too (item 2).
+
+Prose findings adopted: the session line's `seq` is `--since` when one was
+passed; exit 6's stderr names the holder only when another agent has it;
+`quote` is `""` in status when nothing was selected; the earlier-session
+paragraph is worded in the same terms as `--base-revision`; `status --json`
+is the whole review, so the skill says to read only the thread it needs.
+Suspicions noted, not acted on: the token is shared between a follow and a
+poll under one name, so killing the follow kills the poll side's token too
+(by design; the exit-6 section covers it); cursors are never
+garbage-collected (a name that claimed once keeps its entry); the reviewer's
+harness had no `PushNotification` tool, which is why the prose says "if
+available". Test-strength note accepted as stated: the two-questions test
+proves the data the rule reads, in log order with the agent's own reply
+included, not the rule, which is prose.
+
+Round thirteen found one high defect in the skill's rule and four in the
+code around it; round fourteen found one medium in the prose the first
+round's fixes added, one incomplete fix in the lease (the name rule was
+CLI-only), and nothing in the server's delivery or status code.
+
+### Review round fifteen: the second fix slice, reviewed fresh, and why the loop stops
+
+A third fresh reviewer read the round-fourteen fixes narrowly, walked the
+review check-first step through eleven scenarios against the binary, and
+tried to plant and to break the artifact check. Four confirmed defects,
+one medium and three low, three of them regressions from the slice; all
+closed:
+
+1. **The check-first step's "resolved in place, push now" case addressed
+   every thread twice** (medium, regression): "do step 4" meant pushing
+   with `--resolutions`, the server appended each note a second time, and
+   a review whose comments were all declined in place got a revision for
+   nothing. Two things changed. The prose splits the case by status (any
+   `changed`, push the revision without resolutions; all `declined`,
+   nothing to push) and every case now ends at step 5, then 6, so a
+   verdict is never dropped (the second case had said "acknowledge and
+   skip", which lost an `approve` whose snapshot still listed open
+   comments — the third defect). And **the server ignores a resolution
+   that repeats a thread's current status and note**, in `push
+   --resolutions` and in `resolve` alike (`resolve` answers `seq: 0` with
+   `repeated: true`, the page's own "already done" shape), so "safe to run
+   twice" holds for resolving whatever the prose says. A different note or
+   a change of mind is still recorded. Two tests pin it both ways.
+2. **`has_artifact` read the log as a string** and a torn tail ending
+   inside a multibyte character made `open` say there was nothing to open
+   for a repository with a review, while `serve` truncated the tail and
+   served it (low, regression). It searches bytes now; a test tears the
+   log inside `é`.
+3. An `unanchored` thread fell through every case of the step (low,
+   pre-existing): it counts as open and is resolved with a note that its
+   element is gone. `resolve` accepts an unanchored thread.
+
+Prose findings adopted: the step names its three fields; `--base-revision`
+is the last push's revision only if you pushed since the review was made;
+exit 6's stderr says the token is no longer valid rather than why; `open`
+starts a server only when the log holds an artifact; two doc comments and
+three sentences of this record that had drifted (the `open` divergence
+bullet, the round-fourteen closing count, and "one table", which `push`'s
+own refusal table had contradicted; it delegates now, and `push` answers a
+lease error with the lease's status rather than 409 for everything).
+Suspicions noted: a torn first push whose only record is a complete-looking
+`revision.published` still starts a daemon that reports nothing to open; a
+repeated submit against one revision is accepted by design and is what
+makes a stale snapshot reachable without a crash; the synthesised
+unreachable timeout's `seq` now agrees with a live empty timeout under
+`--since`. Test-strength findings adopted: the server-side name test
+asserts nothing was written; `status` asserts a non-empty `quote`.
+
+**The loop stops here for plan 5.** Three rounds found 5, 7 and 4 defects,
+and after the first every medium finding was in the check-first prose the
+previous round's fix had added: a rule that reads the review's snapshot
+against live state has a case for each way the two can disagree, and each
+round found one more. What ends that is not another sentence but the
+server refusing to record the same resolution twice, which is now the
+case, with the prose leaning on it. What remains is the low level: a
+daemon that idles for a torn first push, a snapshot semantics note, and
+prose that a fourth reader would rephrase. The next real finding will come
+from an agent running the skill, not from another read.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
@@ -675,24 +1033,20 @@ All are in `docs/specs/2026-09-06-artefacto-design.md`:
    spec 7's rules say the agent acknowledges after acting. The sentence that
    had the next call acknowledge by itself is marked as the at-most-once it
    was. `events` prints an `artefacto.session/1` line first.
+5. `open` gained `--no-open` and `--json`, and its no-id form is spelled out:
+   one artifact needs no id; several open the index, which is plan 4.
 
 ## What is not built
 
-- **`status --json` returns a minimal shape.** It has the port, the last seq and
-  the lease; spec 5 also wants artifacts, revisions, thread counts, reviewer
-  presence, and the `events --follow` command line for the skill to arm.
-- **`open` is not implemented.** `push` mints a bootstrap URL, so there is no
-  way to get a fresh one without pushing.
 - **`--passive live` is not implemented.** Delivery is digest-only, which is
   spec 16's default. Live mode's rate limit (one passive frame per 30 seconds,
   a 5 minute age cap, coalescing repeated edits to the same ref) is plan 2b's
   Task 5 and is untouched.
 - **`list`, the artifact index, and posters** are plan 4.
 - **`clean`** is plan 4.
-- **`skill --print` / `--install`** are plan 5.
-- **`artefacto open`** is still not implemented, so a page that says "run
-  `artefacto open` for a fresh link" is pointing at a command that does not
-  exist yet. A second `push` is the only way to mint one.
+- **cargo-dist release configuration** is the rest of plan 5.
+- **The no-id form of `open` with several artifacts** opens nothing: it asks
+  for `--artifact`, because the index it should open is plan 4.
 - **Question `options`** (spec 4.3): answers are free text, as v1 says.
 
 ## What is not covered by a test
@@ -800,6 +1154,33 @@ failed, a lost page keeping its pending marks, and (survived, redundant) a
 probe result applied on a live socket. Round twelve's fixes: the chat
 composer's id not stable across a swap, Retry not rendering the pill,
 Cancel not closing the chat, and a lost page dropping its accepted writes.
+
+Plan 5 was checked the same way. `open`: an unknown artifact minted for,
+the first of several artifacts picked without a name, the server not
+started, the page route returned instead of a fresh mint, and nothing
+pushed minted for anyway. `status`: `last_actor` from the first message,
+unanchored always zero, open counting every thread, the follow line
+ignoring the holder, a name never quoted, `present` always true, `seen`
+never true, the feedback path as the source path, blocking counting
+resolved threads, chat counting thread messages, cursors empty, the text
+mode without the follow line, `submitted` never reported, and the revision
+always 1. The skill: `--install` skipping the reference, manifest paths
+without the skill directory, the wrong format string, a flag the binary
+lacks and a subcommand the binary lacks written into SKILL.md, a plan field
+that does not exist written into the reference's example, and
+a "last actor" field from the first message (survived the status test alone,
+caught by the loop test; the field was then removed in round thirteen).
+Every one fails the test that names it. Round thirteen's fixes: the session
+line printing the result's seq instead of the cursor, the await result's
+cursor as the frame seq, `open` starting a server with no log, a log check
+that says yes to any state directory or to an empty file, a leading-dash
+agent name accepted by the CLI and (round fourteen) by the lease, a
+thread's messages without their text, and page chat as a count again.
+Round fourteen's: the artifact check says yes to a log of lease records.
+Round fifteen's: the artifact check as a string search (a torn multibyte
+tail), a repeated resolution appended again by `push` and by `resolve`,
+and the lease check moved after the commit gate opens (the name test's
+write assertion).
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,

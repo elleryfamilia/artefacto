@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod plan;
 pub mod serve;
+pub mod skill;
 
 use crate::cli::{Cli, Command};
 
@@ -43,10 +44,12 @@ pub fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Serve(args) => serve::serve(args),
         Command::Stop => serve::stop(),
         Command::Status { json } => serve::status(*json),
+        Command::Open(args) => serve::open(args),
         Command::Await(args) => agent::await_cmd(args),
         Command::Events(args) => agent::events(args),
         Command::Ack(args) => agent::ack_cmd(args),
         Command::Reply(args) => agent::reply(args),
         Command::Resolve(args) => agent::resolve(args),
+        Command::Skill(args) => skill::run(args),
     }
 }

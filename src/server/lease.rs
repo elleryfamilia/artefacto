@@ -68,7 +68,8 @@ const TTL_SECS: u64 = 300;
 pub const TTL: Duration = Duration::from_secs(TTL_SECS);
 const TTL_MS: i64 = (TTL_SECS * 1000) as i64;
 
-/// Why a lease call was refused. Both map to exit code 6.
+/// Why a lease call was refused. `Held` and `Superseded` map to exit code
+/// 6; `InvalidName` is a usage error, exit 2.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LeaseError {
     /// Another agent holds it. Spec 4.2: the refusal names the current holder
@@ -77,6 +78,8 @@ pub enum LeaseError {
     /// The presented token is not the current one. A takeover, a release, or a
     /// dead `--follow` process has happened since it was minted.
     Superseded,
+    /// The name could not be handed back as a command line. See [`valid_name`].
+    InvalidName(String),
 }
 
 impl std::fmt::Display for LeaseError {
@@ -92,11 +95,49 @@ impl std::fmt::Display for LeaseError {
                 "this session token is no longer valid; another agent took the \
                  lease, or it was released"
             ),
+            LeaseError::InvalidName(why) => f.write_str(why),
         }
     }
 }
 
+/// Whether a lease name can make the round trip through `status --json`.
+///
+/// The name comes back out as `--agent <name>` in the follow line the skill
+/// arms, and clap reads a separated value that starts with `-` as another
+/// flag; empty, and control characters, would not survive a shell either.
+/// Checked here, at the one place every claim passes through, rather than
+/// only in the CLI's parser: a caller that speaks HTTP with the bearer is
+/// still a caller.
+pub fn valid_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("an agent name cannot be empty".to_string());
+    }
+    if name.starts_with('-') {
+        return Err(format!("an agent name cannot start with `-`: {name:?}"));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(format!(
+            "an agent name cannot contain a control character: {name:?}"
+        ));
+    }
+    Ok(())
+}
+
 impl std::error::Error for LeaseError {}
+
+impl LeaseError {
+    /// The HTTP status and error code a route answers with. One table, so
+    /// the four routes that refuse a lease cannot drift: `lease_held` and
+    /// `lease_superseded` are exit 6 on the client, `invalid_agent` is a
+    /// usage error, exit 2.
+    pub fn http(&self) -> (u16, &'static str) {
+        match self {
+            LeaseError::Held { .. } => (409, "lease_held"),
+            LeaseError::Superseded => (409, "lease_superseded"),
+            LeaseError::InvalidName(_) => (400, "invalid_agent"),
+        }
+    }
+}
 
 /// What the server says about the lease in public.
 ///
@@ -240,6 +281,7 @@ enum Decision {
 ///
 /// Safe to call while already holding a `Committer`? No — it opens its own.
 pub fn acquire(shared: &Shared, claim: Claim) -> Result<LeaseRecord, LeaseError> {
+    valid_name(claim.name).map_err(LeaseError::InvalidName)?;
     let committer = Committer::open(shared);
     let now = shared.now_ms();
 

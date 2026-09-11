@@ -113,6 +113,26 @@ pub struct Artifact {
     pub submitted: bool,
 }
 
+impl Thread {
+    /// Whether resolving this thread as `status` with `note` would change
+    /// nothing: the status is already that, and the note is empty or is
+    /// already the thread's last message from the agent. A resolution the
+    /// agent sends twice — after a crash between resolving and
+    /// acknowledging, or a push that repeats resolutions already recorded
+    /// — is then not a second note on the reviewer's page. Spec 7: every
+    /// handler must be safe to run twice.
+    pub fn already_resolved_as(&self, status: &str, note: &str) -> bool {
+        if self.status.as_str() != status {
+            return false;
+        }
+        note.is_empty()
+            || self
+                .messages
+                .last()
+                .is_some_and(|m| m.actor == "agent" && m.text == note)
+    }
+}
+
 impl Artifact {
     pub fn thread(&self, id: &str) -> Option<&Thread> {
         self.threads.iter().find(|t| t.id == id)

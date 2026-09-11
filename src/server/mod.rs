@@ -27,4 +27,5 @@ pub mod push;
 pub mod review;
 pub mod socket;
 pub mod state_dir;
+pub mod status;
 pub mod verbs;

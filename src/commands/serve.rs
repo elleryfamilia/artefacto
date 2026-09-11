@@ -1,6 +1,6 @@
-//! `serve`, `stop`, and `status`.
+//! `serve`, `stop`, `status`, and `open`.
 
-use crate::cli::ServeArgs;
+use crate::cli::{OpenArgs, ServeArgs};
 use crate::server::daemon::{self, ForkOutcome};
 use crate::server::http::{self, Shared, SELF_EXIT};
 use crate::server::log::now_rfc3339;
@@ -175,7 +175,99 @@ pub fn status(json: bool) -> Result<()> {
     if json {
         println!("{value}");
     } else {
-        println!("port {}  last_seq {}", value["port"], value["last_seq"]);
+        print!("{}", status_text(&value));
+    }
+    Ok(())
+}
+
+/// The JSON, as lines a person reads. Same facts, no token.
+fn status_text(value: &serde_json::Value) -> String {
+    let s = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+    let mut out = format!(
+        "port {}  last_seq {}  state {}\n",
+        value["port"],
+        value["last_seq"],
+        s(&value["state_dir"])
+    );
+    let artifacts = value["artifacts"].as_array().cloned().unwrap_or_default();
+    if artifacts.is_empty() {
+        out.push_str("no artifacts yet; push a plan\n");
+    }
+    for a in &artifacts {
+        out.push_str(&format!(
+            "{}  \"{}\"  revision {}  threads: {} open, {} unanchored  submitted: {}\n",
+            s(&a["id"]),
+            s(&a["title"]),
+            a["revision"],
+            a["open_threads"],
+            a["unanchored_threads"],
+            if a["submitted"] == true { "yes" } else { "no" }
+        ));
+    }
+    match value["lease"].as_object() {
+        Some(lease) => out.push_str(&format!(
+            "agent: {} ({}, {}s ago, acked {})\n",
+            s(&lease["agent"]),
+            s(&lease["mode"]),
+            lease["age_secs"],
+            lease["acked_seq"]
+        )),
+        None => out.push_str("agent: none\n"),
+    }
+    let reviewer = &value["reviewer"];
+    out.push_str(&format!(
+        "reviewer: {} page(s) open{}\n",
+        reviewer["pages"],
+        if reviewer["away"] == true {
+            ", away"
+        } else if reviewer["idle"] == true {
+            ", idle"
+        } else {
+            ""
+        }
+    ));
+    out.push_str(&format!("follow: {}\n", s(&value["follow"]["command"])));
+    out
+}
+
+/// `artefacto open`: a fresh one-time link, and the browser on it.
+///
+/// The page sends a reviewer here when its link is spent or the server went
+/// away, so this starts the server if none is running — the log is still
+/// there after a self-exit, and a reviewer told to run `serve` first and then
+/// `open` has been given two commands where one would do. It starts one only
+/// when that log holds an artifact: with nothing ever pushed there is nothing
+/// to open, and a daemon started just to say so would sit idle for half an
+/// hour. A link is printed on stdout whatever else happens, so a caller who
+/// cannot open a browser (an agent sandbox, a remote shell) still has it.
+pub fn open(args: &OpenArgs) -> Result<()> {
+    let dir = current_state_dir()?;
+    if state_dir::read_server_file(&dir).is_none() && !crate::server::log::has_artifact(&dir) {
+        return Err(crate::commands::Exit::new(
+            2,
+            "there is nothing to open yet; push a plan first",
+        )
+        .into());
+    }
+    serve(&ServeArgs {
+        no_open: true,
+        ..Default::default()
+    })
+    .context("starting the review server")?;
+    let client = crate::client::Client::connect()?;
+    let mut query = Vec::new();
+    if let Some(artifact) = &args.artifact {
+        query.push(("artifact", artifact.clone()));
+    }
+    let result = client.call("POST", "open", &query, Duration::from_secs(10))?;
+    let url = result["url"].as_str().unwrap_or_default().to_string();
+    if args.json {
+        println!("{result}");
+    } else {
+        println!("{url}");
+    }
+    if crate::commands::plan::should_open(args.no_open, args.json) {
+        crate::paths::open_browser(&url);
     }
     Ok(())
 }
