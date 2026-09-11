@@ -21,8 +21,8 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-407 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
-clean. Forty-nine of the tests run the served page in a headless Chromium;
+410 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+clean. Fifty-two of the tests run the served page in a headless Chromium;
 they skip with a printed line on a machine without one (see "Plan 3" below).
 
 | area | file | notes |
@@ -293,7 +293,7 @@ one the tests print a skip line and pass, and `ARTEFACTO_REQUIRE_BROWSER=1`
 makes that a failure. **CI must install a Chromium or set that variable**, or
 the browser suite is silently green.
 
-The forty-nine tests cover the loop end to end and the races spec 14 names:
+The fifty-two tests cover the loop end to end and the races spec 14 names:
 a push while typing (draft kept, `opened_revision` is the old one), a draft
 and a thread whose element was removed (recovery panel, re-anchoring when it
 returns), focus and caret across a push, scroll anchored to an element across
@@ -507,10 +507,43 @@ has stayed open three seconds); the "gone" notice says whether HTTP answers;
 a sent chat message leaves a fresh composer in the open panel.
 
 The mutation pass caught seven of nine. The survivors: the buffer sort is
-redundant with the per-key rule for set-valued writes and no test asserts
-message order across a drain; and the "probe not marked as catching up"
-mutation was a no-op, because the probe is now the resync that marks it —
-the test's wait for that state is the rule.
+redundant with the per-key rule for set-valued writes (round ten gave it a
+test with appended messages); and the "probe not marked as catching up"
+mutation was a no-op, because the probe is now the resync that marks it.
+
+## Review round ten: the fourth fix slice, reviewed fresh
+
+A sixth fresh reviewer read commit `95a9f1a` and drove it. Two confirmed
+defects and three test findings, all closed in commit `270cdef`:
+
+1. **A resync that overtook the probe's own read as "server gone".** A
+   retried write's reply starts a resync; if it superseded the probe's, the
+   probe took "superseded" for "not answering", declared the server gone
+   and stopped reconnecting while HTTP answered and a socket was there. A
+   resync now reports applied, superseded, or failed, and the probe asks
+   again on superseded.
+2. **A phase's error line toggled the phase**: it sits after the label
+   inside the summary, and the summary's click handler ignored only
+   controls. The line stops its own clicks and the handler ignores it.
+3. **The probe-write test asserted after a real reconnect had already
+   repaired the page.** It keeps the socket failing and asserts on the
+   probe's own snapshot.
+4. **The buffer sort had no detecting test**, because set-valued marks
+   settle by seq whatever the order. A test with appended messages shows
+   it.
+5. **Two mark tests waited by sleeping.** They wait on the page's pending
+   marks, which `debug()` now reports; the fetch shim releases held
+   responses per path.
+
+Adopted: a lost page clears its catching-up state; a chat composer opened
+after a send stores no draft until typed into. Left, and noted: a socket
+that lives under three seconds each time takes a few minutes of cycles
+before "gone" (bounded); a re-push during a socket outage can flicker the
+"gone" notice once; the end-of-backoff wording says whether HTTP answered.
+
+The mutation pass caught five of six (two after adding the assertions they
+lacked). The survivor is the summary handler's exclusion of error lines,
+which the line's own click handler makes redundant.
 
 ## Where the code diverges from plan 2b, with the reason
 
@@ -668,7 +701,10 @@ redundant) the buffer drained in arrival order, (survived, a no-op mutation)
 the probe not marked as catching up, the error line inside the label, the
 retry budget reset on every open, a 404 not rendered, no composer after a
 chat send, the toggle error never cleared, and changed-to-declined not
-counted.
+counted. Round ten's fixes: superseded read as gone, the error line's click
+not stopped, (survived, redundant) the summary handler not ignoring error
+lines, the buffer drained in arrival order, a post-send chat composer
+storing an empty draft, and a lost page left catching up.
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,
