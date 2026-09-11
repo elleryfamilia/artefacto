@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod plan;
 pub mod serve;
+pub mod skill;
 
 use crate::cli::{Cli, Command};
 
@@ -49,5 +50,6 @@ pub fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Ack(args) => agent::ack_cmd(args),
         Command::Reply(args) => agent::reply(args),
         Command::Resolve(args) => agent::resolve(args),
+        Command::Skill(args) => skill::run(args),
     }
 }

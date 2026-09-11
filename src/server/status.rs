@@ -102,6 +102,7 @@ fn artifact_json(artifact: &Artifact) -> serde_json::Value {
             .count(),
         "threads": threads,
         "chat": artifact.chat.len(),
+        "chat_last_actor": artifact.chat.last().map(|m| m.actor.as_str()),
         "answers": artifact.answers.values().filter(|a| !a.is_empty()).count(),
         "reviewed": artifact.reviewed.len(),
     })

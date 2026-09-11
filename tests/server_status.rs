@@ -172,6 +172,10 @@ fn status_json_lists_each_artifact_with_its_review_state() {
         "a resolved thread blocks nothing, whatever its checkbox said: {a}"
     );
     assert_eq!(a["chat"], 1, "page-level chat, not thread chat: {a}");
+    assert_eq!(
+        a["chat_last_actor"], "reviewer",
+        "rule 3 for page-level chat: whose message is last: {a}"
+    );
     assert_eq!(a["reviewed"], 1, "{a}");
 
     let threads = a["threads"].as_array().expect("threads");

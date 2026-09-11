@@ -41,6 +41,21 @@ pub enum Command {
     Reply(ReplyArgs),
     /// Mark a thread addressed or declined.
     Resolve(ResolveArgs),
+    /// Emit the skill package: a JSON manifest, or files under a directory.
+    Skill(SkillArgs),
+}
+
+/// Exactly one form. Spec 4.5: the manifest is what a skill lifecycle
+/// consumes; the directory is for anything that would rather copy files.
+#[derive(Args, Debug)]
+#[command(group = clap::ArgGroup::new("form").required(true))]
+pub struct SkillArgs {
+    /// Print a JSON manifest of every file's relative path and contents.
+    #[arg(long, group = "form")]
+    pub print: bool,
+    /// Write the package under this directory, replacing what is there.
+    #[arg(long, group = "form", value_name = "DIR")]
+    pub install: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
