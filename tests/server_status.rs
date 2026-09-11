@@ -111,8 +111,17 @@ fn status_json_lists_each_artifact_with_its_review_state() {
         ])
         .success();
     // A blocking thread the agent changed the plan for: resolved, so it no
-    // longer blocks anything.
-    let third = r.open_thread(&cookie, "cid-6", "meta:demo", true);
+    // longer blocks anything. Opened on a selection, so `quote` has a value.
+    let opened = r.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "thread.open", "client_id": "cid-6", "ref": "meta:demo",
+            "text": "about the plan", "blocking": true, "quote": "Demo plan",
+            "opened_revision": 1,
+        }),
+    );
+    let third = opened["assigned"].as_str().expect("an id").to_string();
     r.repo
         .run(&["resolve", &third, "--session", &r.session, "--changed"])
         .success();
@@ -198,6 +207,7 @@ fn status_json_lists_each_artifact_with_its_review_state() {
         threads[0]["quote"], "",
         "nothing was selected when this thread opened: {a}"
     );
+    assert_eq!(threads[2]["quote"], "Demo plan", "the selection: {a}");
     let messages = threads[0]["messages"].as_array().expect("messages");
     assert_eq!(
         messages.len(),

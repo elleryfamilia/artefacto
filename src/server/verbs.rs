@@ -121,7 +121,29 @@ pub fn handle_resolve(shared: &Arc<Shared>, request: Request, query: &Query) {
         drop(committer);
         return refuse_lease(request, e);
     }
-    let revision = committer.with_review(|r| r.artifacts.get(&artifact).map_or(0, |a| a.revision));
+    let (revision, repeated) = committer.with_review(|r| {
+        let a = r.artifacts.get(&artifact);
+        (
+            a.map_or(0, |a| a.revision),
+            a.and_then(|a| a.thread(&thread))
+                .is_some_and(|t| t.already_resolved_as(status, &note)),
+        )
+    });
+    // The same resolution twice — a crash between resolving and
+    // acknowledging, replayed — records nothing and says so with `seq: 0`,
+    // the "already done" the page's commands use too.
+    if repeated {
+        drop(committer);
+        let _ = request.respond(json_response(
+            200,
+            &serde_json::json!({
+                "ok": true, "artifact": artifact, "thread": thread,
+                "status": status, "seq": 0, "repeated": true,
+            })
+            .to_string(),
+        ));
+        return;
+    }
     let event = match committer.append(
         &artifact,
         revision,

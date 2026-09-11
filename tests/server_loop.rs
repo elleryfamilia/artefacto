@@ -715,3 +715,55 @@ fn an_idle_nudge_reaches_the_agent_as_an_active_frame() {
         "named so an agent filtering with --artifact still hears it"
     );
 }
+
+#[test]
+fn resolving_a_thread_the_same_way_twice_records_it_once() {
+    // A crash between `resolve` and `ack` replays the frame, and the agent
+    // resolves again. The reviewer must see one note, not two.
+    let l = start();
+    let cookie = l.cookie();
+    let opened = l.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "thread.open", "client_id": "cid-1", "ref": "task:t-a",
+            "text": "why?", "blocking": false, "opened_revision": 1,
+        }),
+    );
+    let thread = opened["assigned"].as_str().unwrap().to_string();
+    let resolve = |note: &str, verdict: &str| {
+        l.repo.run(&[
+            "resolve",
+            &thread,
+            "--session",
+            &l.session,
+            verdict,
+            "--note",
+            note,
+        ])
+    };
+    let first: serde_json::Value =
+        serde_json::from_str(resolve("done", "--changed").success().stdout.trim()).unwrap();
+    assert!(first["seq"].as_u64().unwrap() > 0);
+    let again: serde_json::Value =
+        serde_json::from_str(resolve("done", "--changed").success().stdout.trim()).unwrap();
+    assert_eq!(
+        again["seq"], 0,
+        "the server says it already did this: {again}"
+    );
+    assert_eq!(again["repeated"], true);
+    assert_eq!(l.server.count_events("thread.resolved"), 1);
+    let messages =
+        l.repo.json(&["status", "--json"])["artifacts"][0]["threads"][0]["messages"].clone();
+    assert_eq!(
+        messages.as_array().unwrap().len(),
+        2,
+        "the comment and one note: {messages}"
+    );
+
+    // A different note, or a different verdict, is recorded.
+    resolve("done differently", "--changed").success();
+    resolve("done differently", "--declined").success();
+    assert_eq!(l.server.count_events("thread.resolved"), 3);
+    assert_eq!(l.server.thread_status(&thread), "declined");
+}

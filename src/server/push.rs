@@ -86,9 +86,18 @@ impl Refusal {
             Refusal::MissingBaseRevision => "base_revision_required",
             Refusal::Stale { .. } => "stale_base_revision",
             Refusal::Invalid(_) => "invalid_push",
-            Refusal::Lease(lease::LeaseError::Held { .. }) => "lease_held",
-            Refusal::Lease(lease::LeaseError::Superseded) => "lease_superseded",
-            Refusal::Lease(lease::LeaseError::InvalidName(_)) => "invalid_agent",
+            // The lease's own table, so this cannot drift from the other
+            // routes that refuse a lease.
+            Refusal::Lease(e) => e.http().1,
+        }
+    }
+
+    /// The HTTP status. Every refusal here is a conflict with the server's
+    /// state except a lease error, which carries its own.
+    fn status(&self) -> u16 {
+        match self {
+            Refusal::Lease(e) => e.http().0,
+            _ => 409,
         }
     }
 
@@ -148,7 +157,11 @@ pub fn handle_push(shared: &Arc<Shared>, mut request: Request, query: &Query) {
             let _ = request.respond(json_response(200, &result.to_string()));
         }
         Err(refusal) => {
-            let _ = request.respond(error_response(409, refusal.code(), &refusal.message()));
+            let _ = request.respond(error_response(
+                refusal.status(),
+                refusal.code(),
+                &refusal.message(),
+            ));
         }
     }
 }
@@ -195,15 +208,16 @@ pub fn commit(
 
     let (current, previous_plan, threads) =
         committer.with_review(|review| match review.artifacts.get(&artifact) {
-            Some(a) => (
-                a.revision,
-                a.plan.clone(),
-                a.threads.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
-            ),
+            Some(a) => (a.revision, a.plan.clone(), a.threads.clone()),
             None => (0, serde_json::Value::Null, Vec::new()),
         });
     check_base_revision(current, body.base_revision, body.force)?;
 
+    // Every resolution is validated, and the ones that would change nothing
+    // are dropped rather than appended: a push that repeats resolutions the
+    // server already holds — the agent's crash between its push and its
+    // acknowledgement, replayed — must not put a second note on the page.
+    let mut fresh: Vec<&Resolution> = Vec::with_capacity(body.resolutions.len());
     for resolution in &body.resolutions {
         if !matches!(resolution.status.as_str(), "changed" | "declined") {
             return Err(Refusal::Invalid(format!(
@@ -211,11 +225,14 @@ pub fn commit(
                 resolution.thread, resolution.status
             )));
         }
-        if !threads.contains(&resolution.thread) {
+        let Some(thread) = threads.iter().find(|t| t.id == resolution.thread) else {
             return Err(Refusal::Invalid(format!(
                 "no such thread on {artifact}: {}",
                 resolution.thread
             )));
+        };
+        if !thread.already_resolved_as(&resolution.status, &resolution.note) {
+            fresh.push(resolution);
         }
     }
 
@@ -239,7 +256,7 @@ pub fn commit(
             "summary": summary,
         }),
     )];
-    for resolution in &body.resolutions {
+    for resolution in fresh {
         entries.push(Pending::new(
             &artifact,
             revision,

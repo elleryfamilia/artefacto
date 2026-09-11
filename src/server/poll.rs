@@ -235,7 +235,7 @@ pub fn claim(shared: &Arc<Shared>, query: &Query) -> Result<LeaseRecord, LeaseEr
     )
 }
 
-/// Both lease refusals are exit 6 on the agent's side; the body carries which
+/// A held or superseded lease is exit 6 on the agent's side; a name that could not be handed back is exit 2; the body carries which
 /// one and, for `held`, who has it.
 fn refuse(request: Request, error: LeaseError) {
     let (status, code) = error.http();

@@ -164,6 +164,35 @@ fn open_with_nothing_pushed_says_so_and_starts_nothing() {
 }
 
 #[test]
+fn open_recovers_a_log_whose_torn_tail_ends_inside_a_multibyte_character() {
+    // A crash mid-record can leave the log ending in the first byte of a
+    // multibyte character. The server truncates that tail and serves the
+    // rest; `open` must reach the same answer rather than read the log as
+    // empty and say there is nothing to open.
+    let repo = Repo::new();
+    let plan = plan_in(&repo, "minimal.json");
+    push(&repo, &plan);
+    repo.stop();
+    let log = repo.state_dir().join("events.ndjson");
+    let mut bytes = std::fs::read(&log).unwrap();
+    bytes.extend_from_slice(
+        b"{\"format\":\"artefacto.event/1\",\"seq\":9,\"data\":{\"text\":\"caf\xc3",
+    );
+    std::fs::write(&log, &bytes).unwrap();
+    assert!(
+        String::from_utf8(bytes).is_err(),
+        "the fixture is not valid UTF-8"
+    );
+
+    let out = repo.run(&["open", "--no-open"]);
+    let port = repo.port();
+    repo_stop_later(&repo, || {
+        let url = out.success().stdout.trim().to_string();
+        assert_signs_in_once(port, &url, "plan:demo");
+    });
+}
+
+#[test]
 fn open_against_a_running_server_with_nothing_pushed_says_so() {
     let repo = Repo::new();
     repo.run(&["serve", "--no-open"]).success();

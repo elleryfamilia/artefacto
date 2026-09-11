@@ -74,10 +74,13 @@ pub struct EventLog {
 /// is not one. A substring test, because the log is compact serde output
 /// and the type field is written exactly this way; reading every record
 /// through the parser just to answer a yes/no would cost the same as
-/// starting the server this is deciding whether to start.
+/// starting the server this is deciding whether to start. On bytes, not a
+/// decoded string: a torn tail can end inside a multibyte character, and a
+/// log the server would truncate and serve must not read as empty here.
 pub fn has_artifact(dir: &Path) -> bool {
-    std::fs::read_to_string(dir.join("events.ndjson"))
-        .map(|text| text.contains("\"type\":\"revision.published\""))
+    const MARK: &[u8] = b"\"type\":\"revision.published\"";
+    std::fs::read(dir.join("events.ndjson"))
+        .map(|bytes| bytes.windows(MARK.len()).any(|w| w == MARK))
         .unwrap_or(false)
 }
 

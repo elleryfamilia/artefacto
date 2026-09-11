@@ -289,7 +289,7 @@ artefacto skill  (--print | --install DIR)
 | `reply` | a message in a thread (`--thread`) or on the page (`--artifact`, omitted when the server has one artifact); `--nudge` posts a banner instead and logs nothing |
 | `resolve` | marks a thread `changed` or `declined`, with a note the reviewer reads in it |
 | `status` | the review as an agent needs it to rejoin; never the token |
-| `open` | a fresh one-time link to the page; starts the server if none is running |
+| `open` | a fresh one-time link to the page; starts the server if none is running and the log holds an artifact |
 | `serve`, `stop` | the daemon by hand; `push` and `open` start it for you |
 | `skill` | this package, as a JSON manifest (`--print`) or written under a directory (`--install`) |
 
@@ -308,7 +308,7 @@ invalidates its token; use it only when the user says so.
 | 1 | the document read fine but failed validation, or a static render is stale or missing |
 | 2 | usage or IO: an unreadable file, a bad argument, a failed write, or a call the server refused for a reason with no code of its own (message on stderr) |
 | 4 | no server is running for this repository |
-| 6 | the lease is held by another agent (stderr names the holder), or the token presented is superseded or dead (stderr says it was released) |
+| 6 | the lease is held by another agent (stderr names the holder), or the token presented is superseded or dead (stderr says it is no longer valid) |
 | 7 | `push` was made with a `--base-revision` the server has moved past |
 
 Every JSON result carries a boolean `ok`. A refused call prints

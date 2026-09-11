@@ -167,18 +167,25 @@ artefacto reply --session "$SESSION" "Yes. I will add a rollback step to phase t
 its path on disk as `data.path` (`<plan stem>-feedback.json`, beside the
 plan), and `data.verdict`: `approve`, `comment`, or `request_changes`.
 
-0. **Check first**: the frame may be a redelivery. Take the comments this
-   review lists as `open`, and look at `artefacto status --json`.
-   - If the review lists no open comment, there is nothing to address: go
-     straight to step 5.
-   - If every one of them is now `changed` or `declined` **and**
-     `artifacts[].revision` is greater than the review's `base_revision`,
-     you addressed this review and your push landed before a crash:
-     acknowledge and skip.
-   - If they are all resolved but the revision is unchanged, you resolved
-     them in place and the push that carries the change never landed: do
-     step 4 now.
-   - Otherwise, address the ones still open.
+0. **Check first**: the frame may be a redelivery. Take the review's open
+   comments (`data.feedback.comments[]` with `status` `open`), the live
+   threads in `artefacto status --json` (`artifacts[].threads[].status`),
+   and the revision (`artifacts[].revision` against
+   `data.feedback.base_revision`). Exactly one case applies, and every case
+   ends at step 5, then step 6:
+   - The review lists no open comment: nothing to address; go to step 5.
+   - Every one of them is now `changed` or `declined` **and** the revision
+     is above the review's base: you addressed it and your push landed
+     before a crash; go to step 5.
+   - Every one of them is resolved but the revision is unchanged: you
+     resolved them in place. If any is `changed`, the plan change it
+     promises has not landed: push the revision now (step 4, **without**
+     `--resolutions`; a resolution that repeats a thread's status and note
+     is ignored by the server anyway). If all are `declined`, there is
+     nothing to push. Then step 5.
+   - Otherwise, address the ones still open, with steps 1 to 4. An
+     `unanchored` thread counts as open: resolve it too, with a note saying
+     its element is gone.
 1. Read `feedback.comments`. Each has a server-assigned `id` (`c-1`, `c-2`,
    …), a `ref` naming the element (`task:t-session-store`, `phase:p-core`,
    `risk:r-locking`, `question:q-ttl`, or `meta:<plan id>`), its `text`,
@@ -208,8 +215,9 @@ artefacto plan push plan.json --json --session "$SESSION" --base-revision <revis
 ```
 
    `--base-revision` is the revision **you last saw**: the `revision` of
-   your last push, or the review's `base_revision`. It is not read from the
-   server at push time, because that would make the check meaningless. Exit
+   your last push if you have pushed since this review was made, otherwise
+   the review's `base_revision`. It is not read from the server at push
+   time, because that would make the check meaningless. Exit
    7 means the server is ahead because someone else pushed: run `artefacto
    status --json`, read `artifacts[].revision`, look at what changed since
    the revision you knew, and push again with that revision as the base.

@@ -238,9 +238,8 @@ fn status_text(value: &serde_json::Value) -> String {
 /// `open` has been given two commands where one would do. It starts one only
 /// when that log holds an artifact: with nothing ever pushed there is nothing
 /// to open, and a daemon started just to say so would sit idle for half an
-/// hour. A
-/// link is printed on stdout whatever else happens, so a caller who cannot
-/// open a browser (an agent sandbox, a remote shell) still has it.
+/// hour. A link is printed on stdout whatever else happens, so a caller who
+/// cannot open a browser (an agent sandbox, a remote shell) still has it.
 pub fn open(args: &OpenArgs) -> Result<()> {
     let dir = current_state_dir()?;
     if state_dir::read_server_file(&dir).is_none() && !crate::server::log::has_artifact(&dir) {

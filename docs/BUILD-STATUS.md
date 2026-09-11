@@ -21,7 +21,7 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-445 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+449 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
 clean. Sixty-one of the tests run the served page in a headless Chromium;
 they skip with a printed line on a machine without one (see "Plan 3" below).
 
@@ -730,8 +730,9 @@ mutated, and committed before the next; then the prose; then a hand-drive.
 - `open` has `--no-open` and `--json`, which spec 5 did not list; every
   other browser-opening command has them, and a test cannot open a
   browser. Recorded in the spec's CLI surface. It starts the server only
-  when the state directory has a log; with nothing ever pushed it starts
-  nothing and says so.
+  when the state directory's log holds an artifact (a `revision.published`
+  record, found by a byte search that survives a torn tail); with nothing
+  ever pushed it starts nothing and says so.
 - `--agent` refuses an empty name, a leading `-`, and control characters.
   The name comes back out of `status --json` as a command line, and a name
   clap could not read back is a follow line that cannot be armed. The rule
@@ -901,8 +902,10 @@ from the fix slice; all closed:
    could still record `-x`. Already closed, in the commit after the
    reviewer's worktree was cut: `lease::valid_name` runs inside
    `lease::acquire`, the CLI's parser delegates to it, and the refusal maps
-   to 400 `invalid_agent` (exit 2) through one table every refusal site
-   uses. A server test sends the reviewer's own requests.
+   to 400 `invalid_agent` (exit 2) through the lease error's own table,
+   which every refusal site — `push`'s included, since round fifteen —
+   reads. A server test sends the reviewer's own requests and asserts
+   nothing was written.
 4. **The two exit-4 rows still said push** while the new exit-0 bullet said
    `serve` (regression). Both say `serve` now.
 5. `await`'s synthesised unreachable timeout carried no `cursor`, and the
@@ -925,13 +928,69 @@ available". Test-strength note accepted as stated: the two-questions test
 proves the data the rule reads, in log order with the agent's own reply
 included, not the rule, which is prose.
 
-**The loop stops here for plan 5.** Round thirteen found one high defect in
-the skill's rule and four in the code around it; round fourteen found one
-medium, all of it in the prose the first round's fixes added, and nothing
-in the server's delivery, lease, or status code. That is the shape rounds
-eight through twelve took on the page, and the same judgement applies: the
-next real finding will come from an agent running the skill, not from
-another read.
+Round thirteen found one high defect in the skill's rule and four in the
+code around it; round fourteen found one medium in the prose the first
+round's fixes added, one incomplete fix in the lease (the name rule was
+CLI-only), and nothing in the server's delivery or status code.
+
+### Review round fifteen: the second fix slice, reviewed fresh, and why the loop stops
+
+A third fresh reviewer read the round-fourteen fixes narrowly, walked the
+review check-first step through eleven scenarios against the binary, and
+tried to plant and to break the artifact check. Four confirmed defects,
+one medium and three low, three of them regressions from the slice; all
+closed:
+
+1. **The check-first step's "resolved in place, push now" case addressed
+   every thread twice** (medium, regression): "do step 4" meant pushing
+   with `--resolutions`, the server appended each note a second time, and
+   a review whose comments were all declined in place got a revision for
+   nothing. Two things changed. The prose splits the case by status (any
+   `changed`, push the revision without resolutions; all `declined`,
+   nothing to push) and every case now ends at step 5, then 6, so a
+   verdict is never dropped (the second case had said "acknowledge and
+   skip", which lost an `approve` whose snapshot still listed open
+   comments — the third defect). And **the server ignores a resolution
+   that repeats a thread's current status and note**, in `push
+   --resolutions` and in `resolve` alike (`resolve` answers `seq: 0` with
+   `repeated: true`, the page's own "already done" shape), so "safe to run
+   twice" holds for resolving whatever the prose says. A different note or
+   a change of mind is still recorded. Two tests pin it both ways.
+2. **`has_artifact` read the log as a string** and a torn tail ending
+   inside a multibyte character made `open` say there was nothing to open
+   for a repository with a review, while `serve` truncated the tail and
+   served it (low, regression). It searches bytes now; a test tears the
+   log inside `é`.
+3. An `unanchored` thread fell through every case of the step (low,
+   pre-existing): it counts as open and is resolved with a note that its
+   element is gone. `resolve` accepts an unanchored thread.
+
+Prose findings adopted: the step names its three fields; `--base-revision`
+is the last push's revision only if you pushed since the review was made;
+exit 6's stderr says the token is no longer valid rather than why; `open`
+starts a server only when the log holds an artifact; two doc comments and
+three sentences of this record that had drifted (the `open` divergence
+bullet, the round-fourteen closing count, and "one table", which `push`'s
+own refusal table had contradicted; it delegates now, and `push` answers a
+lease error with the lease's status rather than 409 for everything).
+Suspicions noted: a torn first push whose only record is a complete-looking
+`revision.published` still starts a daemon that reports nothing to open; a
+repeated submit against one revision is accepted by design and is what
+makes a stale snapshot reachable without a crash; the synthesised
+unreachable timeout's `seq` now agrees with a live empty timeout under
+`--since`. Test-strength findings adopted: the server-side name test
+asserts nothing was written; `status` asserts a non-empty `quote`.
+
+**The loop stops here for plan 5.** Three rounds found 5, 7 and 4 defects,
+and after the first every medium finding was in the check-first prose the
+previous round's fix had added: a rule that reads the review's snapshot
+against live state has a case for each way the two can disagree, and each
+round found one more. What ends that is not another sentence but the
+server refusing to record the same resolution twice, which is now the
+case, with the prose leaning on it. What remains is the low level: a
+daemon that idles for a torn first push, a snapshot semantics note, and
+prose that a fourth reader would rephrase. The next real finding will come
+from an agent running the skill, not from another read.
 
 ## Where the code diverges from plan 2b, with the reason
 
@@ -1118,6 +1177,10 @@ that says yes to any state directory or to an empty file, a leading-dash
 agent name accepted by the CLI and (round fourteen) by the lease, a
 thread's messages without their text, and page chat as a count again.
 Round fourteen's: the artifact check says yes to a log of lease records.
+Round fifteen's: the artifact check as a string search (a torn multibyte
+tail), a repeated resolution appended again by `push` and by `resolve`,
+and the lease check moved after the commit gate opens (the name test's
+write assertion).
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,

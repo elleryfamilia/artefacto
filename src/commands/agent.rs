@@ -85,14 +85,16 @@ pub fn await_cmd(args: &AwaitArgs) -> Result<()> {
 /// Spec 5: `await` "retries against the same cursor until its absolute
 /// deadline, then returns `timeout`". A server that never came back is a
 /// timeout, not a failed tool call; the agent's next call finds no server and
-/// exits 4, which it can branch on. `seq` repeats what the agent last
-/// acknowledged, so passing it back is a no-op.
+/// exits 4, which it can branch on. `seq` is what a live server's empty
+/// timeout would carry — the cursor unchanged, which is `--since` when one
+/// was passed — so passing it back is a no-op.
 fn unreachable_timeout(args: &AwaitArgs, error: &anyhow::Error) -> serde_json::Value {
+    let cursor = args.since.or(args.ack).unwrap_or(0);
     serde_json::json!({
         "ok": true,
         "status": "timeout",
-        "seq": args.ack.unwrap_or(0),
-        "cursor": args.since.or(args.ack).unwrap_or(0),
+        "seq": cursor,
+        "cursor": cursor,
         "session": args.session,
         "agent": args.agent,
         "events": [],
