@@ -9,6 +9,8 @@
 
 #![allow(dead_code)]
 
+pub mod browser;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
