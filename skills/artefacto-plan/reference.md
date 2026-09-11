@@ -308,7 +308,7 @@ invalidates its token; use it only when the user says so.
 | 1 | the document read fine but failed validation, or a static render is stale or missing |
 | 2 | usage or IO: an unreadable file, a bad argument, a failed write, or a call the server refused for a reason with no code of its own (message on stderr) |
 | 4 | no server is running for this repository |
-| 6 | the lease is held by another agent, or the token presented is superseded or dead; stderr names the holder |
+| 6 | the lease is held by another agent (stderr names the holder), or the token presented is superseded or dead (stderr says it was released) |
 | 7 | `push` was made with a `--base-revision` the server has moved past |
 
 Every JSON result carries a boolean `ok`. A refused call prints
@@ -336,13 +336,14 @@ revision, or the last of its resolutions) and is **never acknowledged**.
 `await`:
 
 ```json
-{ "ok": true, "status": "chat", "seq": 21, "session": "7d1e4b…",
+{ "ok": true, "status": "chat", "seq": 21, "cursor": 17, "session": "7d1e4b…",
   "agent": "agent", "events": [ "…" ] }
 ```
 
 `status` is one of `chat`, `submitted`, `idle`, `away`, `back`, `timeout`,
 `stopped`. `seq` is the acknowledgement point: the seq of the last event in
-`events`, or the cursor unchanged when there were none. `events` holds every
+`events`, or the cursor unchanged when there were none. `cursor` is where
+this call started reading: your acknowledged position, or `--since`. `events` holds every
 undelivered event up to and including the one that woke you, oldest first.
 If the server could not be reached for the whole timeout, the result is a
 `timeout` with an `unreachable` field; the next call exits 4 if the server
@@ -359,8 +360,8 @@ line:
 { "format": "artefacto.frame/1", "seq": 21, "events": [ "…" ] }
 ```
 
-The session record's `seq` is the agent's acknowledged cursor; the frames
-that follow start after it. Without `--follow`, that is the backlog since
+The session record's `seq` is the agent's acknowledged cursor, or `--since`
+when one was passed; the frames that follow start after it. Without `--follow`, that is the backlog since
 the cursor (or `--since`), then exit. With it, frames keep coming. A follow
 prints only frames that end at an active event; passive events ride along in
 the next such frame. It never acknowledges anything itself.
@@ -406,8 +407,9 @@ after the call.
 process and `waiting` for a poll-mode agent between calls. `follow.command`
 is the line to arm, under the holder's name, or `agent` when there is no
 holder. A thread's `messages` are its comment and every reply, in order, by
-reviewer or agent; `chat` is the page-level conversation the same way. The
-token is never in this output.
+reviewer or agent; `quote` is the text the reviewer selected, `""` when
+nothing was; `chat` is the page-level conversation the same way. The token
+is never in this output.
 
 ## Events
 

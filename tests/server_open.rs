@@ -131,11 +131,17 @@ fn open_needs_a_name_when_there_are_several_artifacts_and_refuses_an_unknown_one
 #[test]
 fn open_with_nothing_pushed_says_so_and_starts_nothing() {
     let repo = Repo::new();
-    // A state directory exists — a server ran here once and stopped — but
-    // nothing was ever pushed, so there is no log to open.
+    // A state directory and a log exist — a server ran here once, an agent
+    // took a lease, and the server stopped — but nothing was ever pushed, so
+    // there is no artifact to open.
     repo.run(&["serve", "--no-open"]).success();
+    repo.json(&["await", "--timeout", "1s"]);
     repo.stop();
-    assert!(repo.state_dir().is_dir(), "the state directory is there");
+    let log = repo.state_dir().join("events.ndjson");
+    assert!(
+        std::fs::metadata(&log).is_ok_and(|m| m.len() > 0),
+        "the log has a lease record in it"
+    );
     let out = repo.run(&["open", "--no-open"]);
     repo_stop_later(&repo, || {
         assert_eq!(out.code, 2, "{}", out.stdout);

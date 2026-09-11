@@ -54,9 +54,11 @@ browser on the first push only, and prints one JSON object:
   frame is acknowledged.
 
 If this plan id was pushed in an earlier session, the server still has it and
-a push with neither `--base-revision` nor `--force` is refused. Run
-`artefacto status --json`, take `artifacts[].revision`, and pass it. `--force`
-replaces whatever is there; use it only for a plan nobody is reviewing.
+a push with neither `--base-revision` nor `--force` is refused. You have no
+memory of a revision, so the one you "last saw" is the one `artefacto status
+--json` reports now: read `artifacts[].revision`, look at the threads on it,
+and pass it. `--force` replaces whatever is there; use it only for a plan
+nobody is reviewing.
 
 ## 2. Wait for the reviewer
 
@@ -140,8 +142,9 @@ comment thread.
 1. **Check first**: the frame may be a redelivery after a crash, and a
    reviewer may have asked two things in a row. `artefacto status --json`
    lists every thread with its `messages` (`actor`, `text`, `ts`, in order)
-   and each artifact's page-level `chat` the same way. Read the thread the
-   question is in. If your answer to **this** question is already there,
+   and each artifact's page-level `chat` the same way; it is the whole
+   review, so on a long one read only the thread you need. Read the thread
+   the question is in. If your answer to **this** question is already there,
    skip to acknowledging. Do not decide by who wrote the last message: after
    you answer the first of two questions, the last message is yours and the
    second is still unanswered.
@@ -164,10 +167,18 @@ artefacto reply --session "$SESSION" "Yes. I will add a rollback step to phase t
 its path on disk as `data.path` (`<plan stem>-feedback.json`, beside the
 plan), and `data.verdict`: `approve`, `comment`, or `request_changes`.
 
-0. **Check first**, as for chat: the frame may be a redelivery. In
-   `artefacto status --json`, if every comment this review lists as `open`
-   is already `changed` or `declined`, you addressed it before a crash:
-   acknowledge and skip. If some are still open, address only those.
+0. **Check first**: the frame may be a redelivery. Take the comments this
+   review lists as `open`, and look at `artefacto status --json`.
+   - If the review lists no open comment, there is nothing to address: go
+     straight to step 5.
+   - If every one of them is now `changed` or `declined` **and**
+     `artifacts[].revision` is greater than the review's `base_revision`,
+     you addressed this review and your push landed before a crash:
+     acknowledge and skip.
+   - If they are all resolved but the revision is unchanged, you resolved
+     them in place and the push that carries the change never landed: do
+     step 4 now.
+   - Otherwise, address the ones still open.
 1. Read `feedback.comments`. Each has a server-assigned `id` (`c-1`, `c-2`,
    …), a `ref` naming the element (`task:t-session-store`, `phase:p-core`,
    `risk:r-locking`, `question:q-ttl`, or `meta:<plan id>`), its `text`,
@@ -222,7 +233,7 @@ artefacto resolve c-2 --session "$SESSION" --declined --note "Out of scope here;
 | 0 | fine; `await` exits 0 even on `timeout` | |
 | 1 | the plan failed validation | fix by `path`, run `check` again |
 | 2 | usage, or the server refused the call | read stderr |
-| 4 | no server | `artefacto plan push` starts one |
+| 4 | no server | `artefacto serve` brings it back with the same log; a push would too, but every push is a revision the reviewer sees |
 | 6 | your token is dead, or another agent holds the lease | see below |
 | 7 | your `--base-revision` is behind | `artefacto status --json`, re-read, push again |
 
@@ -265,7 +276,8 @@ Each notification is one stdout line of JSON:
 
 - The first is `{"format":"artefacto.session/1","session":"…","agent":"…","seq":N}`.
   Its `session` is your token from now on; it replaces any you had. Its
-  `seq` is your acknowledged cursor: every frame after it starts there.
+  `seq` is your acknowledged cursor (or `--since`, if you passed one):
+  every frame after it starts there.
 - Every other is `{"format":"artefacto.frame/1","seq":N,"events":[…]}`.
   Act by the last event's type (section 3), then
   `artefacto ack --seq N --session "$SESSION"`.
@@ -282,7 +294,7 @@ When the monitor exits:
   `--session` after being killed, or another agent took the lease. Arm the
   same line again **without** `--session`: the cursor is keyed by name, so
   every unacknowledged frame comes back.
-- **4**: no server. Push again, then arm the line again.
+- **4**: no server. `artefacto serve`, then arm the line again.
 
 On `reviewer.away`, if the `PushNotification` tool is available, send one,
 one line: the plan's title and that the review is waiting on the reviewer.

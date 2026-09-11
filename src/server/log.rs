@@ -68,10 +68,17 @@ pub struct EventLog {
     poisoned: bool,
 }
 
-/// Whether this state directory has a log with anything in it: something
-/// was pushed here once, so there is a review to open or resume.
-pub fn exists(dir: &Path) -> bool {
-    std::fs::metadata(dir.join("events.ndjson")).is_ok_and(|m| m.len() > 0)
+/// Whether this state directory's log holds an artifact: something was
+/// pushed here once, so there is a review to open or resume. A log that
+/// holds only lease and cursor records — `serve` followed by an `await` —
+/// is not one. A substring test, because the log is compact serde output
+/// and the type field is written exactly this way; reading every record
+/// through the parser just to answer a yes/no would cost the same as
+/// starting the server this is deciding whether to start.
+pub fn has_artifact(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join("events.ndjson"))
+        .map(|text| text.contains("\"type\":\"revision.published\""))
+        .unwrap_or(false)
 }
 
 impl EventLog {

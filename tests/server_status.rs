@@ -194,6 +194,10 @@ fn status_json_lists_each_artifact_with_its_review_state() {
     assert_eq!(threads[0]["ref"], "task:t-a");
     assert_eq!(threads[0]["status"], "open");
     assert_eq!(threads[0]["blocking"], true);
+    assert_eq!(
+        threads[0]["quote"], "",
+        "nothing was selected when this thread opened: {a}"
+    );
     let messages = threads[0]["messages"].as_array().expect("messages");
     assert_eq!(
         messages.len(),

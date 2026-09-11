@@ -770,7 +770,8 @@ mutated, and committed before the next; then the prose; then a hand-drive.
 - `status --json`'s `answers` count has no fixture with a question behind
   it in the status test; it mirrors `feedback.rs`'s non-empty rule, which
   is tested there. `last_activity_secs` is asserted to exist, not for its
-  value.
+  value. The `cursor` on `await`'s synthesised unreachable timeout is
+  asserted nowhere: no test reaches that path.
 - **The `revision_seq` hazard is prose only.** Nothing stops an agent from
   running `ack --seq <revision_seq>` and skipping reviewer events it never
   saw. A server-side guard (refuse an ack beyond the highest seq delivered
@@ -831,9 +832,11 @@ and eight test-strength findings. What changed:
    takes it.
 4. **`open` on a repository with nothing pushed started a daemon and
    abandoned it** for half an hour. It starts one only when the state
-   directory has a log to open; otherwise it says "push a plan first" and
-   starts nothing. The test that had run `serve` first hid this; it no
-   longer does, and asserts no server was started.
+   directory's log holds an artifact; otherwise it says "push a plan first"
+   and starts nothing. The test that had run `serve` first hid this; it now
+   runs `serve`, an `await`, and `stop` first — a state directory and a log
+   with a lease record in it, and no artifact — and asserts no server was
+   started.
 5. `revision_seq` is the seq of the **last** event the push appended (the
    last resolution, when there are any), not of `revision.published`. The
    prose said the latter.
@@ -850,8 +853,8 @@ nothing was pending.
 
 Prose findings adopted: the Monitor example lacked the tool's required
 `timeout_ms`; `PushNotification` is "if available" in both places; a
-redelivered `review.submitted` has a check-first step (the review's open
-comments already `changed` or `declined`); `--base-revision` after exit 7
+redelivered `review.submitted` has a check-first step (round fourteen then
+rewrote it); `--base-revision` after exit 7
 is stated once, plainly (the re-read revision is the new base); a restart
 after exit 0 is `artefacto serve`, not a push that mints a revision the
 reviewer sees; "the next call exits 4" holds only when the server is gone;
@@ -869,6 +872,66 @@ decision.
 The second suspicion — that `PushNotification` might not exist as a tool —
 is answered by its definition in this harness; the prose says "if
 available" because another harness may lack it.
+
+### Review round fourteen: the fix slice, reviewed fresh
+
+A fresh reviewer on a different model read the fix slice, ran a real
+five-and-a-half-minute expiry, drove every follow case for the session
+line's cursor, and ran five mutations against the new tests (all caught).
+Seven confirmed defects, one medium and six low, three of them regressions
+from the fix slice; all closed:
+
+1. **The new check-first step for a review skipped an `approve` with
+   nothing open** (medium, regression). "Every comment the review lists as
+   open is already resolved" is vacuously true of a review that lists none,
+   which is the ordinary end of a review, so a literal reader never reached
+   "say so and stop". The same step also skipped a review whose threads had
+   been resolved in place with `resolve --changed` when the push that
+   carries the change never landed (low, regression). The step now has four
+   cases: no open comment, go to the verdict; all resolved and the
+   artifact's revision above the review's `base_revision`, addressed and
+   landed, skip; all resolved and the revision unchanged, push now;
+   otherwise address what is open. The revision comparison alone was not
+   enough either: a chat answered with a push between the review and its
+   frame would read as "already addressed".
+2. **`open` still started a daemon for a log with only lease records**
+   (`serve`, one `await`, `stop`). The check is now for an artifact in the
+   log, not for bytes; the test leaves exactly that log behind.
+3. **The name rule lived only in the CLI**: a bearer holder speaking HTTP
+   could still record `-x`. Already closed, in the commit after the
+   reviewer's worktree was cut: `lease::valid_name` runs inside
+   `lease::acquire`, the CLI's parser delegates to it, and the refusal maps
+   to 400 `invalid_agent` (exit 2) through one table every refusal site
+   uses. A server test sends the reviewer's own requests.
+4. **The two exit-4 rows still said push** while the new exit-0 bullet said
+   `serve` (regression). Both say `serve` now.
+5. `await`'s synthesised unreachable timeout carried no `cursor`, and the
+   reference never named the field. Both fixed.
+6. The record said the no-log test no longer ran `serve` first; it does,
+   then `stop`. The sentence is fixed and the test now leaves a lease
+   record in the log too (item 2).
+
+Prose findings adopted: the session line's `seq` is `--since` when one was
+passed; exit 6's stderr names the holder only when another agent has it;
+`quote` is `""` in status when nothing was selected; the earlier-session
+paragraph is worded in the same terms as `--base-revision`; `status --json`
+is the whole review, so the skill says to read only the thread it needs.
+Suspicions noted, not acted on: the token is shared between a follow and a
+poll under one name, so killing the follow kills the poll side's token too
+(by design; the exit-6 section covers it); cursors are never
+garbage-collected (a name that claimed once keeps its entry); the reviewer's
+harness had no `PushNotification` tool, which is why the prose says "if
+available". Test-strength note accepted as stated: the two-questions test
+proves the data the rule reads, in log order with the agent's own reply
+included, not the rule, which is prose.
+
+**The loop stops here for plan 5.** Round thirteen found one high defect in
+the skill's rule and four in the code around it; round fourteen found one
+medium, all of it in the prose the first round's fixes added, and nothing
+in the server's delivery, lease, or status code. That is the shape rounds
+eight through twelve took on the page, and the same judgement applies: the
+next real finding will come from an agent running the skill, not from
+another read.
 
 ## Where the code diverges from plan 2b, with the reason
 
@@ -1049,9 +1112,12 @@ that does not exist written into the reference's example, and
 a "last actor" field from the first message (survived the status test alone,
 caught by the loop test; the field was then removed in round thirteen).
 Every one fails the test that names it. Round thirteen's fixes: the session
-line printing the result's seq instead of the cursor, `open` starting a
-server with no log, a leading-dash agent name accepted, a thread's messages
-without their text, and the open route answering without the bearer.
+line printing the result's seq instead of the cursor, the await result's
+cursor as the frame seq, `open` starting a server with no log, a log check
+that says yes to any state directory or to an empty file, a leading-dash
+agent name accepted by the CLI and (round fourteen) by the lease, a
+thread's messages without their text, and page chat as a count again.
+Round fourteen's: the artifact check says yes to a log of lease records.
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,

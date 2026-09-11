@@ -92,6 +92,7 @@ fn unreachable_timeout(args: &AwaitArgs, error: &anyhow::Error) -> serde_json::V
         "ok": true,
         "status": "timeout",
         "seq": args.ack.unwrap_or(0),
+        "cursor": args.since.or(args.ack).unwrap_or(0),
         "session": args.session,
         "agent": args.agent,
         "events": [],

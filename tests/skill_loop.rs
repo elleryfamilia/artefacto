@@ -253,8 +253,7 @@ fn monitor_mode_runs_the_loop_the_skill_prescribes() {
                 "reviewer: and the TTL?",
                 "agent: redis-rs, the async client",
             ],
-            "the last message is the agent's and the TTL question is unanswered; \
-             only reading the thread tells the two apart"
+            "log order, the agent's own reply included: the data the rule reads"
         );
         repo.run(&[
             "reply",
