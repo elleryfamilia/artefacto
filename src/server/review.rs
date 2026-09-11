@@ -99,6 +99,9 @@ pub struct Artifact {
     pub plan: serde_json::Value,
     pub plan_hash: String,
     pub source_path: String,
+    /// The change summary of the current revision, for the page's banner
+    /// when it learns of a revision from a snapshot rather than a frame.
+    pub summary: String,
     pub threads: Vec<Thread>,
     /// Only ever increases. Spec 6.6: ids are stable and never renumbered, so
     /// a deleted `c-1` does not free the number.

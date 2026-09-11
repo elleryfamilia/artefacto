@@ -399,6 +399,10 @@ fn the_state_route_returns_the_folded_review_and_the_rendered_body() {
     assert_eq!(v["artifact"], "plan:demo");
     assert_eq!(v["revision"], 1);
     assert_eq!(v["plan_hash"], "sha256:abc");
+    assert_eq!(
+        v["summary"], "first",
+        "the banner text, for a page that learns of a revision from a snapshot"
+    );
     assert_eq!(v["threads"][0]["id"], "c-1");
     assert_eq!(v["threads"][0]["target"], "task:t-a");
     assert_eq!(v["threads"][0]["status"], "open");

@@ -1480,14 +1480,22 @@
      drafts; `mount(root)` may run any number of times against it, once per
      body swap, and rebuilds the DOM from the state each time.
 
-     Three rules, each with a reason:
+     Four rules, each with a reason:
 
-       1. The server is the only store. Nothing here reads localStorage.
-       2. Every write is idempotent: a client-generated id per command, and
-          the server answers a repeat with what it did the first time.
+       1. The server is the only store. Nothing here reads localStorage for
+          review state.
+       2. Every write is idempotent: a client id is minted when a composer
+          opens and stored with its draft, so a send repeated after a swap,
+          a reload, or a retry is the same command, and the server answers a
+          repeat with what it did the first time.
        3. The page applies its own writes from the reply, because the
-          broadcast skips the page that posted; everything else arrives as
-          frames, and both go through `core.applyEvent`. */
+          broadcast skips the page that posted. A frame that carries one of
+          the page's own client ids is skipped, because after a reconnect a
+          write in flight may have named the old socket and been broadcast
+          to the new one.
+       4. While the page is catching up from a snapshot, nothing is applied
+          directly: frames and the page's own replies are buffered, and the
+          snapshot's last_seq decides what it already holds. */
 
   let session = null;
 
@@ -1515,6 +1523,16 @@
     return e;
   }
 
+  /* Notice text with `code` spans, built as elements: the text is data. */
+  function richText(text) {
+    const frag = document.createDocumentFragment();
+    String(text).split("`").forEach(function (part, i) {
+      if (!part) return;
+      frag.appendChild(i % 2 ? el("code", { text: part }) : document.createTextNode(part));
+    });
+    return frag;
+  }
+
   function newId(prefix) {
     let rand = "";
     try {
@@ -1539,13 +1557,34 @@
     return null;
   }
 
-  /* Reconnect schedule. Eight tries over about half a minute, then the
-     page says so rather than spinning forever. */
-  const BACKOFF_MS = [500, 1000, 2000, 4000, 8000, 8000, 8000, 8000];
-  /* Spec 6.2: at most one activity ping per 30 seconds. A setting rather
-     than a constant so a browser test can watch the throttle without
-     waiting half a minute per ping. */
-  core.settings = { pingEveryMs: 30000 };
+  /* Settings a browser test may shorten. Spec 6.2: at most one activity
+     ping per 30 seconds. The reconnect schedule is eight tries over about
+     half a minute, then the page says so rather than spinning forever. A
+     fetch that has not answered in ten seconds is treated as failed. */
+  core.settings = {
+    pingEveryMs: 30000,
+    backoffMs: [500, 1000, 2000, 4000, 8000, 8000, 8000, 8000],
+    fetchTimeoutMs: 10000,
+  };
+
+  /* fetch with a deadline, so a wedged server leaves a visible error
+     instead of a button disabled forever. */
+  function fetchBounded(url, opts) {
+    const options = Object.assign({}, opts || {});
+    let timer = null;
+    if (typeof AbortController === "function") {
+      const ctl = new AbortController();
+      options.signal = ctl.signal;
+      timer = setTimeout(function () { ctl.abort(); }, core.settings.fetchTimeoutMs);
+    }
+    return fetch(url, options).then(function (r) {
+      if (timer) clearTimeout(timer);
+      return r;
+    }, function (e) {
+      if (timer) clearTimeout(timer);
+      throw e;
+    });
+  }
 
   function createSession(artifact) {
     const S = {
@@ -1557,6 +1596,7 @@
       connected: false,
       pageId: null,
       syncing: false,
+      syncGen: 0,
       buffer: [],
       attempts: 0,
       reconnects: 0,
@@ -1564,12 +1604,13 @@
       lost: false,
       stopping: false,
       approve: false,
+      submitting: false,
       lastPing: 0,
       previousTitle: null,
-      composers: {},
+      own: {},
       timers: {},
       applied: 0,
-      ui: {},
+      ui: { chatOpen: false },
     };
     const base = location.pathname.replace(/\/$/, "");
     S.cmdUrl = base + "/cmd";
@@ -1580,11 +1621,12 @@
 
        Every editable control is a composer with an id minted when it
        opens. Its text is stored under that id together with what it
-       targets and the revision it opened against. Two composers on one
-       element stay apart because the id, not the ref, is the key. On
-       restore the command it sends carries the revision it was OPENED
-       against, so text written against revision 3 never arrives labelled
-       revision 4. */
+       targets, the revision it opened against, and the client id its
+       command will carry. Two composers on one element stay apart because
+       the id, not the ref, is the key. On restore the command it sends
+       carries the revision it was OPENED against, so text written against
+       revision 3 never arrives labelled revision 4, and the same client
+       id, so a send repeated after a reload is not a second comment. */
     const DRAFTS_KEY = "artefacto:drafts:" + artifact;
     function loadDraftMap() {
       try {
@@ -1604,7 +1646,7 @@
     function post(cmd) {
       const body = Object.assign({ page: S.pageId }, cmd);
       function attempt(n) {
-        return fetch(S.cmdUrl, {
+        return fetchBounded(S.cmdUrl, {
           method: "POST",
           credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
@@ -1625,19 +1667,31 @@
     }
 
     /* Send a command and fold its result in. A reply with `seq: 0` is the
-       server saying it already did this (a retried client_id); what it did
+       server saying it already did this (a repeated client id); what it did
        may or may not be in the state by now, so the page resyncs rather
-       than guess. */
+       than guess. While catching up, the reply is buffered as a one-event
+       frame with the seq the server assigned, and the snapshot's last_seq
+       decides whether it is already inside the snapshot. */
     function send(cmd) {
       if (!cmd.client_id) cmd.client_id = newId("cid");
+      S.own[cmd.client_id] = true;
       return post(cmd).then(function (reply) {
         if (!reply || !reply.ok) throw new Error((reply && reply.error) || "refused");
         if (reply.seq === 0) {
           resync();
-        } else {
-          const ev = core.localEvent(cmd, reply, nowIso());
-          if (ev) { core.applyEvent(S.state, ev); S.applied++; }
-          renderAll();
+          return reply;
+        }
+        const ev = core.localEvent(cmd, reply, nowIso());
+        if (ev) {
+          ev.data.client_id = cmd.client_id;
+          if (S.syncing) {
+            S.buffer.push({ format: "artefacto.frame/1", seq: reply.seq, events: [ev], own: true });
+          } else {
+            core.applyEvent(S.state, ev);
+            if (reply.seq > S.state.lastSeq) S.state.lastSeq = reply.seq;
+            S.applied++;
+            renderAll();
+          }
         }
         return reply;
       });
@@ -1662,8 +1716,6 @@
         S.stopping = false;
         notice("gone", null);
         notice("stopping", null);
-        S.syncing = true;
-        S.buffer = [];
         renderPresence();
         resync();
       };
@@ -1674,7 +1726,7 @@
           S.pageId = frame.page;
           /* The lease holder at this moment: presence is announced on
              change only, so a page that connects after the agent attached
-             would otherwise never be told. */
+             would otherwise never be told. The snapshot carries it too. */
           S.state.presence = frame.presence || null;
           renderPresence();
           return;
@@ -1686,7 +1738,10 @@
         if (S.socket !== ws) return;
         S.socket = null;
         S.connected = false;
-        S.syncing = false;
+        /* The next socket gets a new id. A write posted before its hello
+           arrives must not name this one: the server would skip the wrong
+           socket and the page would count the write twice. */
+        S.pageId = null;
         renderPresence();
         if (!S.lost) scheduleReconnect();
       };
@@ -1695,16 +1750,26 @@
 
     function scheduleReconnect() {
       if (S.timers.reconnect || S.lost) return;
-      if (S.attempts >= BACKOFF_MS.length) {
-        S.gone = true;
-        notice("gone", S.stopping
-          ? "The server stopped. Run `artefacto serve`, then reload this page."
-          : "The server is not answering. If it moved to a new port, run `artefacto open` for a fresh link.",
-          { action: "Retry", onAction: function () { S.attempts = 0; S.gone = false; connect(); } });
-        renderPresence();
+      const schedule = core.settings.backoffMs;
+      if (S.attempts >= schedule.length) {
+        /* The handshake's status is invisible to script, so a cookie that
+           stopped working looks exactly like a server that stopped
+           answering. One request tells them apart. */
+        fetchBounded(S.stateUrl, { credentials: "same-origin" })
+          .then(function (r) { if (r.status === 401 || r.status === 403) sessionLost(); })
+          .catch(function () { /* nothing answered */ })
+          .then(function () {
+            if (S.lost) return;
+            S.gone = true;
+            notice("gone", S.stopping
+              ? "The server stopped. Run `artefacto serve`, then reload this page."
+              : "The server is not answering. If it moved to a new port, run `artefacto open` for a fresh link.",
+              { action: "Retry", onAction: function () { S.attempts = 0; S.gone = false; connect(); } });
+            renderPresence();
+          });
         return;
       }
-      const wait = BACKOFF_MS[S.attempts++];
+      const wait = schedule[S.attempts++];
       S.reconnects++;
       S.timers.reconnect = setTimeout(function () {
         S.timers.reconnect = null;
@@ -1718,17 +1783,23 @@
       if (S.socket) { try { S.socket.close(); } catch (e) { /* ignore */ } }
       notice("lost", "This page is no longer signed in. Run `artefacto open` for a fresh link; your drafts are kept.");
       renderPresence();
+      renderBar();
     }
 
     /* Rebuild the state from the server, then apply whatever arrived while
        that was in flight. The snapshot's `last_seq` is the cursor: logged
-       events at or below it are already inside the snapshot. */
+       events at or below it are already inside the snapshot. A resync
+       started while another is in flight supersedes it: only the newest
+       snapshot is applied, and the buffer waits for it. */
     function resync() {
       S.syncing = true;
-      return fetch(S.stateUrl, { credentials: "same-origin" })
+      const gen = ++S.syncGen;
+      if (S.timers.resync) { clearTimeout(S.timers.resync); S.timers.resync = null; }
+      return fetchBounded(S.stateUrl, { credentials: "same-origin" })
         .then(function (r) {
           if (r.status === 401 || r.status === 403) { sessionLost(); throw new Error("not signed in"); }
           if (r.status === 404) {
+            S.lost = true;
             notice("lost", "This artifact is no longer on the server.");
             throw new Error("gone");
           }
@@ -1736,14 +1807,16 @@
           return r.json();
         })
         .then(function (snap) {
+          if (gen !== S.syncGen) return;
           applySnapshot(snap);
           drain(snap.last_seq || 0);
         })
         .catch(function () {
+          if (gen !== S.syncGen || S.lost) return;
           /* Best effort: fold in what arrived, skipping what the state
              already has, and try again shortly. */
           drain(S.state.lastSeq);
-          if (!S.lost && S.connected && !S.timers.resync) {
+          if (S.connected && !S.timers.resync) {
             S.timers.resync = setTimeout(function () { S.timers.resync = null; resync(); }, 1500);
           }
         });
@@ -1754,15 +1827,22 @@
       S.buffer = [];
       S.syncing = false;
       frames.forEach(function (f) { applyFrame(f, cursor); });
+      renderAll();
     }
 
     function applySnapshot(snap) {
       const fresh = core.fromSnapshot(snap);
-      /* The page id and the live socket are not in the snapshot. */
       const previous = S.state;
       S.state = fresh;
-      if (fresh.plan && fresh.plan.meta) S.previousTitle = previous.plan && previous.plan.meta
-        ? previous.plan.meta.title : fresh.plan.meta.title;
+      const title = function (state) {
+        return state.plan && state.plan.meta ? state.plan.meta.title : null;
+      };
+      if (fresh.revision > previous.revision && previous.revision > 0) {
+        /* A revision the page never saw as a frame: the banner still
+           belongs to the reviewer, so it is built from the snapshot. */
+        S.previousTitle = title(previous);
+        revisionNotice({ data: { summary: snap.summary } }, []);
+      }
       const fingerprint = document.body.getAttribute("data-plan-fingerprint") || "";
       if (snap.html && snap.plan_hash && snap.plan_hash !== fingerprint) {
         swapBody(snap.html, snap.revision);
@@ -1771,10 +1851,16 @@
       }
     }
 
-    /* A frame from the socket. `cursor` is set only while catching up. */
+    /* A frame from the socket, or one of the page's own buffered replies.
+       `cursor` is set only while catching up. A socket frame carrying one
+       of this page's own client ids is skipped: the page applied that
+       write from its reply. */
     function applyFrame(frame, cursor) {
-      const before = { revision: S.state.revision, title: S.state.plan && S.state.plan.meta ? S.state.plan.meta.title : null };
-      const applied = core.applyFrame(S.state, frame, cursor);
+      const events = frame.own ? frame.events : (frame.events || []).filter(function (e) {
+        return !(e.data && e.data.client_id && S.own[e.data.client_id]);
+      });
+      const before = { title: S.state.plan && S.state.plan.meta ? S.state.plan.meta.title : null };
+      const applied = core.applyFrame(S.state, { seq: frame.seq, events: events }, cursor);
       S.applied += applied.length;
       let swapped = false;
       applied.forEach(function (e) {
@@ -1788,7 +1874,7 @@
             revisionNotice(e, applied);
             break;
           case "nudge":
-            notice("nudge", (e.data && e.data.text) || "The agent asked for your attention.", { dismiss: true, fresh: true });
+            notice("nudge", (e.data && e.data.text) || "The agent asked for your attention.", { dismiss: true });
             break;
           case "server.stopping":
             S.stopping = true;
@@ -1906,7 +1992,9 @@
         const n = S.ui["notice:" + kind];
         if (!n) return;
         const node = el("div", { class: "pv-notice", dataset: { kind: kind }, title: n.title });
-        node.appendChild(el("span", { class: "pv-notice-text", text: n.text }));
+        const text = el("span", { class: "pv-notice-text" });
+        text.appendChild(richText(n.text));
+        node.appendChild(text);
         if (n.action) node.appendChild(el("button", { type: "button", class: "pv-textbtn pv-notice-action", text: n.action, onclick: n.onAction }));
         if (n.dismiss) node.appendChild(el("button", { type: "button", class: "pv-textbtn pv-notice-dismiss", text: "Dismiss", "aria-label": "Dismiss", onclick: function () { notice(kind, null); } }));
         host.appendChild(node);
@@ -1971,6 +2059,9 @@
       node.querySelector(".thread-status").textContent = t.status;
       node.querySelector(".thread-status").className = "thread-status pv-chip pv-chip-" + t.status;
       node.querySelector(".thread-blocking").hidden = !t.blocking;
+      const target = node.querySelector(".thread-target");
+      target.hidden = t.status !== "unanchored";
+      target.textContent = "was on " + t.target;
       const msgs = node.querySelector(".thread-msgs");
       msgs.replaceChildren();
       t.messages.forEach(function (m, i) {
@@ -1978,11 +2069,9 @@
           el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
           el("p", { class: "thread-text", text: m.text })));
       });
-      const editBtn = node.querySelector(".thread-edit");
-      const delBtn = node.querySelector(".thread-delete");
-      const open = t.status === "open";
-      editBtn.hidden = !open;
-      delBtn.hidden = !open;
+      const open = t.status === "open" || t.status === "unanchored";
+      node.querySelector(".thread-edit").hidden = !open;
+      node.querySelector(".thread-delete").hidden = !open;
     }
 
     function threadNode(t) {
@@ -1990,7 +2079,8 @@
       node.appendChild(el("div", { class: "thread-head" },
         el("span", { class: "thread-id", text: t.id }),
         el("span", { class: "thread-status pv-chip", text: t.status }),
-        el("span", { class: "thread-blocking", text: "blocks approval" })));
+        el("span", { class: "thread-blocking", text: "blocks approval" }),
+        el("span", { class: "thread-target", hidden: true })));
       node.appendChild(el("div", { class: "thread-msgs" }));
       const actions = el("div", { class: "thread-actions" });
       actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-reply", text: "Reply", onclick: function () {
@@ -2039,9 +2129,9 @@
     function renderThreads() {
       const root = S.root;
       if (!root) return;
-      root.querySelectorAll(".pv-threads").forEach(function (host) {
+      root.querySelectorAll(".pv-threads[data-threads-for]").forEach(function (host) {
         const ref = host.getAttribute("data-threads-for");
-        renderThreadsIn(host, core.threadsOn(S.state, ref));
+        if (ref) renderThreadsIn(host, core.threadsOn(S.state, ref));
       });
     }
 
@@ -2064,6 +2154,9 @@
       root.querySelectorAll(".reviewed-toggle").forEach(function (label) {
         const ref = label.getAttribute("data-reviewed-for");
         const box = label.querySelector("input");
+        /* A mark whose send is in flight keeps what the reviewer chose;
+           the reply will settle it. */
+        if (label.hasAttribute("data-pending")) return;
         const on = S.state.reviewed.indexOf(ref) >= 0;
         box.checked = on;
         label.querySelector(".reviewed-toggle-text").textContent = on ? "Reviewed" : "Mark reviewed";
@@ -2090,8 +2183,8 @@
       bar.querySelector(".feedback-bar-approve input").checked = S.approve;
       bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent · rev " + S.state.revision : "";
       const send = bar.querySelector(".feedback-bar-send");
-      send.disabled = S.lost;
-      send.textContent = S.approve ? "Send approval" : "Send review";
+      send.disabled = S.lost || S.submitting;
+      send.textContent = S.submitting ? "Sending…" : S.approve ? "Send approval" : "Send review";
     }
 
     function renderChat() {
@@ -2104,6 +2197,8 @@
           el("p", { class: "thread-text", text: m.text })));
       });
       log.hidden = S.state.chat.length === 0;
+      const panel = document.querySelector(".pv-chat");
+      if (panel) panel.hidden = !S.ui.chatOpen;
     }
 
     function mountBar(root) {
@@ -2115,23 +2210,29 @@
       bar.appendChild(el("span", { class: "feedback-bar-reviewed" }));
       bar.appendChild(el("span", { class: "feedback-bar-sent" }));
       bar.appendChild(el("button", { type: "button", class: "pv-textbtn feedback-bar-chat", text: "Ask the agent", onclick: function () {
-        const panel = document.querySelector(".pv-chat");
-        panel.hidden = !panel.hidden;
-        if (!panel.hidden) openComposer({ kind: "chat" });
+        S.ui.chatOpen = !S.ui.chatOpen;
+        renderChat();
+        if (S.ui.chatOpen) openComposer({ kind: "chat" });
       } }));
       const approve = el("input", { type: "checkbox" });
       approve.addEventListener("change", function () { S.approve = approve.checked; renderBar(); });
       bar.appendChild(el("label", { class: "feedback-bar-approve" }, approve, el("span", { text: "Approve" })));
       const sendBtn = el("button", { type: "button", class: "feedback-bar-send", text: "Send review", onclick: function () {
-        sendBtn.disabled = true;
+        if (S.submitting) return;
+        S.submitting = true;
+        renderBar();
         send({ cmd: "review.submit", verdict: S.approve ? "approve" : "comment", base_revision: S.state.revision })
-          .then(function () { sendBtn.disabled = false; })
-          .catch(function (e) { sendBtn.disabled = false; failed(sendBtn, e); });
+          .then(function () { S.submitting = false; renderBar(); })
+          .catch(function (e) {
+            S.submitting = false;
+            renderBar();
+            failed(document.querySelector(".feedback-bar-send") || sendBtn, e);
+          });
       } });
       bar.appendChild(sendBtn);
       root.appendChild(bar);
 
-      const chat = el("div", { class: "pv-chat", hidden: true });
+      const chat = el("div", { class: "pv-chat", hidden: !S.ui.chatOpen });
       chat.appendChild(el("div", { class: "pv-chat-head" },
         el("span", { class: "pv-chat-title", text: "Ask the agent about the plan" }),
         el("span", { class: "pv-chat-hint" })));
@@ -2143,7 +2244,9 @@
     /* ---- the recovery panel -------------------------------------------
 
        Spec 4.3: a thread whose element is gone, and a draft whose target
-       is gone, are listed at the top -- never silently dropped. */
+       is gone, are listed at the top -- never silently dropped. The thread
+       host is keyed and kept, so a reply composer opened on an orphaned
+       thread survives the next render. */
     function renderRecovery() {
       let panel = document.querySelector(".pv-recovery");
       const orphans = core.unanchored(S.state);
@@ -2151,24 +2254,21 @@
       if (!orphans.length && !drafts.length) { if (panel) panel.remove(); return; }
       if (!panel) {
         panel = el("section", { class: "pv-recovery" });
+        panel.appendChild(el("h2", { class: "pv-recovery-title", text: "Needs attention" }));
+        panel.appendChild(el("p", { class: "pv-recovery-lead" }));
+        panel.appendChild(el("div", { class: "pv-threads pv-threads-orphaned" }));
+        panel.appendChild(el("div", { class: "pv-recovery-drafts" }));
         const host = noticeHost();
         host.parentNode.insertBefore(panel, host.nextSibling);
       }
-      panel.replaceChildren();
-      panel.appendChild(el("h2", { class: "pv-recovery-title", text: "Needs attention" }));
-      const threadsHost = el("div", { class: "pv-threads pv-threads-orphaned", dataset: { threadsFor: "" } });
-      if (orphans.length) {
-        panel.appendChild(el("p", { class: "pv-recovery-lead", text: orphans.length === 1
-          ? "This thread's element is no longer in the plan."
-          : "These threads' elements are no longer in the plan." }));
-        panel.appendChild(threadsHost);
-        renderThreadsIn(threadsHost, orphans);
-        threadsHost.querySelectorAll(".thread").forEach(function (node) {
-          const t = orphans.find(function (x) { return x.id === node.getAttribute("data-thread"); });
-          node.querySelector(".thread-head").appendChild(el("span", { class: "thread-target", text: "was on " + t.target }));
-          node.querySelector(".thread-delete").hidden = false;
-        });
-      }
+      const lead = panel.querySelector(".pv-recovery-lead");
+      lead.hidden = !orphans.length;
+      lead.textContent = orphans.length === 1
+        ? "This thread's element is no longer in the plan."
+        : "These threads' elements are no longer in the plan.";
+      renderThreadsIn(panel.querySelector(".pv-threads-orphaned"), orphans);
+      const list = panel.querySelector(".pv-recovery-drafts");
+      list.replaceChildren();
       drafts.forEach(function (d) {
         const row = el("div", { class: "pv-orphan-draft", dataset: { composer: d.id } });
         row.appendChild(el("span", { class: "pv-orphan-draft-what", text: draftLabel(d) + " — its element is gone" }));
@@ -2177,7 +2277,7 @@
           dropDraft(d.id);
           renderRecovery();
         } }));
-        panel.appendChild(row);
+        list.appendChild(row);
       });
     }
 
@@ -2203,7 +2303,9 @@
       return out;
     }
 
-    /* Where a draft's composer belongs now, or null. */
+    /* Where a draft's composer belongs now, or null. A thread that lost
+       its element lives in the recovery panel, and a reply there is still
+       a reply. */
     function draftTarget(d) {
       if (!S.root) return null;
       if (d.kind === "chat") return document.querySelector(".pv-chat-composers");
@@ -2212,9 +2314,8 @@
         return target ? target.querySelector(".pv-composers") : null;
       }
       const t = S.state.threads.find(function (x) { return x.id === d.thread; });
-      if (!t || t.status === "unanchored") return null;
-      const node = S.root.querySelector('.thread[data-thread="' + d.thread + '"] .thread-composers');
-      return node || null;
+      if (!t) return null;
+      return document.querySelector('.thread[data-thread="' + d.thread + '"] .thread-composers');
     }
 
     /* ---- composers --------------------------------------------------- */
@@ -2229,6 +2330,7 @@
     function openComposer(spec) {
       const d = {
         id: spec.id || newId("composer"),
+        clientId: spec.clientId || newId("cid"),
         kind: spec.kind,
         ref: spec.ref || null,
         thread: spec.thread || null,
@@ -2236,13 +2338,14 @@
         revision: spec.revision || S.state.revision,
         text: spec.text || "",
         blocking: !!spec.blocking,
+        quote: spec.quote || null,
       };
       const host = draftTarget(d);
       if (!host) return null;
       const existing = host.querySelector('[data-composer="' + d.id + '"]');
-      if (existing) { existing.querySelector("textarea").focus(); return existing; }
-      /* One composer of a kind per target at a time, keyed by id: a second
-         click focuses the open one rather than opening a twin. */
+      if (existing) { if (!spec.silent) existing.querySelector("textarea").focus(); return existing; }
+      /* One composer of a kind per target at a time: a second click
+         focuses the open one rather than opening a twin. */
       const twin = Array.from(host.querySelectorAll(".composer")).find(function (c) {
         return c.getAttribute("data-kind") === d.kind;
       });
@@ -2269,20 +2372,24 @@
       actions.appendChild(sendBtn);
       actions.appendChild(cancelBtn);
       box.appendChild(actions);
-      cancelBtn.addEventListener("click", function () { dropDraft(d.id); box.remove(); renderRecovery(); });
+      /* Closed by id, not by this node: a body swap while the send is in
+         flight re-creates the composer from its draft, and the reply must
+         close that one. */
+      const close = function () {
+        dropDraft(d.id);
+        document.querySelectorAll('[data-composer="' + d.id + '"]').forEach(function (n) { n.remove(); });
+        renderRecovery();
+      };
+      cancelBtn.addEventListener("click", close);
       sendBtn.addEventListener("click", function () {
         const text = ta.value.trim();
         if (!text) return;
         const cmd = commandFor(d, text);
         if (!cmd) return;
         sendBtn.disabled = true;
-        send(cmd).then(function () {
-          dropDraft(d.id);
-          box.remove();
-          renderRecovery();
-        }).catch(function (e) {
-          sendBtn.disabled = false;
-          failed(sendBtn, e);
+        send(cmd).then(close).catch(function (e) {
+          const current = document.querySelector('[data-composer="' + d.id + '"] .composer-send');
+          if (current) { current.disabled = false; failed(current, e); }
         });
       });
       ta.addEventListener("keydown", function (ev) {
@@ -2294,42 +2401,55 @@
     }
 
     /* The command a draft sends. `opened_revision` is the revision the
-       composer OPENED against, whatever the page shows now. */
+       composer OPENED against, whatever the page shows now, and the client
+       id is the draft's, so a repeat is the same command. */
     function commandFor(d, text) {
+      const base = { client_id: d.clientId };
       switch (d.kind) {
         case "comment": {
           const target = findRef(S.root, d.ref);
-          return { cmd: "thread.open", ref: d.ref, text: text, blocking: !!d.blocking,
-            quote: target ? elementQuote(target) : "", opened_revision: d.revision };
+          return Object.assign(base, { cmd: "thread.open", ref: d.ref, text: text, blocking: !!d.blocking,
+            quote: d.quote || (target ? elementQuote(target) : ""), opened_revision: d.revision });
         }
-        case "answer": return { cmd: "question.answer", question: d.question, text: text, opened_revision: d.revision };
-        case "reply": return { cmd: "thread.reply", thread: d.thread, text: text, opened_revision: d.revision };
-        case "ask": return { cmd: "chat.send", thread: d.thread, text: text, opened_revision: d.revision };
-        case "edit": return { cmd: "thread.edit", thread: d.thread, text: text, opened_revision: d.revision };
-        case "chat": return { cmd: "chat.send", text: text, opened_revision: d.revision };
+        case "answer": return Object.assign(base, { cmd: "question.answer", question: d.question, text: text, opened_revision: d.revision });
+        case "reply": return Object.assign(base, { cmd: "thread.reply", thread: d.thread, text: text, opened_revision: d.revision });
+        case "ask": return Object.assign(base, { cmd: "chat.send", thread: d.thread, text: text, opened_revision: d.revision });
+        case "edit": return Object.assign(base, { cmd: "thread.edit", thread: d.thread, text: text, opened_revision: d.revision });
+        case "chat": return Object.assign(base, { cmd: "chat.send", text: text, opened_revision: d.revision });
         default: return null;
       }
     }
 
-    /* Put every stored draft back where it belongs. Runs after threads are
-       rendered, because a reply composer lives inside its thread. */
+    /* Put every stored draft back where it belongs. Runs after every
+       render, because a reply composer lives inside its thread and the
+       thread may only just have arrived. Idempotent: a composer already on
+       the page is left alone. */
     function restoreDrafts() {
       const map = loadDraftMap();
       for (const id in map) {
         const d = map[id];
         if (!draftTarget(d)) continue;
-        openComposer({ id: d.id, kind: d.kind, ref: d.ref, thread: d.thread, revision: d.revision, text: d.text, blocking: d.blocking, silent: true });
+        openComposer({ id: d.id, clientId: d.clientId, kind: d.kind, ref: d.ref, thread: d.thread,
+          revision: d.revision, text: d.text, blocking: d.blocking, quote: d.quote, silent: true });
       }
     }
 
-    /* ---- per-element controls ---------------------------------------- */
+    /* ---- per-element controls ----------------------------------------
 
+       Every marked element gets a comment button. Threads and composers
+       live on the FIRST element carrying a ref: the acceptance rows of a
+       task share the task's ref, and a thread rendered once per row would
+       show three times. A row's button still quotes the row. */
     function mountElements(root) {
+      const seen = {};
       root.querySelectorAll("[data-plan-ref]").forEach(function (target) {
         const ref = target.getAttribute("data-plan-ref");
         const kind = refKind(ref);
         const isQuestion = kind === "question";
+        const first = !seen[ref];
+        seen[ref] = true;
         const slots = commentSlots(target);
+        const quote = elementQuote(target);
         const btn = el("button", { type: "button", class: "comment-btn", title: isQuestion ? "Answer" : "Comment",
           "aria-label": isQuestion ? "Answer this question" : "Add comment" });
         btn.appendChild(commentIcon());
@@ -2337,9 +2457,10 @@
         btn.addEventListener("click", function (e) {
           e.stopPropagation();
           if (target.tagName === "DETAILS" && phaseIsShut(target)) setPhaseOpen(target, true, true);
-          openComposer({ kind: isQuestion ? "answer" : "comment", ref: ref });
+          openComposer({ kind: isQuestion ? "answer" : "comment", ref: ref, quote: quote });
         });
         (slots.btn || target).appendChild(btn);
+        if (!first) return;
         const boxHost = slots.box || target;
         if (isQuestion) {
           boxHost.appendChild(el("div", { class: "pv-answer", dataset: { answerFor: ref.slice("question:".length) }, hidden: true },
@@ -2359,10 +2480,14 @@
         label.addEventListener("click", function (e) { e.stopPropagation(); });
         box.addEventListener("change", function () {
           const on = box.checked;
-          send({ cmd: "element.reviewed", ref: ref, on: on }).catch(function (e) {
-            box.checked = !on;
-            failed(label, e);
-          });
+          label.setAttribute("data-pending", "");
+          send({ cmd: "element.reviewed", ref: ref, on: on })
+            .then(function () { label.removeAttribute("data-pending"); renderReviewed(); })
+            .catch(function (e) {
+              label.removeAttribute("data-pending");
+              box.checked = !on;
+              failed(label, e);
+            });
         });
         return label;
       }
@@ -2387,6 +2512,8 @@
       renderChat();
       renderNotices();
       renderRecovery();
+      restoreDrafts();
+      renderRecovery();
     }
 
     S.mount = function (root, plan) {
@@ -2397,10 +2524,9 @@
       mountBar(root);
       noticeHost();
       renderAll();
-      restoreDrafts();
-      renderRecovery();
       if (!S.socket && !S.lost) connect();
-      S.lastPing = Date.now();
+      /* Arriving is activity; a body swap is not. */
+      if (!S.lastPing) S.lastPing = Date.now();
     };
 
     S.activity = ping;
@@ -2411,7 +2537,7 @@
         connected: S.connected, page: S.pageId, syncing: S.syncing, gone: S.gone, lost: S.lost,
         reconnects: S.reconnects, applied: S.applied, revision: S.state.revision,
         planHash: S.state.planHash, lastSeq: S.state.lastSeq, presence: S.state.presence,
-        submitted: S.state.submitted, chat: S.state.chat.length,
+        submitted: S.state.submitted, chat: S.state.chat.length, chatOpen: S.ui.chatOpen,
         threads: S.state.threads.map(function (t) {
           return { id: t.id, target: t.target, status: t.status, blocking: t.blocking,
             messages: t.messages.map(function (m) { return m.actor + ": " + m.text; }) };
@@ -2422,12 +2548,16 @@
         notices: Object.keys(S.ui).filter(function (k) { return k.indexOf("notice:") === 0; }).map(function (k) { return k.slice(7); }),
       };
     };
-    S.applyFrame = function (frame) { applyFrame(frame, null); };
+    /* For the browser tests: a frame as if the socket had delivered it. */
+    S.injectFrame = function (frame) {
+      if (S.syncing) S.buffer.push(frame); else applyFrame(frame, null);
+    };
     S.resync = resync;
     return S;
   }
 
   core.debug = function () { return session ? session.debug() : null; };
+  core.injectFrame = function (frame) { if (session) session.injectFrame(frame); };
 
   /* Activity, once per document. Spec 6.2: scroll, keys, pointer, and
      visibility, throttled to one ping per 30 seconds -- so a reader who

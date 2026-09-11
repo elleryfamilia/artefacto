@@ -245,8 +245,52 @@ fn a_comment_typed_into_the_page_is_logged_and_shown_once() {
         page.text("document.querySelector('.feedback-bar-count').textContent"),
         "1 thread"
     );
+
+    // A reply is not idempotent the way opening a thread is: applied from
+    // the reply and again from a broadcast, it would show twice.
+    reply(&mut page, "c-1", "and a follow-up");
+    assert_eq!(
+        page.eval("document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length"),
+        2,
+        "the page applied its own reply once, and the broadcast skipped it"
+    );
     let errors = page.errors();
     assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+/// Reply inside a thread from the page, and wait for the reply to land.
+fn reply(page: &mut support::browser::Page, thread: &str, text: &str) {
+    page.click(&format!(".thread[data-thread=\"{thread}\"] .thread-reply"));
+    page.type_into(
+        &format!(".thread[data-thread=\"{thread}\"] .composer textarea"),
+        text,
+    );
+    page.click(&format!(
+        ".thread[data-thread=\"{thread}\"] .composer .composer-send"
+    ));
+    page.wait_until(
+        &format!("!document.querySelector('.thread[data-thread=\"{thread}\"] .composer')"),
+        "the reply to be accepted",
+    );
+}
+
+/// Make the page's `fetch` treat `path` specially: `mode` is "hold-response"
+/// (the request goes out, the response waits `ms`), "hold-request" (the
+/// request itself waits `ms`), or "drop-response" (the request goes out and
+/// the response never arrives).
+fn shape_fetch(page: &mut support::browser::Page, path: &str, mode: &str, ms: u64) {
+    page.eval(&format!(
+        "(function(){{ const orig = window.__origFetch || window.fetch; window.__origFetch = orig; \
+          window.fetch = function (u, o) {{ \
+            if (!String(u).endsWith({path})) return orig(u, o); \
+            if ({mode} === 'hold-request') return new Promise(function (r) {{ setTimeout(r, {ms}); }}).then(function () {{ return orig(u, o); }}); \
+            const p = orig(u, o); \
+            if ({mode} === 'drop-response') return p.then(function () {{ return new Promise(function () {{}}); }}); \
+            return p.then(function (r) {{ return new Promise(function (res) {{ setTimeout(function () {{ res(r); }}, {ms}); }}); }}); \
+          }}; return true; }})()",
+        path = serde_json::to_string(path).unwrap(),
+        mode = serde_json::to_string(mode).unwrap(),
+    ));
 }
 
 #[test]
@@ -434,6 +478,11 @@ fn marking_reviewed_reaches_the_log_and_survives_a_reload() {
         ),
         true,
         "the server is the store: nothing was read from localStorage"
+    );
+    assert_eq!(
+        page.eval("window.localStorage.length"),
+        0,
+        "and nothing was written there either"
     );
 }
 
@@ -878,10 +927,12 @@ fn a_reconnect_catches_up_without_duplicating_anything() {
     );
     repo.run(&["serve", "--no-open"]).success();
 
-    // A comment from the other tab lands while tab a may still be in its
-    // backoff. Its POST retries onto a fresh connection; tab a's socket
-    // was closed, so it never hears the broadcast.
+    // A comment and a reply from the other tab land while tab a may still
+    // be in its backoff. Its POSTs retry onto a fresh connection; tab a's
+    // socket was closed, so it never hears the broadcasts. The reply is the
+    // one that matters: opening a thread is idempotent by id, a reply is not.
     comment(&mut b, "task:t-a", "while it was away");
+    reply(&mut b, "c-1", "replied while away");
 
     a.wait_until(
         "window.artefactoPlan.debug().reconnects >= 1 && window.artefactoPlan.debug().connected && !window.artefactoPlan.debug().syncing",
@@ -900,6 +951,11 @@ fn a_reconnect_catches_up_without_duplicating_anything() {
         1
     );
     assert_eq!(
+        a.eval("document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length"),
+        2,
+        "the reply made while away appears exactly once"
+    );
+    assert_eq!(
         a.eval("!!document.querySelector('.pv-notice[data-kind=\"stopping\"]')"),
         false,
         "the stopping notice clears once the page is back"
@@ -914,7 +970,7 @@ fn a_reconnect_catches_up_without_duplicating_anything() {
     b.type_into(".thread[data-thread=\"c-1\"] .composer textarea", "after");
     b.click(".thread[data-thread=\"c-1\"] .composer .composer-send");
     a.wait_until(
-        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
+        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 3",
         "the reply to arrive on the new socket",
     );
     assert_eq!(a.eval("document.querySelectorAll('.thread').length"), 2);
@@ -964,4 +1020,387 @@ fn activity_pings_are_throttled_and_mark_the_reviewer_active() {
     std::thread::sleep(std::time::Duration::from_millis(300));
     page.eval(scroll);
     support::wait_for(|| s.server().ping_count() == 2, "the next window's ping");
+}
+
+// --- the page's own writes around a catch-up ------------------------------
+
+/// Cut the page's socket so it reconnects and catches up, with `/state`
+/// shaped by `mode` so a write lands on a chosen side of the snapshot.
+fn catch_up_with(s: &Served, page: &mut support::browser::Page, mode: &str) {
+    shape_fetch(page, "/state", mode, 1500);
+    artefacto::server::socket::close_all(&s.server().shared);
+    page.wait_until(
+        "window.artefactoPlan.debug().reconnects >= 1 && window.artefactoPlan.debug().connected && window.artefactoPlan.debug().syncing",
+        "the page to reconnect and start catching up",
+    );
+}
+
+#[test]
+fn a_write_made_while_catching_up_is_kept_whichever_side_of_the_snapshot_it_lands() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    for (mode, text) in [
+        ("hold-response", "snapshot taken before this"),
+        ("hold-request", "snapshot taken after this"),
+    ] {
+        let s = served("minimal.json");
+        let mut page = browser.new_page();
+        page.navigate(&s.url);
+        connected(&mut page);
+        catch_up_with(&s, &mut page, mode);
+
+        comment(&mut page, "task:t-a", text);
+        connected(&mut page);
+        assert_eq!(
+            page.eval("document.querySelectorAll('.thread').length"),
+            1,
+            "{mode}: the page's own write survives the snapshot, once"
+        );
+        assert_eq!(s.server().thread_count(), 1);
+        assert_eq!(
+            debug(&mut page)["threads"][0]["messages"][0],
+            format!("reviewer: {text}")
+        );
+        let errors = page.errors();
+        assert!(errors.is_empty(), "{}", errors.join("\n"));
+    }
+}
+
+#[test]
+fn a_frame_received_while_catching_up_is_applied_once() {
+    // The snapshot's last_seq is the cursor: a logged event the snapshot
+    // already holds is skipped when the buffered frames drain.
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    comment(&mut page, "task:t-a", "before");
+    catch_up_with(&s, &mut page, "hold-request");
+
+    // Another tab replies while the snapshot request is being held: the
+    // frame is buffered, and the snapshot, taken after, holds the reply.
+    let cookie = s.server().session_cookie("plan:demo");
+    s.server().post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "thread.reply", "client_id": "cid-other", "thread": "c-1",
+            "text": "meanwhile", "opened_revision": 1,
+        }),
+    );
+    connected(&mut page);
+    assert_eq!(
+        page.eval("document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length"),
+        2,
+        "in the snapshot and in a buffered frame, shown once"
+    );
+}
+
+#[test]
+fn a_frame_carrying_the_pages_own_write_is_not_applied_twice() {
+    // After a reconnect a write in flight may name the old socket, and the
+    // server then broadcasts it to the new one. The page recognises its
+    // own client id.
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    comment(&mut page, "task:t-a", "mine");
+    reply(&mut page, "c-1", "my reply");
+    let logged = s.server().last_event_of_type("thread.replied");
+    assert!(
+        logged["data"]["client_id"].is_string(),
+        "the event carries the client id"
+    );
+    let frame = serde_json::json!({
+        "format": "artefacto.frame/1", "seq": logged["seq"], "events": [logged],
+    });
+    page.eval(&format!("window.artefactoPlan.injectFrame({frame})"));
+    assert_eq!(
+        page.eval("document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length"),
+        2,
+        "the page's own reply, delivered back to it, is not a second reply"
+    );
+}
+
+// --- sends that overlap a swap or a reload ----------------------------------
+
+#[test]
+fn a_push_during_a_send_does_not_leave_a_composer_that_sends_twice() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    shape_fetch(&mut page, "/cmd", "hold-response", 1500);
+    page.click("[data-plan-ref=\"task:t-a\"] .comment-btn");
+    page.type_into(
+        "[data-plan-ref=\"task:t-a\"] .composer textarea",
+        "slow to land",
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .composer .composer-send");
+    support::wait_for(|| s.server().thread_count() == 1, "the server has it");
+
+    s.edit_plan("Demo plan", "Demo plan, revised");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "revision 2",
+    );
+    page.wait_until(
+        "!document.querySelector('.composer')",
+        "the reply to close the composer the swap re-created",
+    );
+    assert_eq!(
+        page.eval("Object.keys(window.artefactoPlan.debug().drafts).length"),
+        0
+    );
+    assert_eq!(page.eval("document.querySelectorAll('.thread').length"), 1);
+    assert_eq!(s.server().thread_count(), 1);
+}
+
+#[test]
+fn a_send_repeated_after_a_reload_is_the_same_command() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    shape_fetch(&mut page, "/cmd", "drop-response", 0);
+    page.click("[data-plan-ref=\"task:t-a\"] .comment-btn");
+    page.type_into(
+        "[data-plan-ref=\"task:t-a\"] .composer textarea",
+        "sent into the void",
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .composer .composer-send");
+    support::wait_for(|| s.server().thread_count() == 1, "the server has it");
+
+    // The reply never came; the draft is still stored, with its client id.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.text(
+            "document.querySelector('[data-plan-ref=\"task:t-a\"] .composer textarea').value"
+        ),
+        "sent into the void"
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .composer .composer-send");
+    page.wait_until(
+        "!document.querySelector('.composer')",
+        "the repeat to be answered",
+    );
+    assert_eq!(
+        s.server().thread_count(),
+        1,
+        "a repeat of the same client id is not a second comment"
+    );
+    page.wait_until(
+        "document.querySelectorAll('.thread').length === 1",
+        "the thread shown once",
+    );
+}
+
+// --- what the review found in the DOM ---------------------------------------
+
+#[test]
+fn a_thread_shows_once_however_many_rows_share_its_element() {
+    // Every acceptance row of a task carries the task's ref. Each row keeps
+    // its comment button and its own quote; the thread lives on the task.
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    let buttons = page.eval(
+        "document.querySelectorAll('[data-plan-ref=\"task:t-session-store\"] .comment-btn').length",
+    );
+    assert!(
+        buttons.as_u64().unwrap() >= 2,
+        "the task and its acceptance rows: {buttons}"
+    );
+    comment(&mut page, "task:t-session-store", "on the task");
+    assert_eq!(
+        page.eval("document.querySelectorAll('.thread[data-thread=\"c-1\"]').length"),
+        1
+    );
+
+    // A row's button quotes the row, not the task heading.
+    page.click("li[data-plan-ref=\"task:t-session-store\"] .comment-btn");
+    page.type_into(
+        "[data-plan-ref=\"task:t-session-store\"] .composer textarea",
+        "on a criterion",
+    );
+    page.click("[data-plan-ref=\"task:t-session-store\"] .composer .composer-send");
+    page.wait_until("!document.querySelector('.composer')", "the second comment");
+    let quote = s.server().last_event_of_type("thread.opened")["data"]["quote"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let heading = page.text("document.querySelector('[data-plan-ref=\"task:t-session-store\"] h3, [data-plan-ref=\"task:t-session-store\"] h4') ? document.querySelector('[data-plan-ref=\"task:t-session-store\"] h3, [data-plan-ref=\"task:t-session-store\"] h4').textContent : ''");
+    assert!(!quote.is_empty());
+    assert_ne!(
+        quote,
+        heading.trim(),
+        "quoted the row, not the task heading"
+    );
+    assert_eq!(page.eval("document.querySelectorAll('.thread').length"), 2);
+}
+
+#[test]
+fn a_reply_draft_survives_a_reload() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    comment(&mut page, "task:t-a", "a thread");
+    page.click(".thread[data-thread=\"c-1\"] .thread-reply");
+    page.type_into(
+        ".thread[data-thread=\"c-1\"] .composer textarea",
+        "half a reply",
+    );
+
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    page.wait_until(
+        "document.querySelector('.thread[data-thread=\"c-1\"] .composer textarea')",
+        "the reply composer back inside its thread",
+    );
+    assert_eq!(
+        page.text(
+            "document.querySelector('.thread[data-thread=\"c-1\"] .composer textarea').value"
+        ),
+        "half a reply"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-recovery')"),
+        false,
+        "not orphaned"
+    );
+}
+
+#[test]
+fn the_chat_panel_stays_open_and_focused_across_a_push() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".feedback-bar-chat");
+    page.type_into(".pv-chat .composer textarea", "half a question");
+    page.eval("(function(){ document.querySelector('.pv-chat .composer textarea').focus(); return true; })()");
+
+    s.edit_plan("Demo plan", "Demo plan, revised");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "revision 2",
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-chat').hidden"),
+        false,
+        "still open"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-chat .composer textarea').value"),
+        "half a question"
+    );
+    assert_eq!(
+        page.eval(
+            "document.activeElement === document.querySelector('.pv-chat .composer textarea')"
+        ),
+        true
+    );
+}
+
+#[test]
+fn a_reply_on_a_thread_that_lost_its_element_still_sends() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    comment(&mut page, "task:t-a", "orphan me");
+    s.edit_plan("\"id\": \"t-a\"", "\"id\": \"t-b\"");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.querySelector('.pv-recovery .thread[data-thread=\"c-1\"]')",
+        "the recovery panel",
+    );
+
+    page.click(".pv-recovery .thread[data-thread=\"c-1\"] .thread-reply");
+    page.wait_until(
+        "document.querySelector('.pv-recovery .thread[data-thread=\"c-1\"] .composer')",
+        "a composer on the orphaned thread",
+    );
+    page.type_into(
+        ".pv-recovery .thread[data-thread=\"c-1\"] .composer textarea",
+        "still here",
+    );
+    page.click(".pv-recovery .thread[data-thread=\"c-1\"] .composer .composer-send");
+    page.wait_until(
+        "!document.querySelector('.composer')",
+        "the reply to be accepted",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-recovery .thread[data-thread=\"c-1\"] .thread-msg').length"),
+        2
+    );
+    assert_eq!(
+        s.server().last_event_of_type("thread.replied")["data"]["text"],
+        "still here"
+    );
+}
+
+#[test]
+fn a_lost_cookie_reads_as_signed_out_not_as_a_gone_server() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.eval("window.artefactoPlan.settings.backoffMs = [50, 50, 50]");
+    page.clear_cookies();
+    artefacto::server::socket::close_all(&s.server().shared);
+    page.wait_until(
+        "window.artefactoPlan.debug().lost",
+        "the page to learn it is signed out",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-presence').textContent"),
+        "signed out"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"lost\"]')"),
+        true
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"gone\"]')"),
+        false
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.feedback-bar-send').disabled"),
+        true
+    );
 }

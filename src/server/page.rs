@@ -321,6 +321,7 @@ pub fn state_json(shared: &Arc<Shared>, artifact: &str) -> Result<Option<serde_j
         "artifact": art.id,
         "revision": art.revision,
         "plan_hash": art.plan_hash,
+        "summary": art.summary,
         "plan": art.plan,
         "html": html,
         "threads": art.threads,

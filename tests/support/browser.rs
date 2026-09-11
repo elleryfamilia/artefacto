@@ -416,6 +416,12 @@ impl Page {
         assert_eq!(ok, true, "no element matches {selector}");
     }
 
+    /// Forget every cookie, so the next request is not signed in.
+    pub fn clear_cookies(&mut self) {
+        self.call("Network.enable", serde_json::json!({}));
+        self.call("Network.clearBrowserCookies", serde_json::json!({}));
+    }
+
     /// Cut the page's network from underneath it, to test reconnecting.
     pub fn set_offline(&mut self, offline: bool) {
         self.call("Network.enable", serde_json::json!({}));

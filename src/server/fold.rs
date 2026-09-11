@@ -104,6 +104,7 @@ fn revision(review: &mut Review, event: &Event) {
     entry.revision = entry.revision.saturating_add(1);
     entry.plan_hash = str_field(event, "plan_hash");
     entry.source_path = str_field(event, "source_path");
+    entry.summary = str_field(event, "summary");
     entry.plan = plan;
     // A new revision reopens the review. Spec 7 rule 4 has the agent push the
     // next revision after a submit "and keep the monitor armed for the next
