@@ -607,3 +607,23 @@ fn await_returns_stopped_when_the_server_is_shutting_down() {
     let r: serde_json::Value = serde_json::from_str(&stdout).expect("json");
     assert_eq!(r["status"], "stopped");
 }
+
+#[test]
+fn a_lease_name_the_follow_line_could_not_carry_is_refused_by_the_server() {
+    // The CLI refuses such a name before connecting; this is the server
+    // refusing it from a caller that speaks HTTP with the bearer, so no
+    // lease can exist whose follow line cannot be armed.
+    let (_repo, server) = attached();
+    for (name, why) in [("-x", "start with"), ("", "empty"), ("a%0Ab", "control")] {
+        let response = server.cli_raw(&format!("await?agent={name}&timeout_ms=0"));
+        assert!(response.starts_with("HTTP/1.1 400"), "{name:?}: {response}");
+        assert!(response.contains("invalid_agent"), "{name:?}: {response}");
+        assert!(response.contains(why), "{name:?}: {response}");
+    }
+    assert!(
+        server.lease_mode().is_none(),
+        "a refused claim takes no lease"
+    );
+    let fine = server.cli_raw("await?agent=my%20agent&timeout_ms=0");
+    assert!(fine.starts_with("HTTP/1.1 200"), "{fine}");
+}

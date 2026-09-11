@@ -239,13 +239,13 @@ fn validated(shared: &Arc<Shared>, query: &Query) -> Result<LeaseRecord, Denied>
             message: "this command needs --session".to_string(),
         });
     };
-    lease::validate(shared, token).map_err(|e| Denied {
-        status: 409,
-        code: match e {
-            LeaseError::Held { .. } => "lease_held",
-            LeaseError::Superseded => "lease_superseded",
-        },
-        message: e.to_string(),
+    lease::validate(shared, token).map_err(|e| {
+        let (status, code) = e.http();
+        Denied {
+            status,
+            code,
+            message: e.to_string(),
+        }
     })
 }
 
@@ -258,9 +258,6 @@ fn refuse(request: Request, why: &str) {
 }
 
 fn refuse_lease(request: Request, error: LeaseError) {
-    let code = match error {
-        LeaseError::Held { .. } => "lease_held",
-        LeaseError::Superseded => "lease_superseded",
-    };
-    let _ = request.respond(error_response(409, code, &error.to_string()));
+    let (status, code) = error.http();
+    let _ = request.respond(error_response(status, code, &error.to_string()));
 }

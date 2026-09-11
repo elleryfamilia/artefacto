@@ -238,11 +238,8 @@ pub fn claim(shared: &Arc<Shared>, query: &Query) -> Result<LeaseRecord, LeaseEr
 /// Both lease refusals are exit 6 on the agent's side; the body carries which
 /// one and, for `held`, who has it.
 fn refuse(request: Request, error: LeaseError) {
-    let code = match error {
-        LeaseError::Held { .. } => "lease_held",
-        LeaseError::Superseded => "lease_superseded",
-    };
-    let _ = request.respond(error_response(409, code, &error.to_string()));
+    let (status, code) = error.http();
+    let _ = request.respond(error_response(status, code, &error.to_string()));
 }
 
 fn fail(request: Request, error: &anyhow::Error) {

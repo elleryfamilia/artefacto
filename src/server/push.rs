@@ -88,6 +88,7 @@ impl Refusal {
             Refusal::Invalid(_) => "invalid_push",
             Refusal::Lease(lease::LeaseError::Held { .. }) => "lease_held",
             Refusal::Lease(lease::LeaseError::Superseded) => "lease_superseded",
+            Refusal::Lease(lease::LeaseError::InvalidName(_)) => "invalid_agent",
         }
     }
 
@@ -134,11 +135,8 @@ pub fn handle_push(shared: &Arc<Shared>, mut request: Request, query: &Query) {
     let session = match crate::server::poll::claim(shared, query) {
         Ok(session) => session,
         Err(e) => {
-            let code = match e {
-                lease::LeaseError::Held { .. } => "lease_held",
-                lease::LeaseError::Superseded => "lease_superseded",
-            };
-            let _ = request.respond(error_response(409, code, &e.to_string()));
+            let (status, code) = e.http();
+            let _ = request.respond(error_response(status, code, &e.to_string()));
             return;
         }
     };

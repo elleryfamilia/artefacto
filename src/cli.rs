@@ -145,18 +145,7 @@ pub fn parse_duration(raw: &str) -> Result<std::time::Duration, String> {
 /// that cannot be run. Empty, and control characters, are refused for the
 /// same reason: a name has to survive a trip through a shell.
 pub fn parse_agent_name(raw: &str) -> Result<String, String> {
-    if raw.is_empty() {
-        return Err("an agent name cannot be empty".to_string());
-    }
-    if raw.starts_with('-') {
-        return Err(format!("an agent name cannot start with `-`: {raw:?}"));
-    }
-    if raw.chars().any(char::is_control) {
-        return Err(format!(
-            "an agent name cannot contain a control character: {raw:?}"
-        ));
-    }
-    Ok(raw.to_string())
+    crate::server::lease::valid_name(raw).map(|()| raw.to_string())
 }
 
 /// Flags every agent-side command shares. Declared once so `await` and

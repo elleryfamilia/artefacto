@@ -734,7 +734,10 @@ mutated, and committed before the next; then the prose; then a hand-drive.
   nothing and says so.
 - `--agent` refuses an empty name, a leading `-`, and control characters.
   The name comes back out of `status --json` as a command line, and a name
-  clap could not read back is a follow line that cannot be armed.
+  clap could not read back is a follow line that cannot be armed. The rule
+  lives in the lease (`lease::valid_name`), which every claim passes
+  through, so a caller speaking HTTP with the bearer is refused the same
+  way (400, `invalid_agent`, exit 2); the CLI's parser delegates to it.
 - `await` and `events` results carry `cursor`, where the call started
   reading, alongside `seq`, the acknowledgement point. The `events` session
   record's `seq` is that cursor, which is what spec 5 calls it.
