@@ -1621,6 +1621,14 @@
       /* Reviewed marks with a send in flight: ref -> { on, count }. The
          page shows the reviewer's choice until the last reply is in. */
       pendingMarks: {},
+      /* The highest seq applied for each set-valued write (a reviewed mark
+         per ref, an answer per question). Two replies for one key can
+         arrive in either order; the higher seq is the server's truth. */
+      localSeq: {},
+      /* End-of-backoff probes that answered 200 while the socket kept
+         failing. Bounded, or the page would cycle forever without ever
+         saying it gave up. */
+      probes: 0,
       timers: {},
       applied: 0,
       ui: { chatOpen: false },
@@ -1708,6 +1716,10 @@
             /* Committed before the newest snapshot was taken, and the
                reply arrived after the snapshot was applied: already in. */
             renderAll();
+          } else if (staleForKey(ev, reply.seq)) {
+            /* A newer write to the same mark or question already applied;
+               this older reply arriving late must not win. */
+            renderAll();
           } else {
             core.applyEvent(S.state, ev);
             if (reply.seq > S.state.lastSeq) S.state.lastSeq = reply.seq;
@@ -1717,6 +1729,20 @@
         }
         return reply;
       });
+    }
+
+    /* For a write that sets a value rather than appending one, the reply
+       with the higher seq is the later write. Records the seq and says
+       whether this reply is older than one already applied for its key. */
+    function staleForKey(ev, seq) {
+      let key = null;
+      if (ev.type === "element.reviewed") key = "reviewed:" + ev.data.ref;
+      else if (ev.type === "question.answered") key = "answer:" + ev.data.question;
+      if (!key) return false;
+      const seen = S.localSeq[key] || 0;
+      if (seq < seen) return true;
+      S.localSeq[key] = seq;
+      return false;
     }
 
     function ping() {
@@ -1734,6 +1760,7 @@
       ws.onopen = function () {
         S.connected = true;
         S.attempts = 0;
+        S.probes = 0;
         S.gone = false;
         S.stopping = false;
         notice("gone", null);
@@ -1778,16 +1805,28 @@
            stopped working looks exactly like a server that stopped
            answering. One request tells them apart. */
         let answered = false;
+        const gen = ++S.syncGen;
         fetchBounded(S.stateUrl, { credentials: "same-origin" })
           .then(function (r) {
             if (r.status === 401 || r.status === 403) { sessionLost(); return null; }
+            if (r.status === 404) {
+              S.lost = true;
+              notice("lost", "This artifact is no longer on the server.");
+              return null;
+            }
             if (!r.ok) return null;
             return r.json();
           })
           .then(function (snap) {
             /* HTTP answers but the socket would not: take the state and
-               try the socket again from the top. */
-            if (snap) { answered = true; applySnapshot(snap); drain(snap.last_seq || 0); }
+               try the socket again from the top — a bounded number of
+               times, then say so. */
+            if (snap && gen === S.syncGen && S.probes < 3) {
+              answered = true;
+              S.probes++;
+              applySnapshot(snap);
+              drain(snap.last_seq || 0, snap.last_seq || 0);
+            }
           })
           .catch(function () { /* nothing answered */ })
           .then(function () {
@@ -1797,7 +1836,7 @@
             notice("gone", S.stopping
               ? "The server stopped. Run `artefacto serve`, then reload this page."
               : "The server is not answering. If it moved to a new port, run `artefacto open` for a fresh link.",
-              { action: "Retry", onAction: function () { S.attempts = 0; S.gone = false; connect(); } });
+              { action: "Retry", onAction: function () { S.attempts = 0; S.probes = 0; S.gone = false; connect(); } });
             renderPresence();
           });
         return;
@@ -1842,24 +1881,30 @@
         .then(function (snap) {
           if (gen !== S.syncGen) return;
           applySnapshot(snap);
-          drain(snap.last_seq || 0);
+          drain(snap.last_seq || 0, snap.last_seq || 0);
         })
         .catch(function () {
           if (gen !== S.syncGen || S.lost) return;
           /* Best effort: fold in what arrived, skipping what the state
-             already has, and try again shortly. */
-          drain(S.state.lastSeq);
+             already has. The page's own replies are applied whatever
+             their seq — no snapshot holds them — and it tries again. */
+          drain(S.state.lastSeq, null);
           if (S.connected && !S.timers.resync) {
             S.timers.resync = setTimeout(function () { S.timers.resync = null; resync(); }, 1500);
           }
         });
     }
 
-    function drain(cursor) {
+    function drain(cursor, ownCursor) {
       const frames = S.buffer;
       S.buffer = [];
       S.syncing = false;
-      frames.forEach(function (f) { applyFrame(f, cursor); });
+      frames.forEach(function (f) { applyFrame(f, f.own ? ownCursor : cursor); });
+      /* Marks whose last reply came while catching up were kept pending
+         until their buffered frame had a chance to apply. */
+      for (const ref in S.pendingMarks) {
+        if (S.pendingMarks[ref].count <= 0) delete S.pendingMarks[ref];
+      }
       renderAll();
     }
 
@@ -1879,7 +1924,7 @@
         const resolved = fresh.threads.filter(function (t) {
           if (t.status !== "changed" && t.status !== "declined") return false;
           const was = previous.threads.find(function (x) { return x.id === t.id; });
-          return !was || (was.status !== "changed" && was.status !== "declined");
+          return !was || was.status !== t.status;
         }).map(function (t) { return { type: "thread.resolved", data: { thread: t.id, status: t.status } }; });
         revisionNotice({ data: { summary: snap.summary } }, resolved);
       }
@@ -2256,8 +2301,20 @@
       bar.appendChild(el("span", { class: "feedback-bar-sent" }));
       bar.appendChild(el("button", { type: "button", class: "pv-textbtn feedback-bar-chat", text: "Ask the agent", onclick: function () {
         S.ui.chatOpen = !S.ui.chatOpen;
-        renderChat();
-        if (S.ui.chatOpen) openComposer({ kind: "chat" });
+        /* The reviewer has seen the panel; a draft in it no longer opens
+           it on their behalf. */
+        S.ui.chatDraftShown = true;
+        if (S.ui.chatOpen) {
+          renderChat();
+          openComposer({ kind: "chat" });
+        } else {
+          /* Closing with nothing written is not a draft worth keeping. */
+          document.querySelectorAll(".pv-chat .composer").forEach(function (c) {
+            const ta = c.querySelector("textarea");
+            if (ta && !ta.value.trim()) { dropDraft(c.getAttribute("data-composer")); c.remove(); }
+          });
+          renderChat();
+        }
       } }));
       const approve = el("input", { type: "checkbox" });
       approve.addEventListener("change", function () { S.approve = approve.checked; renderBar(); });
@@ -2267,7 +2324,7 @@
         S.submitting = true;
         renderBar();
         send({ cmd: "review.submit", verdict: S.approve ? "approve" : "comment", base_revision: S.state.revision })
-          .then(function () { S.submitting = false; renderBar(); })
+          .then(function () { S.submitting = false; renderBar(); cleared(document.querySelector(".feedback-bar-send")); })
           .catch(function (e) {
             S.submitting = false;
             renderBar();
@@ -2369,11 +2426,21 @@
 
     /* ---- composers --------------------------------------------------- */
 
+    function errorHost(anchor) {
+      return anchor.closest(".composer, .feedback-bar, .thread, .reviewed-toggle") || anchor.parentNode;
+    }
+
     function failed(anchor, e) {
-      const host = anchor.closest(".composer, .feedback-bar, .thread") || anchor.parentNode;
+      const host = errorHost(anchor);
       let line = host.querySelector(".pv-error");
       if (!line) { line = el("span", { class: "pv-error", role: "alert" }); host.appendChild(line); }
       line.textContent = "Not sent: " + (e && e.message ? e.message : String(e));
+    }
+
+    /* A later success clears the line; an error is not forever. */
+    function cleared(anchor) {
+      const host = anchor && anchor.isConnected ? errorHost(anchor) : null;
+      if (host) host.querySelectorAll(".pv-error").forEach(function (n) { n.remove(); });
     }
 
     function openComposer(spec) {
@@ -2478,8 +2545,13 @@
       for (const id in map) {
         const d = map[id];
         if (!draftTarget(d)) continue;
-        /* A message half-written is not hidden behind a closed panel. */
-        if (d.kind === "chat" && !S.ui.chatOpen) { S.ui.chatOpen = true; renderChat(); }
+        /* A message half-written is not hidden behind a closed panel:
+           the first time the page finds it, the panel opens. Once. A
+           reviewer who then closes the panel has chosen. */
+        if (d.kind === "chat" && d.text && !S.ui.chatDraftShown) {
+          S.ui.chatDraftShown = true;
+          if (!S.ui.chatOpen) { S.ui.chatOpen = true; renderChat(); }
+        }
         openComposer({ id: d.id, clientId: d.clientId, kind: d.kind, ref: d.ref, thread: d.thread,
           revision: d.revision, text: d.text, blocking: d.blocking, quote: d.quote, silent: true });
       }
@@ -2537,11 +2609,17 @@
           S.pendingMarks[ref] = mark;
           const settle = function () {
             mark.count--;
-            if (mark.count <= 0) delete S.pendingMarks[ref];
+            /* While catching up the reply sits in the buffer, and the
+               state does not have the mark yet: keep showing the choice
+               until `drain` has applied it. */
+            if (mark.count <= 0 && !S.syncing) delete S.pendingMarks[ref];
             renderReviewed();
           };
           send({ cmd: "element.reviewed", ref: ref, on: on })
-            .then(settle)
+            .then(function () {
+              settle();
+              cleared(findByAttr(document, ".reviewed-toggle", "data-reviewed-for", ref));
+            })
             .catch(function (e) {
               settle();
               const current = findByAttr(document, ".reviewed-toggle", "data-reviewed-for", ref);

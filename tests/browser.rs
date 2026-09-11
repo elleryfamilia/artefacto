@@ -276,8 +276,10 @@ fn reply(page: &mut support::browser::Page, thread: &str, text: &str) {
 
 /// Make the page's `fetch` treat `path` specially: `mode` is "hold-response"
 /// (the request goes out, the response waits `ms`), "hold-request" (the
-/// request itself waits `ms`), or "drop-response" (the request goes out and
-/// the response never arrives).
+/// request itself waits `ms`), "drop-response" (the request goes out and
+/// the response never arrives), or "hold-first" (only the first matching
+/// response waits `ms`; later ones pass straight through, so two replies
+/// arrive in reverse order).
 fn shape_fetch(page: &mut support::browser::Page, path: &str, mode: &str, ms: u64) {
     page.eval(&format!(
         "(function(){{ const orig = window.__origFetch || window.fetch; window.__origFetch = orig; \
@@ -286,6 +288,7 @@ fn shape_fetch(page: &mut support::browser::Page, path: &str, mode: &str, ms: u6
             if ({mode} === 'hold-request') return new Promise(function (r) {{ setTimeout(r, {ms}); }}).then(function () {{ return orig(u, o); }}); \
             const p = orig(u, o); \
             if ({mode} === 'drop-response') return p.then(function () {{ return new Promise(function () {{}}); }}); \
+            if ({mode} === 'hold-first') {{ if (window.__heldFirst) return p; window.__heldFirst = true; }} \
             return p.then(function (r) {{ return new Promise(function (res) {{ setTimeout(function () {{ res(r); }}, {ms}); }}); }}); \
           }}; return true; }})()",
         path = serde_json::to_string(path).unwrap(),
@@ -1753,5 +1756,247 @@ fn a_chat_draft_is_visible_after_a_reload() {
     assert_eq!(
         page.text("document.querySelector('.pv-chat .composer textarea').value"),
         "half a question"
+    );
+}
+
+// --- the round-seven fix slice, reviewed fresh --------------------------------
+
+#[test]
+fn the_chat_panel_stays_closed_once_the_reviewer_closes_it() {
+    // A draft opens the panel once, when the page first finds it. After
+    // the reviewer closes the panel, no frame, reply, or render reopens it.
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".feedback-bar-chat");
+    page.type_into(".pv-chat .composer textarea", "kept but closed");
+    page.click(".feedback-bar-chat");
+    assert_eq!(page.eval("document.querySelector('.pv-chat').hidden"), true);
+    page.eval(
+        "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 999, events: [] })",
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-chat').hidden"),
+        true,
+        "a frame does not reopen it"
+    );
+    comment(&mut page, "task:t-a", "a comment");
+    assert_eq!(
+        page.eval("document.querySelector('.pv-chat').hidden"),
+        true,
+        "an own reply does not reopen it"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-chat .composer textarea').value"),
+        "kept but closed",
+        "the draft is kept"
+    );
+
+    // Closing with nothing written keeps nothing.
+    page.click(".feedback-bar-chat");
+    page.click(".feedback-bar-chat");
+    page.click(".feedback-bar-chat");
+    page.type_into(".pv-chat .composer textarea", "");
+    page.click(".feedback-bar-chat");
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(page.eval("document.querySelector('.pv-chat').hidden"), true);
+    assert_eq!(
+        page.eval("Object.keys(window.artefactoPlan.debug().drafts).length"),
+        0,
+        "an empty chat draft is not stored"
+    );
+}
+
+#[test]
+fn reviewed_mark_replies_out_of_order_settle_on_the_servers_value() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // The first reply (on) is held; the second (off) arrives first.
+    shape_fetch(&mut page, "/cmd", "hold-first", 1500);
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    support::wait_for(
+        || s.server().count_events("element.reviewed") == 1,
+        "on landed",
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    support::wait_for(
+        || s.server().count_events("element.reviewed") == 2,
+        "off landed",
+    );
+    assert_eq!(
+        s.server().last_event_of_type("element.reviewed")["data"]["on"],
+        false
+    );
+    std::thread::sleep(std::time::Duration::from_millis(2200));
+    assert_eq!(
+        page.eval("window.artefactoPlan.debug().reviewed.length"),
+        0,
+        "the later write wins, whichever reply came last"
+    );
+    assert_eq!(
+        page.eval(
+            "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle input').checked"
+        ),
+        false
+    );
+}
+
+#[test]
+fn a_reviewed_mark_answered_during_a_resync_does_not_flicker() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    catch_up_with(&s, &mut page, "hold-response");
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    support::wait_for(
+        || s.server().count_events("element.reviewed") == 1,
+        "the mark landed",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(
+        page.eval("window.artefactoPlan.debug().syncing"),
+        true,
+        "still catching up"
+    );
+    assert_eq!(
+        page.eval(
+            "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle input').checked"
+        ),
+        true,
+        "the reviewer's choice holds while the reply waits in the buffer"
+    );
+    connected(&mut page);
+    assert_eq!(
+        page.eval(
+            "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle input').checked"
+        ),
+        true
+    );
+    assert_eq!(debug(&mut page)["reviewed"][0], "task:t-a");
+}
+
+#[test]
+fn a_reply_answered_after_the_snapshot_that_held_it_is_not_applied_twice() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    comment(&mut page, "task:t-a", "a thread");
+    shape_fetch(&mut page, "/cmd", "hold-response", 2000);
+    page.click(".thread[data-thread=\"c-1\"] .thread-reply");
+    page.type_into(
+        ".thread[data-thread=\"c-1\"] .composer textarea",
+        "slow reply",
+    );
+    page.click(".thread[data-thread=\"c-1\"] .composer .composer-send");
+    support::wait_for(
+        || s.server().count_events("thread.replied") == 1,
+        "the reply landed",
+    );
+    // A resync completes with the reply inside the snapshot, then the
+    // held reply arrives.
+    artefacto::server::socket::close_all(&s.server().shared);
+    page.wait_until(
+        "window.artefactoPlan.debug().reconnects >= 1 && window.artefactoPlan.debug().connected && !window.artefactoPlan.debug().syncing",
+        "the page to catch up",
+    );
+    page.wait_until(
+        "!document.querySelector('.composer')",
+        "the held reply to close the composer",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length"),
+        2,
+        "the snapshot already held it"
+    );
+}
+
+/// Replace the page's WebSocket with one that fails `times` times, then
+/// hands back the real one.
+fn failing_sockets(page: &mut support::browser::Page, times: u64) {
+    page.eval(&format!(
+        "(function(){{ const Real = window.__realWebSocket || window.WebSocket; window.__realWebSocket = Real; \
+          let left = {times}; \
+          window.WebSocket = function (url) {{ \
+            if (left <= 0) return new Real(url); \
+            left--; const s = {{ close: function () {{}} }}; \
+            setTimeout(function () {{ if (s.onclose) s.onclose({{}}); }}, 10); return s; \
+          }}; return true; }})()"
+    ));
+}
+
+#[test]
+fn a_transient_socket_failure_with_http_alive_recovers_through_the_probe() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.eval("window.artefactoPlan.settings.backoffMs = [40, 40, 40]");
+    failing_sockets(&mut page, 4);
+    artefacto::server::socket::close_all(&s.server().shared);
+    // A write lands while the socket is down; the probe's snapshot has it.
+    let cookie = s.server().session_cookie("plan:demo");
+    s.server().post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "thread.open", "client_id": "cid-outage", "ref": "task:t-a",
+            "text": "during the outage", "opened_revision": 1,
+        }),
+    );
+    page.wait_until(
+        "window.artefactoPlan.debug().connected && !window.artefactoPlan.debug().syncing && window.artefactoPlan.debug().reconnects >= 4",
+        "the page to get through",
+    );
+    assert_eq!(page.eval("window.artefactoPlan.debug().gone"), false);
+    page.wait_until(
+        "document.querySelectorAll('.thread').length === 1",
+        "the write made during the outage",
+    );
+}
+
+#[test]
+fn a_socket_that_keeps_failing_while_http_answers_still_gives_up() {
+    // Spec 4.3: a clear "server gone" state after a bounded number of
+    // retries, even when /state keeps answering.
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.eval("window.artefactoPlan.settings.backoffMs = [30, 30, 30]");
+    failing_sockets(&mut page, 1_000_000);
+    artefacto::server::socket::close_all(&s.server().shared);
+    page.wait_until("window.artefactoPlan.debug().gone", "the page to give up");
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"gone\"] .pv-notice-action')"),
+        true,
+        "with a Retry"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-presence').textContent"),
+        "server gone"
     );
 }
