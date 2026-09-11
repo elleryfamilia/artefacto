@@ -28,6 +28,8 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Mint a fresh one-time link to an artifact's page and open the browser.
+    Open(OpenArgs),
     /// Wait for something the agent should act on, then print one JSON result.
     #[command(name = "await")]
     Await(AwaitArgs),
@@ -39,6 +41,20 @@ pub enum Command {
     Reply(ReplyArgs),
     /// Mark a thread addressed or declined.
     Resolve(ResolveArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct OpenArgs {
+    /// Which artifact to open. May be omitted when the server has exactly
+    /// one.
+    #[arg(long)]
+    pub artifact: Option<String>,
+    /// Print the link without opening a browser.
+    #[arg(long)]
+    pub no_open: bool,
+    /// Emit machine-readable JSON. Implies --no-open.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args, Debug)]

@@ -192,7 +192,7 @@ fn report_write_failure(file: &Path, target: &Path, message: String, json: bool)
 
 /// Whether to open the rendered page. A JSON caller is a program, not a
 /// person, so it never wants a window — even without `--no-open`.
-fn should_open(no_open: bool, json: bool) -> bool {
+pub(crate) fn should_open(no_open: bool, json: bool) -> bool {
     !no_open && !json
 }
 

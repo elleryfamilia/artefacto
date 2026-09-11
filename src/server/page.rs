@@ -10,7 +10,7 @@
 //! Takes `core` briefly for the bootstrap table. Never while holding
 //! `sockets`, and never across I/O.
 
-use crate::server::http::{error_response, header, json_response, Committer, Shared};
+use crate::server::http::{error_response, header, json_response, Committer, Query, Shared};
 use crate::server::state_dir::new_secret;
 use anyhow::{bail, Result};
 use std::io::Cursor;
@@ -86,6 +86,45 @@ pub fn handle_bootstrap(shared: &Arc<Shared>, request: Request, token: &str) {
                 .expect("location"),
         );
     let _ = request.respond(response);
+}
+
+/// `POST /cli/open?artifact=ID`: a fresh link for `artefacto open`.
+///
+/// Spec 5: "mint a fresh bootstrap URL and open the browser". Without a name
+/// it follows `reply`'s rule — one artifact needs no name, several do — and
+/// an artifact the fold does not know is refused rather than minted for,
+/// because a link that lands on the placeholder page is a link that lied.
+pub fn handle_open(shared: &Arc<Shared>, request: Request, query: &Query) {
+    let named = query.get("artifact").filter(|a| !a.is_empty());
+    let resolved = crate::server::http::with_review(shared, |review| {
+        if let Some(named) = named {
+            if !review.artifacts.contains_key(named.as_str()) {
+                return Err(format!("no such artifact: {named}"));
+            }
+            return Ok(named.clone());
+        }
+        match review.artifacts.len() {
+            1 => Ok(review.artifacts.keys().next().cloned().unwrap_or_default()),
+            0 => Err("there is nothing to open yet; push a plan first".to_string()),
+            _ => Err("this server has several artifacts; name one with --artifact".to_string()),
+        }
+    });
+    let artifact = match resolved {
+        Ok(artifact) => artifact,
+        Err(message) => {
+            let _ = request.respond(error_response(404, "unknown_artifact", &message));
+            return;
+        }
+    };
+    let url = match mint_bootstrap(shared, &artifact) {
+        Ok(token) => bootstrap_url(shared.port, &token),
+        Err(e) => {
+            let _ = request.respond(error_response(400, "invalid_artifact", &format!("{e:#}")));
+            return;
+        }
+    };
+    let body = serde_json::json!({ "ok": true, "artifact": artifact, "url": url });
+    let _ = request.respond(json_response(200, &body.to_string()));
 }
 
 pub fn cookie_ok(req: &Request, shared: &Shared) -> bool {

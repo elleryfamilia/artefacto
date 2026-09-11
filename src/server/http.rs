@@ -335,6 +335,7 @@ fn cli_route(shared: &Arc<Shared>, request: Request, route: &str, query: &Query)
         "push" => crate::server::push::handle_push(shared, request, query),
         "reply" => crate::server::verbs::handle_reply(shared, request, query),
         "resolve" => crate::server::verbs::handle_resolve(shared, request, query),
+        "open" => crate::server::page::handle_open(shared, request, query),
         "status" => {
             let last_seq = shared.log.lock().unwrap().last_seq();
             let body = serde_json::json!({
