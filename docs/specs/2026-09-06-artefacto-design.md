@@ -865,7 +865,7 @@ artifacts.
 | the browser test for the served page cannot be written | budgeted explicitly in section 14 as new harness work, with a fallback that needs no new harness |
 | a thumbnail feature drags in a browser dependency | posters are drawn deterministically from the plan model, reusing the existing SVG machinery; no browser is involved at any point |
 | the index lists artifacts whose files are gone | the row greys and offers a per-row remove; nothing is auto-pruned, because an absent file is usually an unmounted volume |
-| the index and the event log disagree | the registry is the index's only source and is written by render and push; the log drives live state only |
+| the index and the event log disagree | the registry is the index's only source; render writes it, and the server rewrites an artifact's row on every commit that changes it (plan 4); the log drives live state only |
 
 ## 14. Testing
 

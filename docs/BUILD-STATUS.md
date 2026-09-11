@@ -21,7 +21,7 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-496 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+504 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
 clean. Sixty-two of the tests run the served pages in a headless Chromium;
 they skip with a printed line on a machine without one (see "Plan 3" below).
 
@@ -1015,14 +1015,19 @@ then the release configuration; then the prose; then a hand-drive.
   revision's time, which the age is computed from), `recorded_at`, the
   open and unanchored counts, `submitted`, and the last verdict; fields a
   newer artefacto wrote are carried through a rewrite. Every write takes an
-  advisory lock on `index.lock`, reloads, applies one change, and writes
-  through a rename, so a `render` in a shell and the server recording a
-  thread cannot lose each other's row (eight threads racing in a test lose
-  nothing). Rosita's Recents rules hold: a file whose format number is
-  higher than this binary's is read as empty and never rewritten (checked
-  before the rows are parsed, so a newer row shape cannot read as
-  corruption), a corrupt file loads empty and is repaired by the next
-  write, and a row whose source file is gone is greyed and never pruned.
+  advisory lock on `index.lock`, reloads, builds its row from the one
+  already there, and writes through a rename, so a `render` in a shell and
+  the server recording a thread cannot lose each other's row (eight threads
+  racing in a test lose nothing). Rosita's Recents rules hold: a file whose
+  format number is higher than this binary's is read as empty and never
+  rewritten (checked before the rows are parsed, so a newer row shape
+  cannot read as corruption); rows parse one at a time, and a row this
+  binary cannot read costs that row's listing and nothing else, carried
+  through the next write as it was and counted in `list` and on the page;
+  a file that is not an index at all reads as empty, is said so by `list`
+  and the page rather than shown as "no artifacts yet", and is kept aside
+  as `index.json.corrupt` when the next write repairs it; a row whose
+  source file is gone is greyed and never pruned.
 - **The poster.** `plan::poster::poster_svg(plan, state)`: a 320 by 180
   card with a kind badge, the revision or "not pushed", the title on up to
   two lines, phase and task counts, a bar per phase sized by task count
@@ -1035,7 +1040,11 @@ then the release configuration; then the prose; then a hand-drive.
   the page is already written, and the JSON result carries `index:
   {recorded, poster}` or `{recorded: false, reason}`, with a stderr note in
   text mode. Outside a git repository there is no index to record into and
-  the render still succeeds.
+  the render still succeeds. A render knows the plan and where its page
+  went and nothing of the review, so for an artifact that has been pushed
+  it keeps the row's revision, the revision's time, the counts, and the
+  verdict from the row already there, and draws the poster with them; only
+  a plan never pushed takes the render as its revision.
 - **The server keeps rows current.** `Committer::append_all` rewrites the
   row and redraws the poster for every artifact named by a
   `revision.published`, `thread.opened`, `thread.deleted`,
@@ -1055,11 +1064,13 @@ then the release configuration; then the prose; then a hand-drive.
   the age with the exact time in the `title` attribute, the review state,
   the source and whether it exists, and where the artifact is: a row this
   server holds links to `/a/<id>`, a static render names its page, a
-  cleaned review says "push it again". A greyed or not-live row offers
-  Remove, which POSTs to `/index/remove` with the cookie and a strict
-  origin, refuses a live artifact (409: its next event would write the row
-  back), refuses a malformed id (400), and answers 404 for a row that is
-  not there. The page has no script but the remove handler.
+  cleaned review says "push it again". A row this server does not hold
+  offers Remove, which POSTs to `/index/remove` with the cookie and a
+  strict origin, refuses a live artifact (409: its next event would write
+  the row back), refuses a malformed id (400), and answers 404 for a row
+  that is not there; a live row whose file is gone is greyed and says it
+  is kept while its review is open here. The page answers GET only and has
+  no script but the remove handler.
 - **`open` lands on the index** when the server holds several artifacts
   and none is named (`"index": true`, `"artifact": null`). A bootstrap
   token now maps to a landing path, `/a/<id>` or `/`. Every served plan
@@ -1075,9 +1086,15 @@ then the release configuration; then the prose; then a hand-drive.
   appended after it; lease and cursor records name no artifact and stay.
   The secret turns over under the same port with a dead pid recorded, so
   every cookie and bearer minted so far is refused and the next `serve`
-  rebinds where open pages look. Nothing sent means the log is byte for
-  byte unchanged; no state directory means nothing to do and none is
-  created. The index and the posters are untouched.
+  rebinds where open pages look. The log is checked, read-only, before
+  anything is changed: a log the server would refuse leaves the server up,
+  the secret as it was, and the caller told why, since that is exactly the
+  state `clean` cannot help with. Nothing sent means the log's records are
+  unchanged (a torn tail is truncated on the way, as a restart would); no
+  state directory means nothing to do and none is created. The index and
+  the posters are untouched. A `push` or `serve` that arrives while `clean`
+  holds the startup lock waits for the lock, not for a server `clean` will
+  never start.
 - **cargo-dist.** `dist init` with the GitHub host and the shell installer,
   the Windows target it proposed removed (spec 16: macOS and Linux only,
   and the daemon forks and flocks). `dist plan` lists the four archives, the
@@ -1116,6 +1133,16 @@ then the release configuration; then the prose; then a hand-drive.
   milliseconds, the write happens under the commit gate, and the file is a
   convenience: a crash that loses the newest row loses nothing the next
   state change does not write again. The log's own fsync is untouched.
+- **A greyed row that this server holds has no Remove.** Spec 4.4 says a
+  missing file "greys the row and offers a per-row remove"; a live row's
+  next event would write it straight back, so the row says it is kept while
+  its review is open here, and the route refuses it with 409. Remove
+  appears once the review is no longer on this server (`clean`, or the
+  server stopped).
+- **`open` with rows in the index but nothing in the log** exits 2 ("push
+  a plan first"), as after a full `clean`: the index page is served by the
+  server, and a daemon started only to show it would idle for half an hour.
+  `list` shows the rows; a push brings the page back.
 
 ### What only running could establish
 
@@ -1151,8 +1178,8 @@ then the release configuration; then the prose; then a hand-drive.
   switches the scheme.
 - **The remove button's failure path** ("Could not remove" after a refused
   POST) is not driven in a browser; the refusals themselves are.
-- **`clean` against a `serve` that is starting** (the startup lock refusal)
-  is not driven.
+- **The registry across processes** is covered by threads in the suite and
+  by the reviewer's hand run, not by a cross-process test.
 - **The release workflow** has never run: `dist plan` is what was checked.
 - **`list`'s text layout** is asserted for its facts, not its columns.
 
@@ -1171,6 +1198,68 @@ with its Remove. Two of the drive's own steps failed first and were the
 drive's fault: an empty `--session` passed to the second push (exit 6, as
 it should), and a hand-counted `Content-Length` one byte long, which the
 server waited on.
+
+### Review round sixteen: plan 4, reviewed fresh
+
+A fresh reviewer on a different model read the nine commits against the
+spec in a detached worktree, ran every plan 4 suite and the browser test,
+and drove the binary through push-then-render, a hand-broken registry, a
+hand-broken log, a held startup lock, eight concurrent render processes
+against six page commands, an in-flight `events --follow` and `await`
+during `clean`, and the release config. Six confirmed defects, one high,
+one medium, four low; all closed:
+
+1. **A `render` of a live artifact rebuilt its row from nothing** (high).
+   `render_entry` wrote revision 0, no threads, no verdict, and
+   `revised_at` now, so after push, thread, render, `list` said "not
+   pushed, 0 open" while `status` said revision 1 with one open thread; a
+   sent `approve` became none; the poster said "not pushed"; and the row
+   jumped to the top of the list. Only the reverse order had a test. The
+   row is now built under the lock from the row already there
+   (`record_with`), a render changes only what it knows, and the test
+   pushes, opens a thread, backdates the row, renders, and reads every
+   review fact back.
+2. **One unreadable row made the whole registry read as corrupt** (medium),
+   and the next write kept only its own row: every other row silently
+   lost, against spec 4.4's "never auto-prune". Rows parse one at a time;
+   an unreadable one is carried through verbatim and reported; a file that
+   is not an index is reported by `list` and the page instead of "no
+   artifacts yet", and its bytes are kept as `index.json.corrupt` when the
+   next write repairs it.
+3. **`clean` on a log the server refuses stopped the server, then
+   failed**, rotating nothing and printing nothing on stdout for `--json`.
+   The log is checked read-only first; a bad log changes nothing.
+4. **A `push` arriving while `clean` held the startup lock waited ten
+   seconds for a server that never came**, then blamed a `serve` that did
+   not exist. `serve` now waits for the lock or a peer, whichever comes,
+   and goes on as soon as the lock is free (tested with the lock held from
+   the test for a second and a half).
+5. **Every inlined poster carried `id="ap-title"`**, so the index page had
+   duplicate ids and every card was labelled with the first title. The id
+   carries the plan id.
+6. **A live row with a missing file offered no Remove** with no word about
+   it, against spec 4.4's sentence. The row now says why it stays, and the
+   divergence is recorded above.
+
+Prose findings adopted: "byte for byte unchanged" overclaimed (a torn tail
+is truncated on the way); "reported in the server's log" was not true for
+a newer-format registry (the server now says so once in `server.log`, with
+a test that reads it); the spec's risk table still said the registry is
+written by render and push only; the `open` row of the skill and the
+divergence list now say what happens with rows but nothing live; `list`
+and the page over a corrupt or newer file no longer say "no artifacts
+yet" beside a note that contradicts it. Test-strength findings adopted:
+the page's "rev 1" assertion matched the poster's own text and now names
+the facts line; `POST /` answers 405; `clean` is driven against a corrupt
+log, a held lock, and a removed multi-event commit. Noted, not acted on:
+cross-process concurrency of the registry is covered by the reviewer's
+hand run (eight processes) and by threads in the suite, not by a
+cross-process test; a dotted format number (`/1.1`) reads as "not an
+index", which the `/N` contract makes moot; an `await` retrying across a
+`clean` and restart keeps the old bearer and exits 2, which is acceptable
+for a deliberate rotation. The fix slice was mutated seventeen ways, all
+caught once the render test backdated its row (in the same second, "now"
+and "the revision's time" coincide).
 
 ## Where the code diverges from plan 2b, with the reason
 
@@ -1389,7 +1478,16 @@ nothing was sent, gaps refused again, the next seq from the count, the
 secret not rotated, the server not stopped first, the old pid kept, the
 port dropped, a state directory created for nothing, kept ids including
 the sent ones, and `log.cleaned` delivered to agents, which survived until
-the test sent an active event after the clean (item 3 above).
+the test sent an active event after the clean (item 3 above). Round
+sixteen's fixes: the render ignoring the previous row, stamping a pushed
+row's time with now (survived until the test backdated the row), one bad
+row read as corrupt, unreadable rows dropped on save, a corrupt file not
+kept aside, `list` hiding corrupt, saying "no artifacts" over a corrupt
+file, or printing no notes, the page showing no notes or "no artifacts"
+over a corrupt file, the index answering POST, a live greyed row saying
+nothing, poster ids colliding, the server silent over a newer index or
+saying it on every commit, `clean` stopping the server before checking the
+log, and `serve` waiting only for a peer.
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,

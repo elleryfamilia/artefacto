@@ -292,7 +292,7 @@ artefacto skill  (--print | --install DIR)
 | `resolve` | marks a thread `changed` or `declined`, with a note the reviewer reads in it |
 | `status` | the review as an agent needs it to rejoin; never the token |
 | `list` | every artifact for this repository, newest first, from the index; needs no server |
-| `open` | a fresh one-time link to the page; with several artifacts and no `--artifact`, to the index; starts the server if none is running and the log holds an artifact |
+| `open` | a fresh one-time link to the page; with several artifacts and no `--artifact`, to the index; starts the server if none is running and the log holds an artifact (after a `clean` that removed every review, it exits 2 until something is pushed again; `list` still shows the rows) |
 | `serve`, `stop` | the daemon by hand; `push` and `open` start it for you |
 | `clean` | drops sent reviews from the log, keeps open ones, rotates the session secret (open pages need `open` again), keeps the index; stops the server first |
 | `skill` | this package, as a JSON manifest (`--print`) or written under a directory (`--install`) |
