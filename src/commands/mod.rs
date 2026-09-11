@@ -1,6 +1,7 @@
 //! Command implementations.
 
 pub mod agent;
+pub mod clean;
 pub mod list;
 pub mod plan;
 pub mod serve;
@@ -53,5 +54,6 @@ pub fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Reply(args) => agent::reply(args),
         Command::Resolve(args) => agent::resolve(args),
         Command::Skill(args) => skill::run(args),
+        Command::Clean { json } => clean::clean(*json),
     }
 }

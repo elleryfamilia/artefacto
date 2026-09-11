@@ -122,7 +122,7 @@ pub fn is_active(event_type: &str) -> bool {
 pub fn is_internal(event_type: &str) -> bool {
     matches!(
         event_type,
-        "cursor.acked" | "lease.taken" | "lease.released"
+        "cursor.acked" | "lease.taken" | "lease.released" | "log.cleaned"
     )
 }
 

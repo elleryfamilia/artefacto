@@ -49,6 +49,13 @@ pub enum Command {
     Resolve(ResolveArgs),
     /// Emit the skill package: a JSON manifest, or files under a directory.
     Skill(SkillArgs),
+    /// Drop sent reviews from the log and rotate the session secret. Stops the
+    /// server first; the artifact index is kept.
+    Clean {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Exactly one form. Spec 4.5: the manifest is what a skill lifecycle

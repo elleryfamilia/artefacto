@@ -8,9 +8,11 @@
 //! exists:
 //!
 //! 1. An **unterminated** final line is a torn write and is truncated.
-//!    Anything else that does not parse — a bad line in the middle, a sequence
-//!    gap, a foreign format — is a hard error. Dropping committed history
-//!    quietly is worse than refusing to start.
+//!    Anything else that does not parse — a bad line in the middle, a
+//!    sequence number that does not go up, a foreign format — is a hard
+//!    error. Dropping committed history quietly is worse than refusing to
+//!    start. A **gap** in the numbers is not an error: `clean` takes a
+//!    finished review's events out and leaves the rest at their numbers.
 //! 2. A final **incomplete batch** is an interrupted commit and is dropped
 //!    whole. One `write_all` is not a transaction: the kernel can take a
 //!    prefix of the buffer and the process can die, leaving two complete,
@@ -121,10 +123,14 @@ impl EventLog {
                         event.format
                     );
                 }
-                let expected = events.len() as u64 + 1;
-                if event.seq != expected {
+                // Strictly increasing, not contiguous: `clean` takes a
+                // finished review's events out and leaves the rest at their
+                // numbers, so a gap is history, not corruption. A number that
+                // does not go up is.
+                let last = events.last().map(|e: &Event| e.seq).unwrap_or(0);
+                if event.seq <= last {
                     bail!(
-                        "{}: line {line_no} has seq {}, expected seq {expected}",
+                        "{}: line {line_no} has seq {}, not above seq {last}",
                         path.display(),
                         event.seq
                     );
@@ -149,7 +155,7 @@ impl EventLog {
         }
 
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        let next_seq = events.len() as u64 + 1;
+        let next_seq = events.last().map(|e| e.seq + 1).unwrap_or(1);
         Ok(EventLog {
             path,
             file,
@@ -242,6 +248,93 @@ impl EventLog {
         self.events.extend(events.iter().cloned());
         Ok(events)
     }
+}
+
+/// What `clean` did to the log.
+#[derive(Debug, Default)]
+pub struct Cleaned {
+    /// Artifacts whose review was sent, and whose events are gone.
+    pub removed: Vec<String>,
+    /// Artifacts still in the log, their review open.
+    pub kept: Vec<String>,
+    pub events_removed: usize,
+}
+
+/// `artefacto clean` (spec 6.7): drop every event of every artifact whose
+/// review was sent, keep the rest at their numbers (spec 4.2: "it never
+/// renumbers"), and end the log with a `log.cleaned` record numbered past
+/// the old high-water mark. That last record is what keeps a cursor
+/// honest: an agent that acknowledged seq 50 before the clean must not
+/// find the next event numbered 41 and never see it, so the log's highest
+/// number survives even when the events that carried it do not. Lease and
+/// cursor records name no artifact and stay.
+///
+/// Runs only with no server, because the server is the log's only writer
+/// while it lives; the command stops it first.
+pub fn clean(dir: &Path) -> Result<Cleaned> {
+    let log = EventLog::open(dir)?;
+    let events = log.since(0).to_vec();
+    let last_seq = log.last_seq();
+    drop(log);
+    let review = crate::server::fold::fold(&events);
+    let submitted: std::collections::BTreeSet<String> = review
+        .artifacts
+        .values()
+        .filter(|a| a.submitted)
+        .map(|a| a.id.clone())
+        .collect();
+    let kept_ids: Vec<String> = review
+        .artifacts
+        .keys()
+        .filter(|id| !submitted.contains(*id))
+        .cloned()
+        .collect();
+    if submitted.is_empty() {
+        return Ok(Cleaned {
+            removed: Vec::new(),
+            kept: kept_ids,
+            events_removed: 0,
+        });
+    }
+    let (kept, removed): (Vec<Event>, Vec<Event>) = events
+        .into_iter()
+        .partition(|e| !submitted.contains(&e.artifact));
+    let marker = Event {
+        format: EVENT_FORMAT.to_string(),
+        seq: last_seq + 1,
+        ts: now_rfc3339(),
+        artifact: String::new(),
+        revision: 0,
+        actor: Actor::Server,
+        r#type: "log.cleaned".to_string(),
+        data: serde_json::json!({
+            "removed": submitted.iter().collect::<Vec<_>>(),
+            "events": removed.len(),
+        }),
+        batch: None,
+    };
+    let mut buffer = String::with_capacity(4096);
+    for event in kept.iter().chain(std::iter::once(&marker)) {
+        buffer.push_str(&serde_json::to_string(event)?);
+        buffer.push('\n');
+    }
+    let path = dir.join("events.ndjson");
+    let tmp = dir.join("events.ndjson.tmp");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&tmp)
+        .with_context(|| format!("creating {}", tmp.display()))?;
+    file.write_all(buffer.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))?;
+    Ok(Cleaned {
+        removed: submitted.into_iter().collect(),
+        kept: kept_ids,
+        events_removed: removed.len(),
+    })
 }
 
 /// Where an interrupted commit begins, as an index into `events`.
