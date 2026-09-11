@@ -422,6 +422,11 @@ fn push_records_the_revision_and_every_later_change_to_the_review() {
         row["revised_at"], status["artifacts"][0]["revised_at"],
         "the row's time is the revision event's own"
     );
+    assert!(
+        artefacto::time::parse_rfc3339(row["revised_at"].as_str().unwrap()).is_some(),
+        "and it is a real timestamp: {row}"
+    );
+    assert_eq!(row["age"], "just now");
     let poster = l.poster();
     assert!(poster.contains(">rev 1<"), "{poster}");
     assert!(poster.contains("0 open · in review"), "{poster}");
@@ -436,6 +441,15 @@ fn push_records_the_revision_and_every_later_change_to_the_review() {
     assert_eq!(l.row()["open_threads"], 0, "resolved by the agent");
 
     let cookie = l.server.session_cookie("plan:demo");
+    let second = l.open_thread("plan:demo", "cid-3", "phase:p-one", false);
+    assert_eq!(l.row()["open_threads"], 1);
+    l.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({ "cmd": "thread.delete", "client_id": "cid-4", "thread": second }),
+    );
+    assert_eq!(l.row()["open_threads"], 0, "deleted by the reviewer");
+
     l.server.post_cmd(
         &cookie,
         "plan:demo",
@@ -512,4 +526,45 @@ fn a_thread_whose_element_a_push_removed_counts_as_unanchored() {
     assert_eq!(row["open_threads"], 0);
     assert_eq!(row["unanchored_threads"], 1);
     assert!(l.poster().contains("1 unanchored"));
+}
+
+#[test]
+fn a_stored_plan_with_a_field_this_binary_does_not_know_still_has_a_row() {
+    // A newer artefacto pushed it; this one serves it leniently (see the
+    // page tests) and must index it the same way, or the newest artifact is
+    // the one missing from the index.
+    let repo = Repo::new();
+    let server = InProcess::start_in(&repo);
+    {
+        use artefacto::server::event::Actor;
+        use artefacto::server::http::Committer;
+        let c = Committer::open(&server.shared);
+        c.append(
+            "plan:future",
+            1,
+            Actor::Agent,
+            "revision.published",
+            serde_json::json!({
+                "plan": {
+                    "format": "artefacto.plan/1",
+                    "meta": { "id": "future", "title": "From the future", "mood": "calm" },
+                    "phases": [{ "id": "p-one", "title": "Phase one", "tasks": [
+                        { "id": "t-a", "title": "Task A" }
+                    ] }]
+                },
+                "plan_hash": "sha256:future",
+                "source_path": "/tmp/future.json",
+                "summary": "first"
+            }),
+        )
+        .expect("seed");
+    }
+    let listed = list(&repo);
+    let rows = listed["artifacts"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{listed}");
+    assert_eq!(rows[0]["id"], "plan:future");
+    assert_eq!(rows[0]["title"], "From the future");
+    assert_eq!(rows[0]["revision"], 1);
+    let poster = std::fs::read_to_string(rows[0]["poster"].as_str().unwrap()).unwrap();
+    assert!(poster.contains("From the future"), "{poster}");
 }

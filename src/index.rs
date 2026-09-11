@@ -579,6 +579,16 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"screenshot\""), "row field kept: {text}");
         assert!(text.contains("\"studio\""), "file field kept: {text}");
+
+        // And a rewrite of the row itself, by a writer that knows nothing of
+        // the field, keeps it too.
+        record(dir.path(), entry("plan:a", "2026-09-10T00:00:00Z"), None).unwrap();
+        let index = Index::load(dir.path());
+        assert_eq!(
+            index.get("plan:a").unwrap().extra.get("screenshot"),
+            Some(&serde_json::json!("/tmp/a.png")),
+            "kept across the row's own rewrite"
+        );
     }
 
     #[test]
