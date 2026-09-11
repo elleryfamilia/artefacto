@@ -2,6 +2,30 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ## Implementation status — read this before executing anything
+>
+> **Tasks 1 through 7 are built and green** on the `feat/server-spine` branch.
+> Do not execute them; read `src/server/` and the tests instead. This document
+> is kept for the reasoning, not as instructions.
+>
+> **Where the code deliberately diverges from this plan:**
+>
+> - **Task 6 is wrong as written.** It specifies a read timeout on the upgraded
+>   socket. That cannot be implemented: `tiny_http`'s `ReadWrite` is exactly
+>   `Read + Write` with a blanket impl, so there is no `set_read_timeout`, no
+>   `set_nonblocking`, no `AsRawFd` and no downcast, and the socket underneath
+>   is unreachable. The shipped socket is therefore **outbound only** — one
+>   thread owns it and only writes — and reviewer commands arrive over HTTP.
+>   See the module docs in `src/server/socket.rs`.
+> - **Disconnect detection needs a heartbeat.** With no reader, a write to a
+>   departed peer succeeds until its RST arrives, so the writer pings every
+>   20 seconds. This plan does not mention it; it was found by a failing test.
+> - **`open` is not implemented yet**, and `status --json` returns a minimal
+>   shape rather than the full contract in spec 5.
+> - **Task 7's `close_inherited_except` is dangerous.** Closing descriptors by
+>   number takes the bound listener with them and double-closes what Rust still
+>   owns. The shipped `daemon.rs` closes nothing by number.
+
 **Goal:** Stand up the artefacto server as a runnable daemon: one per repository, bound to loopback, owning an append-only event log, serving the rendered plan page to an authenticated browser over a WebSocket, with `serve`, `stop`, `status`, and `open`. When this plan is done you can start a server, open a plan in a browser, watch a frame arrive over the socket, and stop it cleanly. No agent, no lease, no review verbs — those are plan 2b.
 
 **Architecture:** Blocking and thread-per-connection, no async runtime. The main thread accepts with `tiny_http`'s `recv_timeout` and spawns a thread per request, so a long poll in plan 2b occupies only its own thread. One append-only NDJSON log per server is the source of truth. The server is the only writer; CLI commands call it over loopback HTTP with a bearer secret.

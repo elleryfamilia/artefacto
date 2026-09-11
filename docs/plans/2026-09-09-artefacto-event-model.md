@@ -2,6 +2,32 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ## Implementation status — read this before executing anything
+>
+> **Tasks 1 and 2 are built and green** on the `feat/server-spine` branch.
+> Tasks 3 through 8 are not started.
+>
+> **Where the code deliberately diverges from this plan:**
+>
+> - **Task 2 is wrong as written.** It puts ingress on WebSocket messages. The
+>   socket is outbound only (see plan 2a's status note), so commands arrive at
+>   `POST /a/<artifact>/cmd` instead, guarded by the cookie and a strict
+>   `Origin`. The protocol, the assigned ids and the dedupe rule are unchanged;
+>   only the transport moved. See `src/server/ingress.rs`.
+> - **Commands carry `opened_revision`**, and the artifact comes from the URL
+>   rather than the command body.
+> - **The socket's first frame is `artefacto.hello/1`**, carrying the page's own
+>   id so it can name itself in its POSTs and be skipped by the broadcast.
+> - **`Committer` in `src/server/http.rs`** is the mutation gate this plan calls
+>   for. Every remaining task must append through it; nothing else may touch the
+>   log.
+>
+> **Still open from the reviews, and still true of tasks 3-8:** the lease
+> check-then-act race, `append_all`'s atomicity (one `write_all` is not a
+> transaction), and the missing record of which frame was last offered to a
+> session, without which "the next call acknowledges the previous frame" cannot
+> be implemented.
+
 **Goal:** Turn the transport from plan 2a into a working review loop. The server folds its whole state from the log, accepts the reviewer's commands over the page socket, leases itself to one agent at a time, delivers frames against a persisted cursor, and serves `push`, `events`, `await`, `ack`, `reply`, and `resolve`. When this plan is done, an agent can publish a plan, hear a reviewer's question, answer it, and receive the submitted feedback document — all driven by a fake page client, because the real page is plan 3.
 
 **Architecture:** Every piece of live state is a pure fold over the append-only log, rebuilt on start; nothing is memory-only. The page speaks a small command protocol over its WebSocket; the server assigns ids, suppresses duplicates, appends, and broadcasts. Agents hold a lease identified by a session token with a generation, and receive frames computed **only** from their cursor — never from a side buffer.
