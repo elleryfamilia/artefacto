@@ -277,22 +277,46 @@ fn reply(page: &mut support::browser::Page, thread: &str, text: &str) {
 /// Make the page's `fetch` treat `path` specially: `mode` is "hold-response"
 /// (the request goes out, the response waits `ms`), "hold-request" (the
 /// request itself waits `ms`), "drop-response" (the request goes out and
-/// the response never arrives), or "hold-first" (only the first matching
-/// response waits `ms`; later ones pass straight through, so two replies
-/// arrive in reverse order).
+/// the response never arrives), "hold-first" (only the first matching
+/// response waits `ms`, so two replies arrive in reverse order), or
+/// "hold-release" / "hold-first-release" (the response waits until the
+/// test calls `release`, so no timing assumption is made). Shims chain, so
+/// two paths can be shaped at once.
 fn shape_fetch(page: &mut support::browser::Page, path: &str, mode: &str, ms: u64) {
     page.eval(&format!(
-        "(function(){{ const orig = window.__origFetch || window.fetch; window.__origFetch = orig; \
+        "(function(){{ const prev = window.fetch; let heldFirst = false; \
           window.fetch = function (u, o) {{ \
-            if (!String(u).endsWith({path})) return orig(u, o); \
-            if ({mode} === 'hold-request') return new Promise(function (r) {{ setTimeout(r, {ms}); }}).then(function () {{ return orig(u, o); }}); \
-            const p = orig(u, o); \
+            if (!String(u).endsWith({path})) return prev(u, o); \
+            if ({mode} === 'hold-request') return new Promise(function (r) {{ setTimeout(r, {ms}); }}).then(function () {{ return prev(u, o); }}); \
+            const p = prev(u, o); \
             if ({mode} === 'drop-response') return p.then(function () {{ return new Promise(function () {{}}); }}); \
-            if ({mode} === 'hold-first') {{ if (window.__heldFirst) return p; window.__heldFirst = true; }} \
+            if ({mode} === 'hold-first' || {mode} === 'hold-first-release') {{ if (heldFirst) return p; heldFirst = true; }} \
+            if ({mode} === 'hold-release' || {mode} === 'hold-first-release') \
+              return p.then(function (r) {{ return new Promise(function (res) {{ (window.__releasers = window.__releasers || []).push(function () {{ res(r); }}); }}); }}); \
             return p.then(function (r) {{ return new Promise(function (res) {{ setTimeout(function () {{ res(r); }}, {ms}); }}); }}); \
           }}; return true; }})()",
         path = serde_json::to_string(path).unwrap(),
         mode = serde_json::to_string(mode).unwrap(),
+    ));
+}
+
+/// Let every response held by a "-release" shim through.
+fn release(page: &mut support::browser::Page) {
+    page.eval("(function(){ const r = window.__releasers || []; window.__releasers = []; r.forEach(function (f) { f(); }); return true; })()");
+}
+
+/// Make the page's `fetch` answer `path` with `status` and an empty body,
+/// `times` times, then pass requests through; counts calls in `window.__calls`.
+fn answer_with(page: &mut support::browser::Page, path: &str, status: u16, times: u64) {
+    page.eval(&format!(
+        "(function(){{ const prev = window.fetch; let left = {times}; window.__calls = 0; \
+          window.fetch = function (u, o) {{ \
+            if (!String(u).endsWith({path})) return prev(u, o); \
+            window.__calls++; \
+            if (left <= 0) return prev(u, o); left--; \
+            return Promise.resolve(new Response('{{}}', {{ status: {status} }})); \
+          }}; return true; }})()",
+        path = serde_json::to_string(path).unwrap(),
     ));
 }
 
@@ -1031,6 +1055,17 @@ fn activity_pings_are_throttled_and_mark_the_reviewer_active() {
 /// shaped by `mode` so a write lands on a chosen side of the snapshot.
 fn catch_up_with(s: &Served, page: &mut support::browser::Page, mode: &str) {
     shape_fetch(page, "/state", mode, 1500);
+    artefacto::server::socket::close_all(&s.server().shared);
+    page.wait_until(
+        "window.artefactoPlan.debug().reconnects >= 1 && window.artefactoPlan.debug().connected && window.artefactoPlan.debug().syncing",
+        "the page to reconnect and start catching up",
+    );
+}
+
+/// Cut the page's socket so it reconnects and catches up, holding the
+/// `/state` response until `release`.
+fn catch_up_held(s: &Served, page: &mut support::browser::Page) {
+    shape_fetch(page, "/state", "hold-release", 0);
     artefacto::server::socket::close_all(&s.server().shared);
     page.wait_until(
         "window.artefactoPlan.debug().reconnects >= 1 && window.artefactoPlan.debug().connected && window.artefactoPlan.debug().syncing",
@@ -1821,8 +1856,9 @@ fn reviewed_mark_replies_out_of_order_settle_on_the_servers_value() {
     let mut page = browser.new_page();
     page.navigate(&s.url);
     connected(&mut page);
-    // The first reply (on) is held; the second (off) arrives first.
-    shape_fetch(&mut page, "/cmd", "hold-first", 1500);
+    // The first reply (on) is held until released; the second (off)
+    // arrives first.
+    shape_fetch(&mut page, "/cmd", "hold-first-release", 0);
     page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
     support::wait_for(
         || s.server().count_events("element.reviewed") == 1,
@@ -1837,7 +1873,9 @@ fn reviewed_mark_replies_out_of_order_settle_on_the_servers_value() {
         s.server().last_event_of_type("element.reviewed")["data"]["on"],
         false
     );
-    std::thread::sleep(std::time::Duration::from_millis(2200));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    release(&mut page);
+    std::thread::sleep(std::time::Duration::from_millis(300));
     assert_eq!(
         page.eval("window.artefactoPlan.debug().reviewed.length"),
         0,
@@ -1860,13 +1898,13 @@ fn a_reviewed_mark_answered_during_a_resync_does_not_flicker() {
     let mut page = browser.new_page();
     page.navigate(&s.url);
     connected(&mut page);
-    catch_up_with(&s, &mut page, "hold-response");
+    catch_up_held(&s, &mut page);
     page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
     support::wait_for(
         || s.server().count_events("element.reviewed") == 1,
         "the mark landed",
     );
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    std::thread::sleep(std::time::Duration::from_millis(300));
     assert_eq!(
         page.eval("window.artefactoPlan.debug().syncing"),
         true,
@@ -1879,6 +1917,7 @@ fn a_reviewed_mark_answered_during_a_resync_does_not_flicker() {
         true,
         "the reviewer's choice holds while the reply waits in the buffer"
     );
+    release(&mut page);
     connected(&mut page);
     assert_eq!(
         page.eval(
@@ -1899,7 +1938,7 @@ fn a_reply_answered_after_the_snapshot_that_held_it_is_not_applied_twice() {
     page.navigate(&s.url);
     connected(&mut page);
     comment(&mut page, "task:t-a", "a thread");
-    shape_fetch(&mut page, "/cmd", "hold-response", 2000);
+    shape_fetch(&mut page, "/cmd", "hold-release", 0);
     page.click(".thread[data-thread=\"c-1\"] .thread-reply");
     page.type_into(
         ".thread[data-thread=\"c-1\"] .composer textarea",
@@ -1911,15 +1950,16 @@ fn a_reply_answered_after_the_snapshot_that_held_it_is_not_applied_twice() {
         "the reply landed",
     );
     // A resync completes with the reply inside the snapshot, then the
-    // held reply arrives.
+    // held reply is let through.
     artefacto::server::socket::close_all(&s.server().shared);
     page.wait_until(
         "window.artefactoPlan.debug().reconnects >= 1 && window.artefactoPlan.debug().connected && !window.artefactoPlan.debug().syncing",
         "the page to catch up",
     );
+    release(&mut page);
     page.wait_until(
         "!document.querySelector('.composer')",
-        "the held reply to close the composer",
+        "the released reply to close the composer",
     );
     assert_eq!(
         page.eval("document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length"),
@@ -1999,4 +2039,308 @@ fn a_socket_that_keeps_failing_while_http_answers_still_gives_up() {
         page.text("document.querySelector('.pv-presence').textContent"),
         "server gone"
     );
+}
+
+// --- the round-eight fix slice, reviewed fresh --------------------------------
+
+#[test]
+fn an_older_own_reply_does_not_win_over_a_newer_frame_or_a_newer_buffered_reply() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    // Two tabs: a's reply is held; b turns the mark off meanwhile, and a
+    // hears that as a frame. a's older reply, released after, must lose.
+    let s = served("minimal.json");
+    let mut a = browser.new_page();
+    a.navigate(&s.url);
+    connected(&mut a);
+    let mut b = browser.new_page();
+    b.navigate(&s.page_url());
+    connected(&mut b);
+    shape_fetch(&mut a, "/cmd", "hold-release", 0);
+    a.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    b.wait_until(
+        "window.artefactoPlan.debug().reviewed.length === 1",
+        "b to hear a's mark",
+    );
+    b.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    support::wait_for(
+        || s.server().count_events("element.reviewed") == 2,
+        "off landed",
+    );
+    a.wait_until(
+        "window.artefactoPlan.debug().reviewed.length === 0",
+        "a to hear b's frame",
+    );
+    release(&mut a);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        a.eval("window.artefactoPlan.debug().reviewed.length"),
+        0,
+        "the frame's newer value stands"
+    );
+    assert_eq!(
+        a.eval(
+            "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle input').checked"
+        ),
+        false
+    );
+
+    // One tab, catching up: both replies are buffered, the older one last.
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    catch_up_held(&s, &mut page);
+    shape_fetch(&mut page, "/cmd", "hold-first-release", 0);
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    support::wait_for(
+        || s.server().count_events("element.reviewed") == 1,
+        "on landed",
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    support::wait_for(
+        || s.server().count_events("element.reviewed") == 2,
+        "off landed",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    release(&mut page);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    release(&mut page);
+    connected(&mut page);
+    assert_eq!(
+        page.eval("window.artefactoPlan.debug().reviewed.length"),
+        0,
+        "drained in log order"
+    );
+}
+
+#[test]
+fn a_write_during_the_end_of_backoff_probe_is_kept() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.eval("window.artefactoPlan.settings.backoffMs = [30, 30, 30]");
+    failing_sockets(&mut page, 4);
+    shape_fetch(&mut page, "/state", "hold-release", 0);
+    artefacto::server::socket::close_all(&s.server().shared);
+    page.wait_until(
+        "window.artefactoPlan.debug().reconnects >= 3 && window.artefactoPlan.debug().syncing",
+        "the probe's snapshot request to be in flight",
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    support::wait_for(
+        || s.server().count_events("element.reviewed") == 1,
+        "the mark landed",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    release(&mut page);
+    page.wait_until(
+        "window.artefactoPlan.debug().connected && window.artefactoPlan.debug().reconnects >= 4",
+        "the page to get through",
+    );
+    release(&mut page);
+    connected(&mut page);
+    assert_eq!(
+        debug(&mut page)["reviewed"][0],
+        "task:t-a",
+        "the write made during the probe survives its snapshot"
+    );
+}
+
+#[test]
+fn a_toggles_error_line_cannot_be_clicked_into_a_second_mark() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    answer_with(&mut page, "/cmd", 500, 1_000);
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    page.wait_until(
+        "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle + .pv-error')",
+        "the error line beside the label",
+    );
+    let calls = page.eval("window.__calls");
+    let checked = page.eval(
+        "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle input').checked",
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle + .pv-error");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        page.eval("window.__calls"),
+        calls,
+        "reading the error is not a click on the mark"
+    );
+    assert_eq!(
+        page.eval(
+            "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle input').checked"
+        ),
+        checked
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.reviewed-toggle .pv-error')"),
+        false,
+        "and never inside the label"
+    );
+    let _ = s;
+}
+
+#[test]
+fn an_error_line_clears_on_the_next_success() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // Every attempt of the first send fails (the page retries four times).
+    answer_with(&mut page, "/cmd", 500, 4);
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    page.wait_until(
+        "document.querySelector('.pv-error')",
+        "the first send fails",
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    support::wait_for(
+        || s.server().count_events("element.reviewed") == 1,
+        "the second lands",
+    );
+    page.wait_until(
+        "!document.querySelector('.pv-error')",
+        "the error line to clear",
+    );
+}
+
+#[test]
+fn a_gone_artifact_found_by_the_probe_reads_as_lost_everywhere() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.eval("window.artefactoPlan.settings.backoffMs = [30, 30, 30]");
+    failing_sockets(&mut page, 1_000_000);
+    answer_with(&mut page, "/state", 404, 1_000);
+    artefacto::server::socket::close_all(&s.server().shared);
+    page.wait_until(
+        "window.artefactoPlan.debug().lost",
+        "the page to learn the artifact is gone",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-presence').textContent"),
+        "signed out"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.feedback-bar-send').disabled"),
+        true
+    );
+    assert!(page
+        .text("document.querySelector('.pv-notice[data-kind=\"lost\"]').textContent")
+        .contains("no longer on the server"));
+}
+
+#[test]
+fn a_thread_that_goes_from_changed_to_declined_between_snapshots_is_counted() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    comment(&mut page, "task:t-a", "please");
+    let resolutions = s.repo.path().join("resolutions.json");
+    std::fs::write(
+        &resolutions,
+        serde_json::json!([{ "thread": "c-1", "status": "changed" }]).to_string(),
+    )
+    .unwrap();
+    s.edit_plan("Demo plan", "Demo plan, revised");
+    s.push(1, &["--resolutions", resolutions.to_str().unwrap()]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "revision 2 by frame",
+    );
+
+    catch_up_with(&s, &mut page, "hold-request");
+    std::fs::write(
+        &resolutions,
+        serde_json::json!([{ "thread": "c-1", "status": "declined" }]).to_string(),
+    )
+    .unwrap();
+    s.edit_plan("Demo plan, revised", "Demo plan, revised again");
+    s.push(2, &["--resolutions", resolutions.to_str().unwrap()]);
+    connected(&mut page);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '3'",
+        "revision 3 by snapshot",
+    );
+    let banner =
+        page.text("document.querySelector('.pv-notice[data-kind=\"revision\"]').textContent");
+    assert!(banner.contains("1 declined"), "{banner}");
+}
+
+#[test]
+fn a_socket_that_opens_and_closes_at_once_still_gives_up() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.eval("window.artefactoPlan.settings.backoffMs = [30, 30, 30]; window.artefactoPlan.settings.stableAfterMs = 100000");
+    // A socket that completes its handshake and is closed at once.
+    page.eval(
+        "(function(){ window.WebSocket = function () { const s = { close: function () {} }; \
+           setTimeout(function () { if (s.onopen) s.onopen({}); }, 5); \
+           setTimeout(function () { if (s.onclose) s.onclose({}); }, 15); return s; }; return true; })()",
+    );
+    artefacto::server::socket::close_all(&s.server().shared);
+    page.wait_until("window.artefactoPlan.debug().gone", "the page to give up");
+    assert!(page
+        .text("document.querySelector('.pv-notice[data-kind=\"gone\"]').textContent")
+        .contains("socket will not connect"));
+}
+
+#[test]
+fn a_sent_chat_message_leaves_a_place_for_the_next() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".feedback-bar-chat");
+    page.type_into(".pv-chat .composer textarea", "first");
+    page.click(".pv-chat .composer .composer-send");
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 1",
+        "the message shown",
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-chat').hidden"),
+        false
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-chat .composer textarea')"),
+        true,
+        "a fresh composer"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-chat .composer textarea').value"),
+        ""
+    );
+    let _ = s;
 }

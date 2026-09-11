@@ -1572,6 +1572,8 @@
     pingEveryMs: 30000,
     backoffMs: [500, 1000, 2000, 4000, 8000, 8000, 8000, 8000],
     fetchTimeoutMs: 10000,
+    /* How long a socket must stay open before the retry budget resets. */
+    stableAfterMs: 3000,
   };
 
   /* fetch with a deadline, so a wedged server leaves a visible error
@@ -1716,14 +1718,9 @@
             /* Committed before the newest snapshot was taken, and the
                reply arrived after the snapshot was applied: already in. */
             renderAll();
-          } else if (staleForKey(ev, reply.seq)) {
-            /* A newer write to the same mark or question already applied;
-               this older reply arriving late must not win. */
-            renderAll();
           } else {
-            core.applyEvent(S.state, ev);
+            applyEvents([ev], null, true);
             if (reply.seq > S.state.lastSeq) S.state.lastSeq = reply.seq;
-            S.applied++;
             renderAll();
           }
         }
@@ -1731,18 +1728,39 @@
       });
     }
 
-    /* For a write that sets a value rather than appending one, the reply
-       with the higher seq is the later write. Records the seq and says
-       whether this reply is older than one already applied for its key. */
-    function staleForKey(ev, seq) {
+    /* For a write that sets a value rather than appending one, the event
+       with the higher seq is the later write, whichever arrives first.
+       Records the seq and says whether this event is older than one
+       already applied for its key. Every path that folds an event — a
+       socket frame, a buffered own reply, a direct reply — goes through
+       `applyEvents`, so the rule holds across all of them. */
+    function staleForKey(ev) {
       let key = null;
-      if (ev.type === "element.reviewed") key = "reviewed:" + ev.data.ref;
-      else if (ev.type === "question.answered") key = "answer:" + ev.data.question;
+      const d = ev.data || {};
+      if (ev.type === "element.reviewed") key = "reviewed:" + d.ref;
+      else if (ev.type === "question.answered") key = "answer:" + d.question;
       if (!key) return false;
       const seen = S.localSeq[key] || 0;
-      if (seq < seen) return true;
-      S.localSeq[key] = seq;
+      if (ev.seq < seen) return true;
+      S.localSeq[key] = ev.seq;
       return false;
+    }
+
+    /* The one place events are folded. `cursor` is the catch-up rule
+       (`core.applyFrame`); `own` says these are the page's own replies,
+       which no client-id filter or artifact filter applies to. */
+    function applyEvents(events, cursor, own) {
+      const kept = events.filter(function (e) {
+        if (!own) {
+          if (e.artifact && e.artifact !== S.artifact) return false;
+          if (e.data && e.data.client_id && S.own[e.data.client_id]) return false;
+        }
+        return !staleForKey(e);
+      });
+      const seq = events.length ? events[events.length - 1].seq : 0;
+      const applied = core.applyFrame(S.state, { seq: seq, events: kept }, cursor);
+      S.applied += applied.length;
+      return applied;
     }
 
     function ping() {
@@ -1759,9 +1777,16 @@
       S.socket = ws;
       ws.onopen = function () {
         S.connected = true;
-        S.attempts = 0;
-        S.probes = 0;
         S.gone = false;
+        /* The retry budget is given back only once the socket has stayed
+           open a while: a socket that opens and closes at once would
+           otherwise reconnect forever without ever saying so. */
+        if (S.timers.stable) clearTimeout(S.timers.stable);
+        S.timers.stable = setTimeout(function () {
+          S.timers.stable = null;
+          S.attempts = 0;
+          S.probes = 0;
+        }, core.settings.stableAfterMs);
         S.stopping = false;
         notice("gone", null);
         notice("stopping", null);
@@ -1785,6 +1810,7 @@
       };
       ws.onclose = function () {
         if (S.socket !== ws) return;
+        if (S.timers.stable) { clearTimeout(S.timers.stable); S.timers.stable = null; }
         S.socket = null;
         S.connected = false;
         /* The next socket gets a new id. A write posted before its hello
@@ -1803,42 +1829,28 @@
       if (S.attempts >= schedule.length) {
         /* The handshake's status is invisible to script, so a cookie that
            stopped working looks exactly like a server that stopped
-           answering. One request tells them apart. */
-        let answered = false;
-        const gen = ++S.syncGen;
-        fetchBounded(S.stateUrl, { credentials: "same-origin" })
-          .then(function (r) {
-            if (r.status === 401 || r.status === 403) { sessionLost(); return null; }
-            if (r.status === 404) {
-              S.lost = true;
-              notice("lost", "This artifact is no longer on the server.");
-              return null;
-            }
-            if (!r.ok) return null;
-            return r.json();
-          })
-          .then(function (snap) {
-            /* HTTP answers but the socket would not: take the state and
-               try the socket again from the top — a bounded number of
-               times, then say so. */
-            if (snap && gen === S.syncGen && S.probes < 3) {
-              answered = true;
-              S.probes++;
-              applySnapshot(snap);
-              drain(snap.last_seq || 0, snap.last_seq || 0);
-            }
-          })
-          .catch(function () { /* nothing answered */ })
-          .then(function () {
-            if (S.lost) return;
-            if (answered) { S.attempts = 0; connect(); return; }
-            S.gone = true;
-            notice("gone", S.stopping
-              ? "The server stopped. Run `artefacto serve`, then reload this page."
+           answering. One ordinary resync tells them apart: 401 is signed
+           out, 404 is gone, a snapshot means HTTP answers and the socket
+           is what will not — in which case the state is taken and the
+           socket tried again, a bounded number of times, then the page
+           says so. */
+        resync().then(function (applied) {
+          if (S.lost) return;
+          if (applied && S.probes < 3) {
+            S.probes++;
+            S.attempts = 0;
+            connect();
+            return;
+          }
+          S.gone = true;
+          notice("gone", S.stopping
+            ? "The server stopped. Run `artefacto serve`, then reload this page."
+            : applied
+              ? "The server answers, but its socket will not connect. Reload this page, or run `artefacto open` for a fresh link."
               : "The server is not answering. If it moved to a new port, run `artefacto open` for a fresh link.",
-              { action: "Retry", onAction: function () { S.attempts = 0; S.probes = 0; S.gone = false; connect(); } });
-            renderPresence();
-          });
+            { action: "Retry", onAction: function () { S.attempts = 0; S.probes = 0; S.gone = false; connect(); } });
+          renderPresence();
+        });
         return;
       }
       const wait = schedule[S.attempts++];
@@ -1873,18 +1885,21 @@
           if (r.status === 404) {
             S.lost = true;
             notice("lost", "This artifact is no longer on the server.");
+            renderPresence();
+            renderBar();
             throw new Error("gone");
           }
           if (!r.ok) throw new Error("HTTP " + r.status);
           return r.json();
         })
         .then(function (snap) {
-          if (gen !== S.syncGen) return;
+          if (gen !== S.syncGen) return false;
           applySnapshot(snap);
           drain(snap.last_seq || 0, snap.last_seq || 0);
+          return true;
         })
         .catch(function () {
-          if (gen !== S.syncGen || S.lost) return;
+          if (gen !== S.syncGen || S.lost) return false;
           /* Best effort: fold in what arrived, skipping what the state
              already has. The page's own replies are applied whatever
              their seq — no snapshot holds them — and it tries again. */
@@ -1892,6 +1907,7 @@
           if (S.connected && !S.timers.resync) {
             S.timers.resync = setTimeout(function () { S.timers.resync = null; resync(); }, 1500);
           }
+          return false;
         });
     }
 
@@ -1899,6 +1915,11 @@
       const frames = S.buffer;
       S.buffer = [];
       S.syncing = false;
+      /* In log order, whatever order the replies came back in. A stable
+         sort keeps announced frames, which borrow a seq, where they were
+         relative to their equals. */
+      frames.forEach(function (f, i) { f.arrived = i; });
+      frames.sort(function (a, b) { return (a.seq - b.seq) || (a.arrived - b.arrived); });
       frames.forEach(function (f) { applyFrame(f, f.own ? ownCursor : cursor); });
       /* Marks whose last reply came while catching up were kept pending
          until their buffered frame had a chance to apply. */
@@ -1945,13 +1966,9 @@
          another artifact is not this review's: its thread would count
          here and its push would swap this body. Events with no artifact
          (presence, the stop) are about the server, and apply. */
-      const events = frame.own ? frame.events : (frame.events || []).filter(function (e) {
-        if (e.artifact && e.artifact !== S.artifact) return false;
-        return !(e.data && e.data.client_id && S.own[e.data.client_id]);
-      });
       const before = { title: S.state.plan && S.state.plan.meta ? S.state.plan.meta.title : null };
-      const applied = core.applyFrame(S.state, { seq: frame.seq, events: events }, cursor);
-      S.applied += applied.length;
+      const applied = applyEvents(frame.events || [], cursor, !!frame.own);
+      if (frame.seq > S.state.lastSeq) S.state.lastSeq = frame.seq;
       let swapped = false;
       applied.forEach(function (e) {
         switch (e.type) {
@@ -2426,21 +2443,40 @@
 
     /* ---- composers --------------------------------------------------- */
 
-    function errorHost(anchor) {
-      return anchor.closest(".composer, .feedback-bar, .thread, .reviewed-toggle") || anchor.parentNode;
+    /* Where an error line goes, and how it is attached. A toggle's line
+       sits AFTER its label: text inside a <label> activates the control,
+       so a line inside it would flip the mark when read. */
+    function errorPlace(anchor) {
+      const label = anchor.closest(".reviewed-toggle");
+      if (label) return { host: label.parentNode || label, after: label };
+      const host = anchor.closest(".composer, .feedback-bar, .thread") || anchor.parentNode;
+      return { host: host, after: null };
     }
 
     function failed(anchor, e) {
-      const host = errorHost(anchor);
-      let line = host.querySelector(".pv-error");
-      if (!line) { line = el("span", { class: "pv-error", role: "alert" }); host.appendChild(line); }
+      const place = errorPlace(anchor);
+      let line = place.after
+        ? (place.after.nextElementSibling && place.after.nextElementSibling.classList.contains("pv-error")
+          ? place.after.nextElementSibling : null)
+        : place.host.querySelector(":scope > .pv-error");
+      if (!line) {
+        line = el("span", { class: "pv-error", role: "alert" });
+        if (place.after) place.after.insertAdjacentElement("afterend", line);
+        else place.host.appendChild(line);
+      }
       line.textContent = "Not sent: " + (e && e.message ? e.message : String(e));
     }
 
     /* A later success clears the line; an error is not forever. */
     function cleared(anchor) {
-      const host = anchor && anchor.isConnected ? errorHost(anchor) : null;
-      if (host) host.querySelectorAll(".pv-error").forEach(function (n) { n.remove(); });
+      if (!anchor || !anchor.isConnected) return;
+      const place = errorPlace(anchor);
+      if (place.after) {
+        const next = place.after.nextElementSibling;
+        if (next && next.classList.contains("pv-error")) next.remove();
+      } else {
+        place.host.querySelectorAll(":scope > .pv-error").forEach(function (n) { n.remove(); });
+      }
     }
 
     function openComposer(spec) {
@@ -2496,6 +2532,12 @@
         document.querySelectorAll('[data-composer="' + d.id + '"]').forEach(function (n) { n.remove(); });
         renderRecovery();
       };
+      /* After a chat message is sent, the open panel keeps a place to
+         write the next one. */
+      const afterSend = function () {
+        close();
+        if (d.kind === "chat" && S.ui.chatOpen) openComposer({ kind: "chat", silent: true });
+      };
       cancelBtn.addEventListener("click", close);
       sendBtn.addEventListener("click", function () {
         const text = ta.value.trim();
@@ -2503,7 +2545,7 @@
         const cmd = commandFor(d, text);
         if (!cmd) return;
         sendBtn.disabled = true;
-        send(cmd).then(close).catch(function (e) {
+        send(cmd).then(afterSend).catch(function (e) {
           const current = document.querySelector('[data-composer="' + d.id + '"] .composer-send');
           if (current) { current.disabled = false; failed(current, e); }
         });
