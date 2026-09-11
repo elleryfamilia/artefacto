@@ -21,8 +21,8 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-385 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
-clean. Twenty-seven of the tests run the served page in a headless Chromium;
+393 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+clean. Thirty-five of the tests run the served page in a headless Chromium;
 they skip with a printed line on a machine without one (see "Plan 3" below).
 
 | area | file | notes |
@@ -255,7 +255,13 @@ page, the browser harness, and the page itself.
   page's own replies alike — skipping *logged* events with `seq <= last_seq`
   and never skipping announced ones (`agent.attached`, `agent.detached`,
   `nudge`, `server.stopping`), which borrow that seq. A resync started while
-  another is in flight supersedes it.
+  another is in flight supersedes it. A write whose reply was lost after
+  every retry is looked up with a resync, because only a snapshot can show a
+  page its own write.
+- **Only this artifact's events apply.** The socket carries every artifact's
+  frames; an event naming another artifact is dropped before the fold, so
+  another plan's comment does not count here and its push does not swap
+  this body. Events with no artifact (presence, the stop) apply.
 - **A push swaps the body**, mounts again, and restores disclosure by element
   id, focus and caret by composer id, and scroll by element anchor. Every
   composer keeps its draft in sessionStorage under an id minted when it
@@ -281,7 +287,7 @@ one the tests print a skip line and pass, and `ARTEFACTO_REQUIRE_BROWSER=1`
 makes that a failure. **CI must install a Chromium or set that variable**, or
 the browser suite is silently green.
 
-The twenty-seven tests cover the loop end to end and the races spec 14 names:
+The thirty-five tests cover the loop end to end and the races spec 14 names:
 a push while typing (draft kept, `opened_revision` is the old one), a draft
 and a thread whose element was removed (recovery panel, re-anchoring when it
 returns), focus and caret across a push, scroll anchored to an element across
@@ -388,6 +394,46 @@ test), and the server's skip-the-poster rule is now shadowed by the page's
 own-client-id filter, which is the robust direction — a page that hears its
 own write once more is unaffected.
 
+## Review round seven: the fix slice, reviewed fresh
+
+A third fresh reviewer read the page's fix slice (commit `cce2067`) and drove
+it with probe tests. Eight confirmed defects, two of them pre-existing and
+serious, all fixed with a browser test each (commit `c1c5613`):
+
+1. **Another artifact's frames were applied to this page**, including its
+   push's body swap: the socket carries every artifact's frames and the page
+   never checked. Events naming another artifact are dropped.
+2. **A phase's Comment button opened its composer inside the phase's first
+   task**, because the host was found by descent and a phase contains its
+   tasks; with a task composer open, the phase click was swallowed as a
+   twin. Composer hosts are keyed by ref, like the thread hosts.
+3. **The catch-up test could not see a double apply of the page's own
+   frame**, because it opened a thread, which is idempotent by id. It
+   replies now.
+4. **A pending reviewed mark did not survive a body swap.** Pending marks
+   live in the session, not on a label the swap rebuilds.
+5. **Nine of the smaller fixes had no test.** Six do now; three still do
+   not (below).
+6. **A write whose reply was lost after every retry was never shown** until
+   the next resync, which could be never. The final failure triggers one.
+7. **A revision learned from a snapshot reported no addressed or declined
+   counts**; they are read off the two states.
+8. **A chat draft restored after a reload was invisible** behind the closed
+   panel. The panel opens for it.
+
+Suspicions adopted: a reply answered after the newest snapshot that already
+held it is not applied on top; the end-of-backoff probe takes a 200 as the
+state it is and retries the socket; orphaned-draft rows are rebuilt only when
+the set changes. Left as is, and noted: two reviewed clicks whose replies
+arrive reversed could end on the wrong value (the page shows the last click
+until both replies are in, then the server's fold); Cancel on a composer the
+swap re-created while its send is in flight still lets the write land; the
+test hooks on `window.artefactoPlan` are reachable only by script already
+running under the nonce CSP.
+
+The mutation pass over these fixes caught ten of eleven; the survivor is the
+snapshot-covered-reply guard, which has no test.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
@@ -467,10 +513,11 @@ Stated plainly, because a passing suite is not the same as a covered one.
   server halves are tested on their own.
 - **Not exercised in a browser**: the "gone" notice after eight failed
   reconnects against a server that is really absent, the resync generation
-  counter (two resyncs in flight), the fetch deadline firing, and the
-  recovery panel's Discard for a reply draft whose thread was deleted by
-  another tab. A reply with `seq: 0` is exercised only through the
-  reload-mid-send test, which reaches it by way of a repeated client id.
+  counter (two resyncs in flight), a `/state` 404 marking the page lost, the
+  guard against a reply answered after the snapshot that already held it,
+  and the recovery panel's Discard for a reply draft whose thread was
+  deleted by another tab. A reply with `seq: 0` is exercised only through
+  the reload-mid-send test, which reaches it by way of a repeated client id.
 - **The poisoned log has no test.** `EventLog` refuses every append after a
   failed write, and nothing exercises that path: there is no way to make a
   write fail from a test without a hook that exists only for tests.
@@ -527,7 +574,12 @@ state about to be replaced, own client ids not filtered, the client id minted
 per send, the composer closed by its captured node, threads on every element,
 drafts not restored after a render, the chat open state never applied, no
 composer on an unanchored thread, a lost cookie read as gone, and catch-up
-applying buffered frames blindly.
+applying buffered frames blindly. Round seven's fixes: other artifacts'
+frames applied, the composer host found by descent, pending marks not shown,
+a lost reply never looked up, the snapshot banner without counts, a chat
+draft restored hidden, the ping clock reset by a swap, Send review not
+guarded, notice code spans as text, no fetch deadline, and (survived) a
+snapshot-covered reply applied again.
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,
