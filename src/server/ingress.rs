@@ -22,8 +22,11 @@
 //!
 //! # Locks
 //!
-//! One [`Committer`] spans validate, assign, append, and fold. The broadcast
-//! happens after it is dropped: nothing touches a socket under a lock.
+//! One [`Committer`] spans validate, assign, append, fold, **and the
+//! broadcast**. Sending to pages while the gate is still held is what keeps
+//! frames in log order: two commits that each broadcast after releasing the
+//! gate can reach a page as 6 then 5. The broadcast takes `sockets` only, the
+//! innermost lock, and never blocks — `try_send` into a bounded channel.
 
 use crate::server::event::{Actor, Frame};
 use crate::server::http::{error_response, json_response, Committer, Shared};
@@ -200,18 +203,12 @@ pub fn handle_command(shared: &Arc<Shared>, mut request: Request, artifact: &str
         shared.core.lock().unwrap().reviewer_pings += 1;
     }
 
-    let outcome = commit_command(shared, artifact, &command);
+    let outcome = commit_command(shared, artifact, &command, page_id);
     match outcome {
         Ok(None) => {
             let _ = request.respond(json_response(200, &reply(true, "", None, 0, None)));
         }
         Ok(Some(done)) => {
-            // The gate is released before anything is sent. The originating
-            // page already has the result in this response; sending it the
-            // broadcast too would make it count the change twice.
-            if let Some(frame) = done.frame {
-                crate::server::socket::broadcast_except(shared, &frame, page_id);
-            }
             let _ = request.respond(json_response(
                 200,
                 &reply(
@@ -237,20 +234,24 @@ struct Committed {
     client_id: String,
     assigned: Option<String>,
     seq: u64,
-    frame: Option<Frame>,
 }
 
 fn mark_reviewer_activity(shared: &Shared) {
     crate::server::presence::on_reviewer_activity(shared, shared.now_ms());
 }
 
-/// Validate, assign, append and fold — all under one gate, so two tabs cannot
-/// both be told they created `c-1`, and a retry cannot slip between the
-/// duplicate check and the append.
+/// Validate, assign, append, fold and broadcast — all under one gate, so two
+/// tabs cannot both be told they created `c-1`, a retry cannot slip between
+/// the duplicate check and the append, and pages hear commits in log order.
+///
+/// `page_id` is the page that posted the command. It already gets the result
+/// in its response; sending it the broadcast too would make it count the
+/// change twice.
 fn commit_command(
     shared: &Arc<Shared>,
     artifact: &str,
     command: &Command,
+    page_id: u64,
 ) -> anyhow::Result<Option<Committed>> {
     if matches!(command, Command::Ping) {
         return Ok(None);
@@ -268,7 +269,6 @@ fn commit_command(
             client_id,
             assigned: previous,
             seq: 0,
-            frame: None,
         }));
     }
 
@@ -288,14 +288,13 @@ fn commit_command(
     let revision = c.with_review(|r| r.artifacts.get(artifact).map(|a| a.revision).unwrap_or(0));
     let event = c.append(artifact, revision, Actor::Reviewer, kind, data)?;
     let seq = event.seq;
-    let frame = Frame::of(vec![event]);
+    crate::server::socket::broadcast_except(shared, &Frame::of(vec![event]), page_id);
     drop(c);
 
     Ok(Some(Committed {
         client_id,
         assigned,
         seq,
-        frame: Some(frame),
     }))
 }
 

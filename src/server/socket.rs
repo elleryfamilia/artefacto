@@ -158,8 +158,6 @@ pub fn handle_upgrade(shared: &Arc<Shared>, request: Request) {
             Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).expect("accept"),
         );
 
-    let stream = request.upgrade("websocket", response);
-    let mut ws = WebSocket::from_raw_socket(Sock(stream), Role::Server, None);
     let id = shared.sockets.next_id.fetch_add(1, Ordering::SeqCst);
     let (tx, rx) = mpsc::sync_channel::<String>(OUTBOUND_QUEUE);
     // A reviewer has been here, and is doing something. The away timer reads
@@ -169,6 +167,12 @@ pub fn handle_upgrade(shared: &Arc<Shared>, request: Request) {
     // see a page with no activity behind it. `core` is released before
     // `sockets` is taken; the lock order forbids holding both.
     crate::server::presence::page_arrived(shared, shared.now_ms());
+    // Registered **before** the 101 goes out. `Request::upgrade` writes and
+    // flushes the handshake response before it returns, and the browser's
+    // `open` event fires on receipt — the page then fetches `/state`. A commit
+    // landing between that fetch and a registration done afterwards would be
+    // broadcast to every page but this one, and this one would never see it.
+    // Registered first, anything queued during the handshake follows hello.
     shared
         .sockets
         .pages
@@ -176,22 +180,25 @@ pub fn handle_upgrade(shared: &Arc<Shared>, request: Request) {
         .unwrap()
         .push(PageHandle { id, tx });
 
-    // Always the first frame. The page needs its own id so it can put it in
-    // the commands it POSTs; `broadcast_except` then skips it, and it does not
-    // count its own change twice.
+    let stream = request.upgrade("websocket", response);
+    let mut ws = WebSocket::from_raw_socket(Sock(stream), Role::Server, None);
+
+    // Always the first frame: written directly, before the channel is
+    // drained. The page needs its own id so it can put it in the commands it
+    // POSTs; `broadcast_except` then skips it, and it does not count its own
+    // change twice.
     //
     // It also carries who holds the lease right now. Presence is announced on
     // change only, so a page that connects after the agent attached would
-    // otherwise never be told there is one. And the log's high-water mark, so
-    // the page knows where the state it is about to fetch begins.
-    let last_seq = shared.log.lock().unwrap().last_seq();
+    // otherwise never be told there is one. Nothing else: a `last_seq` read
+    // here is outside the gate and is not the catch-up threshold — that is
+    // the one `/state` returns, read under the gate with the state it counts.
     let presence = crate::server::lease::current(shared)
         .map(|h| serde_json::json!({ "agent": h.agent, "mode": h.mode }));
     let hello = serde_json::json!({
         "format": HELLO_FORMAT,
         "page": id,
         "presence": presence,
-        "last_seq": last_seq,
     })
     .to_string();
     if ws.send(Message::text(hello)).is_err() {

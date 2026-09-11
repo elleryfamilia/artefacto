@@ -145,11 +145,6 @@ pub fn handle_push(shared: &Arc<Shared>, mut request: Request, query: &Query) {
 
     match commit(shared, &session, &body) {
         Ok(done) => {
-            // Pages get the body with the events, as one frame. The frame an
-            // agent receives is built from the log and never sees this.
-            let mut page_frame = done.frame.clone();
-            page_frame.html = Some(done.html);
-            crate::server::socket::broadcast(shared, &page_frame);
             let mut result = done.result;
             result["session"] = serde_json::json!(session.token);
             let _ = request.respond(json_response(200, &result.to_string()));
@@ -163,13 +158,12 @@ pub fn handle_push(shared: &Arc<Shared>, mut request: Request, query: &Query) {
 #[derive(Debug)]
 pub struct Published {
     pub result: serde_json::Value,
+    /// What was appended, as the agent would see it: no rendered body.
     pub frame: Frame,
-    /// The rendered `<body>` of this revision, for the page's frame.
-    pub html: String,
 }
 
-/// Validate, check the token and the base revision, append, and fold — all
-/// under one gate.
+/// Validate, check the token and the base revision, append, fold, and tell
+/// every page — all under one gate, so pages hear commits in log order.
 ///
 /// The token is checked **inside** the gate, after the plan has been parsed
 /// and validated, because that is where the append happens. `handle_push`
@@ -196,8 +190,7 @@ pub fn commit(
     let plan_hash = model::plan_hash(&plan);
     // Rendered before the gate opens: it is a pure function of the plan, and
     // nothing else should wait on it.
-    let html =
-        crate::server::page::body_fragment(&crate::plan::render::render(&plan)).unwrap_or_default();
+    let rendered = crate::plan::render::render(&plan);
 
     let committer = Committer::open(shared);
     lease::validate(shared, &session.token).map_err(Refusal::Lease)?;
@@ -265,6 +258,14 @@ pub fn commit(
     let events = committer
         .append_all(entries)
         .map_err(|e| Refusal::Invalid(format!("{e:#}")))?;
+    // Pages get the body with the events, as one frame (spec 4.3), while
+    // the gate is still held so they hear commits in log order. The frame
+    // an agent receives is built from the log and never sees the body.
+    let mut page_frame = Frame::of(events.clone());
+    page_frame.html = Some(crate::server::page::served_fragment(
+        &rendered, &artifact, revision,
+    ));
+    crate::server::socket::broadcast(shared, &page_frame);
     let open_threads = committer.with_review(|review| {
         review
             .artifacts
@@ -305,7 +306,6 @@ pub fn commit(
             "revision_seq": events.last().map(|e| e.seq).unwrap_or(0),
         }),
         frame: Frame::of(events),
-        html,
     })
 }
 

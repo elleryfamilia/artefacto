@@ -461,7 +461,13 @@ fn a_push_frame_carries_the_rendered_body_to_pages_and_nothing_to_agents() {
     let html = frame["html"]
         .as_str()
         .expect("the rendered body rides with the frame");
-    assert!(html.starts_with("<body"));
+    assert!(
+        html.starts_with(
+            "<body data-artefacto-artifact=\"plan:demo\" data-artefacto-revision=\"2\""
+        ),
+        "the fragment carries the markers, with the new revision: {}",
+        &html[..80.min(html.len())]
+    );
     assert!(
         html.contains("Demo plan, revised"),
         "the body is the new revision's"

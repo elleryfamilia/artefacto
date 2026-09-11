@@ -178,15 +178,33 @@ fn strip_meta_csp(html: &str) -> String {
 /// inline `<style>` and one inline `<script>`, so the nonce path is exercised
 /// by a document whose contents are pinned here rather than left to chance.
 pub fn placeholder_document(artifact: &str) -> String {
+    // The id is escaped for the script the same way the render escapes its
+    // data island: `serde_json` leaves `</script>` alone, and a raw request
+    // can put anything in the path.
+    let island = crate::plan::render::escape_json_island(
+        &serde_json::to_string(artifact).expect("a string always serializes"),
+    );
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <title>artefacto</title><style>body{{font-family:system-ui;margin:3rem}}</style>\
          </head><body><h1>artefacto</h1>\
          <p>No revision has been pushed for <code>{}</code> yet.</p>\
-         <script>window.__artefacto={{artifact:{}}};</script>\
+         <script>window.__artefacto={{artifact:{island}}};</script>\
          </body></html>",
         html_escape(artifact),
-        serde_json::to_string(artifact).expect("a string always serializes"),
+    )
+}
+
+/// What a navigation gets when the stored plan will not render. A page, not
+/// a JSON body: the reviewer is looking at a browser tab.
+fn error_document(message: &str) -> String {
+    format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <title>artefacto</title><style>body{{font-family:system-ui;margin:3rem}}</style>\
+         </head><body><h1>artefacto</h1>\
+         <p>This revision could not be rendered: <code>{}</code></p>\
+         </body></html>",
+        html_escape(message),
     )
 }
 
@@ -214,7 +232,10 @@ pub fn render_artifact(shared: &Shared, artifact: &str) -> Result<Option<(u32, S
 /// on push, so this is the same document `plan render` would write.
 pub fn render_plan(plan: &serde_json::Value) -> Result<String> {
     let raw = serde_json::to_string(plan)?;
-    let parsed = crate::plan::model::parse(&raw, false).map_err(|issues| {
+    // Lenient on the read path: the log holds only what validated, but a
+    // field this binary does not know is not a reason to refuse to show a
+    // review that is already under way.
+    let parsed = crate::plan::model::parse(&raw, true).map_err(|issues| {
         let first = issues
             .first()
             .map(|i| format!("{}: {}", i.path, i.message))
@@ -238,13 +259,23 @@ pub fn served_document(rendered: &str, artifact: &str, revision: u32) -> String 
     )
 }
 
-/// `<body …>…</body>` of a render, without the page's own script.
+/// The body a push delivers and `/state` returns: the served document's
+/// `<body …>…</body>`, markers and all, without the page's own script.
 ///
-/// This is what a push delivers and what `/state` returns: the page it lands
-/// in already has the stylesheet and the script, and a second copy of the
-/// script would not run anyway — markup inserted through `innerHTML` never
-/// executes — but it would sit in the document as a lie. The data island is
-/// kept; it is the plan the script reads.
+/// The markers matter. The page swaps its whole body on a push and mounts
+/// again, and mount reads the body's attributes to know it was served; a
+/// fragment without them would put the page into static mode with the
+/// localStorage store spec 4.3 forbids there.
+pub fn served_fragment(rendered: &str, artifact: &str, revision: u32) -> String {
+    body_fragment(&served_document(rendered, artifact, revision)).unwrap_or_default()
+}
+
+/// `<body …>…</body>` of a document, without the page's own script.
+///
+/// The page it lands in already has the stylesheet and the script, and a
+/// second copy of the script would not run anyway — markup inserted through
+/// `innerHTML` never executes — but it would sit in the document as a lie.
+/// The data island is kept; it is the plan the script reads.
 pub fn body_fragment(rendered: &str) -> Option<String> {
     let start = rendered.find("<body")?;
     let end = rendered.rfind("</body>")? + "</body>".len();
@@ -284,7 +315,7 @@ pub fn state_json(shared: &Arc<Shared>, artifact: &str) -> Result<Option<serde_j
     let (art, last_seq) = snapshot;
     let presence = crate::server::lease::current(shared)
         .map(|h| serde_json::json!({ "agent": h.agent, "mode": h.mode }));
-    let html = body_fragment(&render_plan(&art.plan)?).unwrap_or_default();
+    let html = served_fragment(&render_plan(&art.plan)?, artifact, art.revision);
     Ok(Some(serde_json::json!({
         "ok": true,
         "artifact": art.id,
@@ -339,17 +370,15 @@ pub fn serve_page(shared: &Arc<Shared>, request: Request, artifact: &str) {
         let _ = request.respond(error_response(403, "bad_origin", "origin not allowed"));
         return;
     }
-    let document = match render_artifact(shared, artifact) {
-        Ok(Some((revision, rendered))) => served_document(&rendered, artifact, revision),
-        Ok(None) => placeholder_document(artifact),
-        Err(e) => {
-            let _ = request.respond(error_response(500, "render_failed", &format!("{e:#}")));
-            return;
-        }
+    let (status, document) = match render_artifact(shared, artifact) {
+        Ok(Some((revision, rendered))) => (200, served_document(&rendered, artifact, revision)),
+        Ok(None) => (200, placeholder_document(artifact)),
+        Err(e) => (500, error_document(&format!("{e:#}"))),
     };
     let n = nonce();
     let html = stamp_nonce(&document, &n);
     let response = Response::from_string(html)
+        .with_status_code(status)
         .with_header(
             Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
                 .expect("content type"),
@@ -443,6 +472,25 @@ mod tests {
             !body.contains("window.artefactoPlan"),
             "no trace of the script"
         );
+    }
+
+    #[test]
+    fn the_placeholder_cannot_be_broken_out_of_through_the_id() {
+        // A raw request can put anything in the path. `serde_json` does not
+        // escape `</script>`, so the island escaping is what keeps a hostile
+        // id inside the string it was written into.
+        let doc = placeholder_document("x\"</script><script>alert(1)</script>");
+        assert_eq!(doc.matches("<script").count(), 1, "{doc}");
+        assert!(!doc.contains("</script><script>"));
+    }
+
+    #[test]
+    fn the_served_fragment_carries_the_markers_the_page_mounts_by() {
+        let html = real_render();
+        let fragment = served_fragment(&html, "plan:auth-refactor", 4);
+        assert!(fragment.starts_with("<body data-artefacto-artifact=\"plan:auth-refactor\""));
+        assert!(fragment.contains("data-artefacto-revision=\"4\""));
+        assert_eq!(fragment.matches("<script").count(), 1);
     }
 
     #[test]

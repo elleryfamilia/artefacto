@@ -28,7 +28,9 @@
 //! [`tick`] decides under `core`, releases it, and only then appends through a
 //! `Committer`. The lock order forbids the other way round. Two ticks cannot
 //! race — the accept loop is one thread — so deciding and acting in two steps
-//! is safe here in a way it is not for the lease.
+//! is safe here in a way it is not for the lease. Timer events are broadcast
+//! while the gate is still held, like every other commit, so pages hear them
+//! in log order.
 
 use crate::server::event::{Actor, Event, Frame};
 use crate::server::http::{Committer, Shared};
@@ -140,8 +142,8 @@ pub fn tick(shared: &Arc<Shared>, now_ms: i64) {
     let artifact = committer.with_review(open_artifact);
     match committer.append(&artifact, 0, Actor::Server, kind, data) {
         Ok(event) => {
-            drop(committer);
             crate::server::socket::broadcast(shared, &Frame::of(vec![event]));
+            drop(committer);
         }
         Err(e) => eprintln!("artefacto: could not record {kind}: {e:#}"),
     }

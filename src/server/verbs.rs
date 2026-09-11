@@ -77,8 +77,9 @@ pub fn handle_reply(shared: &Arc<Shared>, request: Request, query: &Query) {
         Ok(event) => event,
         Err(e) => return refuse(request, &format!("{e:#}")),
     };
-    drop(committer);
+    // Under the gate, so pages hear commits in log order.
     crate::server::socket::broadcast(shared, &Frame::of(vec![event.clone()]));
+    drop(committer);
 
     let _ = request.respond(json_response(
         200,
@@ -131,8 +132,8 @@ pub fn handle_resolve(shared: &Arc<Shared>, request: Request, query: &Query) {
         Ok(event) => event,
         Err(e) => return refuse(request, &format!("{e:#}")),
     };
-    drop(committer);
     crate::server::socket::broadcast(shared, &Frame::of(vec![event.clone()]));
+    drop(committer);
 
     let _ = request.respond(json_response(
         200,

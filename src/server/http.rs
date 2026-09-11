@@ -11,7 +11,9 @@
 //! two disagreeing, which is the hardest class of bug to reproduce.
 //!
 //! No blocking operation runs while `core` or `sockets` is held: no socket
-//! write, no `fsync`, no long poll, no browser launch.
+//! write, no `fsync`, no long poll, no browser launch. A broadcast to pages
+//! runs while `commit` is held — it takes `sockets` and `try_send`s, and
+//! never blocks — which is what keeps frames in log order.
 
 use crate::server::event::{Actor, Event};
 use crate::server::log::EventLog;
@@ -275,23 +277,35 @@ fn handle(shared: &Arc<Shared>, request: Request) {
         return;
     }
     let url = request.url().to_string();
+    // The query is not part of the route on any path: a cache-busting
+    // `/state?t=1` is still the state route, and a page route with a query
+    // is still that page.
+    let (path, _) = split_query(&url);
+    let path = path.to_string();
 
-    if url == "/ws" {
+    if path == "/ws" {
         return crate::server::socket::handle_upgrade(shared, request);
     }
-    if let Some(token) = url.strip_prefix("/b/") {
+    if let Some(token) = path.strip_prefix("/b/") {
         return crate::server::page::handle_bootstrap(shared, request, token);
     }
-    if let Some(rest) = url.strip_prefix("/a/") {
-        if let Some(artifact) = rest.strip_suffix("/cmd") {
-            return crate::server::ingress::handle_command(shared, request, artifact);
-        }
-        if let Some(artifact) = rest.strip_suffix("/state") {
-            return crate::server::page::handle_state(shared, request, artifact);
-        }
-        return crate::server::page::serve_page(shared, request, rest);
+    if let Some(rest) = path.strip_prefix("/a/") {
+        return match page_route(rest) {
+            Some((artifact, PageRoute::Page)) => {
+                crate::server::page::serve_page(shared, request, artifact)
+            }
+            Some((artifact, PageRoute::Command)) => {
+                crate::server::ingress::handle_command(shared, request, artifact)
+            }
+            Some((artifact, PageRoute::State)) => {
+                crate::server::page::handle_state(shared, request, artifact)
+            }
+            None => {
+                let _ = request.respond(error_response(404, "not_found", "no such route"));
+            }
+        };
     }
-    if url == "/healthz" {
+    if path == "/healthz" {
         let _ = request.respond(json_response(200, "{\"ok\":true}"));
         return;
     }
@@ -342,6 +356,34 @@ fn cli_route(shared: &Arc<Shared>, request: Request, route: &str, query: &Query)
             let _ = request.respond(error_response(404, "not_found", "no such route"));
         }
     }
+}
+
+/// The three things under `/a/<artifact>`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PageRoute {
+    Page,
+    Command,
+    State,
+}
+
+/// `/a/<artifact>`, `/a/<artifact>/cmd`, `/a/<artifact>/state`, and nothing
+/// else: a trailing slash, a second segment, or an id the mint would have
+/// refused is a 404 rather than a placeholder page with a 200 on it.
+pub fn page_route(rest: &str) -> Option<(&str, PageRoute)> {
+    let (artifact, tail) = match rest.split_once('/') {
+        Some((artifact, tail)) => (artifact, Some(tail)),
+        None => (rest, None),
+    };
+    if !crate::server::page::valid_artifact_id(artifact) {
+        return None;
+    }
+    let route = match tail {
+        None => PageRoute::Page,
+        Some("cmd") => PageRoute::Command,
+        Some("state") => PageRoute::State,
+        Some(_) => return None,
+    };
+    Some((artifact, route))
 }
 
 /// A request's query string, percent-decoded.
