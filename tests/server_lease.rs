@@ -172,6 +172,58 @@ fn switching_from_await_to_follow_keeps_the_token_and_logs_the_new_mode() {
 }
 
 #[test]
+fn the_same_agent_may_rejoin_without_its_token() {
+    // Spec 4.2 refuses "a second agent". A caller under the holder's own name
+    // is not one: it is the same agent that lost track of its token, which is
+    // what `push` looks like when it runs after an `await` in another shell.
+    let s = InProcess::start();
+    let first = take(&s, "claude");
+    let again = lease::acquire(&s.shared, Claim::waiting("claude"))
+        .expect("the same agent is not a second agent");
+
+    assert_eq!(
+        again.token, first.token,
+        "the same lease, and the same token"
+    );
+    assert_eq!(again.generation, first.generation);
+    assert_eq!(
+        s.events_of_type("lease.taken").len(),
+        1,
+        "nothing changed, so nothing was written"
+    );
+}
+
+#[test]
+fn rejoining_under_a_new_transport_records_the_new_mode() {
+    let s = InProcess::start();
+    let waiting = take(&s, "claude");
+    let me = std::process::id();
+    let live = lease::acquire(&s.shared, Claim::live("claude", me))
+        .expect("the same agent, now following");
+
+    assert_eq!(live.token, waiting.token);
+    assert_eq!(live.mode, Mode::Live);
+    assert_eq!(live.pid, Some(me));
+    assert_eq!(s.events_of_type("lease.taken").len(), 2);
+}
+
+#[test]
+fn a_same_name_takeover_mints_a_fresh_token() {
+    // The way out when an agent's own earlier process is wedged and its token
+    // is somewhere the user cannot get at.
+    let s = InProcess::start();
+    let first = take(&s, "claude");
+    let fresh = lease::acquire(&s.shared, Claim::waiting("claude").with_takeover(true)).unwrap();
+
+    assert_ne!(fresh.token, first.token);
+    assert_eq!(fresh.generation, 2);
+    assert!(matches!(
+        lease::validate(&s.shared, &first.token),
+        Err(LeaseError::Superseded)
+    ));
+}
+
+#[test]
 fn a_second_agent_is_refused_and_told_who_holds_it_and_for_how_long() {
     let s = InProcess::start();
     take(&s, "claude");

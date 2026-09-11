@@ -4,16 +4,54 @@
 //! is the reason it is a separate lock: appends serialize against each other
 //! without blocking any other route. It never takes `core` or `sockets`.
 //!
-//! Recovery rule: an **unterminated** final line is a torn write and is
-//! truncated. Anything else that does not parse — a bad line in the middle, a
-//! sequence gap, a foreign format — is a hard error. Dropping committed
-//! history quietly is worse than refusing to start.
+//! Recovery has two rules, and the second is the reason [`EventLog::append_all`]
+//! exists:
+//!
+//! 1. An **unterminated** final line is a torn write and is truncated.
+//!    Anything else that does not parse — a bad line in the middle, a sequence
+//!    gap, a foreign format — is a hard error. Dropping committed history
+//!    quietly is worse than refusing to start.
+//! 2. A final **incomplete batch** is an interrupted commit and is dropped
+//!    whole. One `write_all` is not a transaction: the kernel can take a
+//!    prefix of the buffer and the process can die, leaving two complete,
+//!    well-terminated records of a three-record commit. Rule 1 would accept
+//!    those as history. The batch mark is what tells them apart.
 
-use crate::server::event::{Actor, Event, EVENT_FORMAT};
+use crate::server::event::{Actor, BatchMark, Event, EVENT_FORMAT};
 use anyhow::{bail, Context, Result};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+/// One event waiting to be written. A `Vec` of these is what a multi-event
+/// commit hands to [`EventLog::append_all`]; the log assigns the sequence
+/// number, the timestamp, and the batch mark.
+#[derive(Debug, Clone)]
+pub struct Pending {
+    pub artifact: String,
+    pub revision: u32,
+    pub actor: Actor,
+    pub kind: String,
+    pub data: serde_json::Value,
+}
+
+impl Pending {
+    pub fn new(
+        artifact: &str,
+        revision: u32,
+        actor: Actor,
+        kind: &str,
+        data: serde_json::Value,
+    ) -> Pending {
+        Pending {
+            artifact: artifact.to_string(),
+            revision,
+            actor,
+            kind: kind.to_string(),
+            data,
+        }
+    }
+}
 
 /// `Debug` is derived because the tests use `Result::expect_err`, which
 /// requires `T: Debug` on the success type.
@@ -42,8 +80,12 @@ impl EventLog {
             let mut offset = 0usize;
             let mut line_no = 0usize;
             let mut good_bytes = 0usize;
+            // Where each accepted record starts, so an interrupted commit can
+            // be cut back to the byte before its first member.
+            let mut starts: Vec<usize> = Vec::new();
 
             while offset < bytes.len() {
+                starts.push(offset);
                 let rest = &bytes[offset..];
                 let Some(nl) = rest.iter().position(|b| *b == b'\n') else {
                     // No terminator: a torn tail. Truncate it, whatever it holds.
@@ -74,6 +116,13 @@ impl EventLog {
                 events.push(event);
                 offset += nl + 1;
                 good_bytes = offset;
+            }
+
+            // An interrupted commit: the last record on disk says it is one of
+            // several, and the rest never arrived.
+            if let Some(cut) = incomplete_batch_start(&events, &starts)? {
+                events.truncate(cut);
+                good_bytes = starts[cut];
             }
 
             if good_bytes < bytes.len() {
@@ -113,30 +162,108 @@ impl EventLog {
         kind: &str,
         data: serde_json::Value,
     ) -> Result<Event> {
+        let mut written =
+            self.append_all(vec![Pending::new(artifact, revision, actor, kind, data)])?;
+        Ok(written.remove(0))
+    }
+
+    /// Write several events as one commit.
+    ///
+    /// Every record carries a batch mark naming the commit and its own place
+    /// in it, so a crash that lands only a prefix leaves a log whose last
+    /// record announces that more was coming. `open` drops such a group whole.
+    /// Without the mark, a prefix of complete, newline-terminated records is
+    /// indistinguishable from history — which is how "a revision and its
+    /// resolutions" ends up half applied.
+    ///
+    /// The single `write_all` and `fsync` still matter: they make the
+    /// interrupted case rare. The mark is what makes it *safe*.
+    pub fn append_all(&mut self, entries: Vec<Pending>) -> Result<Vec<Event>> {
         if self.poisoned {
             bail!("the event log is in an unknown state after a failed write; restart the server");
         }
-        let event = Event {
-            format: EVENT_FORMAT.to_string(),
-            seq: self.next_seq,
-            ts: now_rfc3339(),
-            artifact: artifact.to_string(),
-            revision,
-            actor,
-            r#type: kind.to_string(),
-            data,
-        };
-        let line = serde_json::to_string(&event)?;
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let count = entries.len() as u32;
+        let id = batch_id();
+        let ts = now_rfc3339();
+        let mut events = Vec::with_capacity(entries.len());
+        let mut buffer = String::new();
+        for (index, entry) in entries.into_iter().enumerate() {
+            let event = Event {
+                format: EVENT_FORMAT.to_string(),
+                seq: self.next_seq + index as u64,
+                ts: ts.clone(),
+                artifact: entry.artifact,
+                revision: entry.revision,
+                actor: entry.actor,
+                r#type: entry.kind,
+                data: entry.data,
+                // A single event needs no framing: the torn-tail rule already
+                // makes one line all-or-nothing.
+                batch: (count > 1).then(|| BatchMark {
+                    id: id.clone(),
+                    index: index as u32,
+                    count,
+                }),
+            };
+            buffer.push_str(&serde_json::to_string(&event)?);
+            buffer.push('\n');
+            events.push(event);
+        }
         // From here the write may be partially visible on disk, so any failure
-        // poisons rather than being retried at the same sequence number.
-        if let Err(e) = writeln!(self.file, "{line}").and_then(|()| self.file.sync_all()) {
+        // poisons rather than being retried at the same sequence numbers.
+        if let Err(e) = self
+            .file
+            .write_all(buffer.as_bytes())
+            .and_then(|()| self.file.sync_all())
+        {
             self.poisoned = true;
             return Err(e).with_context(|| format!("appending to {}", self.path.display()));
         }
-        self.next_seq += 1;
-        self.events.push(event.clone());
-        Ok(event)
+        self.next_seq += events.len() as u64;
+        self.events.extend(events.iter().cloned());
+        Ok(events)
     }
+}
+
+/// Where an interrupted commit begins, as an index into `events`.
+///
+/// Only the tail can be interrupted: the log has one writer, appends in order,
+/// and every start runs this before writing anything. A group in the middle of
+/// the file was therefore completed before the next record was written.
+fn incomplete_batch_start(events: &[Event], starts: &[usize]) -> Result<Option<usize>> {
+    let Some(last) = events.last() else {
+        return Ok(None);
+    };
+    let Some(mark) = last.batch.as_ref() else {
+        return Ok(None);
+    };
+    if mark.is_last() {
+        return Ok(None);
+    }
+    let first = events.len() - 1 - mark.index as usize;
+    for (offset, event) in events[first..].iter().enumerate() {
+        let belongs = event
+            .batch
+            .as_ref()
+            .is_some_and(|b| b.id == mark.id && b.index as usize == offset);
+        if !belongs {
+            bail!(
+                "the log's final commit {} is not contiguous; refusing to guess what to drop",
+                mark.id
+            );
+        }
+    }
+    debug_assert!(first < starts.len());
+    Ok(Some(first))
+}
+
+fn batch_id() -> String {
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes).expect("the OS must provide randomness");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// RFC 3339 in UTC to the second. No date crate: the only consumers are a

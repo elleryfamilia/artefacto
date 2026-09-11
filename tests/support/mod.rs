@@ -402,6 +402,7 @@ impl InProcess {
             actor: artefacto::server::event::Actor::Reviewer,
             r#type: "thread.opened".to_string(),
             data: serde_json::json!({ "thread": "c-1" }),
+            batch: None,
         };
         let frame = artefacto::server::event::Frame::of(vec![event]);
         artefacto::server::socket::broadcast(&self.shared, &frame);

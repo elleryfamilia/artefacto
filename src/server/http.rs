@@ -146,6 +146,7 @@ impl Shared {
             actor: Actor::Server,
             r#type: "server.stopping".to_string(),
             data: serde_json::json!({}),
+            batch: None,
         };
         crate::server::socket::broadcast(self, &crate::server::event::Frame::of(vec![event]));
     }
@@ -265,6 +266,7 @@ fn cli_route(shared: &Arc<Shared>, request: Request, route: &str, query: &Query)
         "await" => crate::server::poll::handle_await(shared, request, query),
         "events" => crate::server::poll::handle_events(shared, request, query),
         "ack" => crate::server::poll::handle_ack(shared, request, query),
+        "push" => crate::server::push::handle_push(shared, request, query),
         "status" => {
             let last_seq = shared.log.lock().unwrap().last_seq();
             let body = serde_json::json!({
@@ -442,17 +444,32 @@ impl<'a> Committer<'a> {
         kind: &str,
         data: serde_json::Value,
     ) -> Result<Event> {
+        let mut written = self.append_all(vec![crate::server::log::Pending::new(
+            artifact, revision, actor, kind, data,
+        )])?;
+        Ok(written.remove(0))
+    }
+
+    /// Append several events as **one commit** and fold them all.
+    ///
+    /// The log's own atomicity is in `EventLog::append_all`; this adds the
+    /// second half of it, which is that the fold sees the whole group or none
+    /// of it. A caller that appended each event separately would leave a
+    /// window where the revision is folded and its resolutions are not.
+    pub fn append_all(&self, entries: Vec<crate::server::log::Pending>) -> Result<Vec<Event>> {
         // `log` is held across fsync — that is why it is its own lock — but
         // `core` is not held at the same time.
-        let event = {
+        let events = {
             let mut log = self.shared.log.lock().unwrap();
-            log.append(artifact, revision, actor, kind, data)?
+            log.append_all(entries)?
         };
         {
             let mut core = self.shared.core.lock().unwrap();
-            crate::server::fold::apply(&mut core.review, &event);
+            for event in &events {
+                crate::server::fold::apply(&mut core.review, event);
+            }
         }
-        Ok(event)
+        Ok(events)
     }
 }
 

@@ -36,6 +36,14 @@
 //! - [`Mode::Live`] records a pid. A dead pid releases the lease at once.
 //! - [`Mode::Waiting`] records none. The TTL alone measures it.
 //!
+//! # Who counts as a second agent
+//!
+//! The lease **name**. Spec 4.2 refuses "a second agent" with exit 6, and a
+//! caller under the holder's own name is not a second one: it is the same
+//! agent that has lost track of its token, which happens whenever `push` runs
+//! after an `await` in a different shell. It rejoins and gets the same token.
+//! A different name is refused, and the refusal says who holds it.
+//!
 //! # What the TTL is for
 //!
 //! It lets **another** agent in. It is not a punishment for the holder: while
@@ -268,32 +276,40 @@ pub fn acquire(shared: &Shared, claim: Claim) -> Result<LeaseRecord, LeaseError>
 }
 
 fn decide_locked(core: &Core, now_ms: i64, claim: &Claim) -> Result<Decision, LeaseError> {
+    let pid = match claim.mode {
+        Mode::Live => claim.pid,
+        // No durable process to record; see the module docs.
+        Mode::Waiting => None,
+    };
+
     if let Some(token) = claim.presenting {
         // The holder calling again. The TTL is not consulted: it exists to let
         // another agent in, and none has.
         let Some(record) = recorded_locked(core).filter(|r| holds(r, token)) else {
             return Err(LeaseError::Superseded);
         };
-        let pid = match claim.mode {
-            Mode::Live => claim.pid,
-            Mode::Waiting => None,
-        };
-        if record.mode == claim.mode && record.pid == pid {
-            return Ok(Decision::Refresh(record.clone()));
-        }
-        return Ok(Decision::Relog(LeaseRecord {
-            mode: claim.mode,
-            pid,
-            ..record.clone()
-        }));
+        return Ok(rejoin(record, claim.mode, pid));
     }
 
-    if let Some(held) = blocking_locked(core, now_ms) {
-        if !claim.takeover {
-            return Err(LeaseError::Held {
-                holder: held.name.clone(),
-                age_secs: age_secs_locked(core, now_ms),
-            });
+    if !claim.takeover {
+        if let Some(held) = blocking_locked(core, now_ms) {
+            // Spec 4.2 refuses "a second agent". The lease name is what says
+            // which agent this is, so a caller under the holder's own name is
+            // not a second one — it is the same agent that has lost track of
+            // its token, which is the ordinary case for `push` run after an
+            // `await` in another shell. It rejoins the lease it already holds
+            // and gets the same token back.
+            //
+            // This does not weaken the token rule: there is still exactly one
+            // live token, and anyone reaching this code already holds the
+            // bearer secret from a file only the user can read.
+            if held.name != claim.name {
+                return Err(LeaseError::Held {
+                    holder: held.name.clone(),
+                    age_secs: age_secs_locked(core, now_ms),
+                });
+            }
+            return Ok(rejoin(held, claim.mode, pid));
         }
     }
     Ok(Decision::Fresh {
@@ -302,6 +318,20 @@ fn decide_locked(core: &Core, now_ms: i64, claim: &Claim) -> Result<Decision, Le
         // still the agent whose cursor the new one should pick up.
         outgoing: core.review.lease.as_ref().map(|l| l.name.clone()),
     })
+}
+
+/// Keep the lease as it stands, re-recording it only when the transport
+/// changed — which the presence pill reads, so it is state and is logged.
+fn rejoin(record: &LeaseRecord, mode: Mode, pid: Option<u32>) -> Decision {
+    if record.mode == mode && record.pid == pid {
+        Decision::Refresh(record.clone())
+    } else {
+        Decision::Relog(LeaseRecord {
+            mode,
+            pid,
+            ..record.clone()
+        })
+    }
 }
 
 /// `<generation>.<256 random bits>`. Spec 4.2 calls this "a session token

@@ -168,6 +168,42 @@ pub enum PlanAction {
         #[arg(long)]
         json: bool,
     },
+    /// Publish a plan to the review server as a new revision.
+    Push(PushArgs),
     /// Print the plan schema reference.
     Schema,
+}
+
+#[derive(Args, Debug)]
+pub struct PushArgs {
+    /// The plan file to publish.
+    pub file: PathBuf,
+    /// The session token from a previous call. Omit it on the first push:
+    /// push then takes the lease itself and returns the token to use.
+    #[arg(long)]
+    pub session: Option<String>,
+    /// The lease name.
+    #[arg(long, default_value = "agent")]
+    pub agent: String,
+    /// Take the lease from whoever holds it.
+    #[arg(long)]
+    pub takeover: bool,
+    /// The revision this push was made against. Required after the first
+    /// push, unless --force. It is the revision **you last saw**, never one
+    /// read back from the server.
+    #[arg(long)]
+    pub base_revision: Option<u32>,
+    /// Publish even if the server has moved on.
+    #[arg(long)]
+    pub force: bool,
+    /// A JSON file of `{thread, status, note}` entries, applied with this
+    /// revision in the same commit.
+    #[arg(long)]
+    pub resolutions: Option<PathBuf>,
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+    /// Do not open a browser on the first push.
+    #[arg(long)]
+    pub no_open: bool,
 }

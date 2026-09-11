@@ -13,6 +13,33 @@ pub enum Actor {
     Server,
 }
 
+/// Framing for a group of events that must land together or not at all.
+///
+/// One `write_all` is **not** a transaction: a crash can leave a prefix of the
+/// group on disk with a clean final newline, and the log's torn-tail rule then
+/// accepts half a commit as history. This mark is what makes the difference
+/// visible — a log whose last record says it is 1 of 3 was interrupted, and
+/// the whole group is dropped.
+///
+/// `id` is not strictly needed to find the group, since its members are
+/// contiguous by construction. It is here so recovery can **check** that
+/// rather than assume it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchMark {
+    pub id: String,
+    /// 0-based position within the group.
+    pub index: u32,
+    /// How many records the group has. Always two or more.
+    pub count: u32,
+}
+
+impl BatchMark {
+    /// Is this the record that completes its group?
+    pub fn is_last(&self) -> bool {
+        self.index + 1 >= self.count
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub format: String,
@@ -25,6 +52,10 @@ pub struct Event {
     #[serde(rename = "type")]
     pub r#type: String,
     pub data: serde_json::Value,
+    /// Present only on a record that is part of a multi-event commit.
+    /// `default` so every line written before this existed still parses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<BatchMark>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +128,7 @@ mod tests {
             actor: Actor::Reviewer,
             r#type: kind.to_string(),
             data: serde_json::Value::Null,
+            batch: None,
         }
     }
 

@@ -180,7 +180,11 @@ fn result(
 }
 
 /// Take the lease, or refresh the one the caller already holds.
-fn claim(shared: &Arc<Shared>, query: &Query) -> Result<LeaseRecord, LeaseError> {
+///
+/// Shared with `push`, which claims it the same way: an agent's first command
+/// is often a push, so push has to be able to take a lease and hand back the
+/// token rather than requiring one it has no way to have yet.
+pub fn claim(shared: &Arc<Shared>, query: &Query) -> Result<LeaseRecord, LeaseError> {
     let name = query.get("agent").map(String::as_str).unwrap_or("agent");
     let live = query.get("mode").map(String::as_str) == Some("live");
     let pid = query.get("pid").and_then(|p| p.parse::<u32>().ok());

@@ -22,6 +22,7 @@ fn ev(seq: u64, actor: Actor, kind: &str, data: serde_json::Value) -> Event {
         actor,
         r#type: kind.to_string(),
         data,
+        batch: None,
     }
 }
 

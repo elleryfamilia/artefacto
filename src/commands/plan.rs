@@ -43,6 +43,7 @@ pub fn run(args: &PlanArgs) -> Result<()> {
             json,
         } => render(file, out.as_deref(), *no_open, *json),
         PlanAction::Status { file, out, json } => status(file, out.as_deref(), *json),
+        PlanAction::Push(args) => push(args),
         PlanAction::Schema => {
             print!(
                 "{}",
@@ -349,6 +350,133 @@ fn status(file: &Path, out: Option<&Path>, json: bool) -> Result<()> {
     } else {
         Err(ReportedFailure.into())
     }
+}
+
+/// One file's errors, on stderr, in the shape `check` already uses.
+fn report_issues(path: &Path, issues: &[model::Issue]) {
+    if is_unreadable(issues) {
+        for issue in issues {
+            eprintln!("error: {}", issue.message);
+        }
+        return;
+    }
+    println!("{}: INVALID", path.display());
+    for issue in issues {
+        eprintln!("  error[{}] {}: {}", issue.code, issue.path, issue.message);
+    }
+}
+
+/// `artefacto plan push` — publish a revision to the review server.
+///
+/// The order of these steps is the point, and each one prevents a specific
+/// failure:
+///
+/// 1. **Validate locally.** An invalid plan never reaches the server, so a bad
+///    push cannot append anything at all.
+/// 2. **Start the server if none is running**, because push is often the first
+///    command an agent runs, and exit 4 there would just mean "run serve and
+///    try again" for no reason.
+/// 3. **Send the revision the agent last saw.** Spec 5: `--base-revision`
+///    comes from the caller. The server compares and appends under one gate.
+/// 4. **Open the browser on the first push only**, so a second revision does
+///    not steal the reviewer's window.
+fn push(args: &crate::cli::PushArgs) -> Result<()> {
+    let checked = match check_one(&args.file, false) {
+        Ok(checked) => checked,
+        Err(issues) => {
+            report_issues(&args.file, &issues);
+            return Err(if is_unreadable(&issues) {
+                UsageReported.into()
+            } else {
+                ReportedFailure.into()
+            });
+        }
+    };
+    for warning in &checked.warnings {
+        eprintln!(
+            "  warning[{}] {}: {}",
+            warning.code, warning.path, warning.message
+        );
+    }
+
+    let resolutions = match &args.resolutions {
+        Some(path) => read_resolutions(path)?,
+        None => serde_json::json!([]),
+    };
+    let source_path = std::fs::canonicalize(&args.file)
+        .unwrap_or_else(|_| args.file.clone())
+        .display()
+        .to_string();
+
+    // Idempotent: it returns at once when a server is already recorded and
+    // alive, and one `serve` wins if two pushes race.
+    crate::commands::serve::serve(&crate::cli::ServeArgs {
+        port: None,
+        foreground: false,
+        no_open: true,
+    })
+    .context("starting the review server")?;
+
+    let client = crate::client::Client::connect()?;
+    let mut query = vec![("agent", args.agent.clone())];
+    if let Some(session) = &args.session {
+        query.push(("session", session.clone()));
+    }
+    if args.takeover {
+        query.push(("takeover", "1".to_string()));
+    }
+    let body = serde_json::json!({
+        "plan": checked.plan,
+        "source_path": source_path,
+        "base_revision": args.base_revision,
+        "force": args.force,
+        "resolutions": resolutions,
+    });
+    let result = client.call_body(
+        "POST",
+        "push",
+        &query,
+        &body.to_string(),
+        std::time::Duration::from_secs(60),
+    )?;
+
+    let first = result["revision"].as_u64() == Some(1);
+    if first && !args.no_open {
+        if let Some(url) = result["url"].as_str() {
+            crate::paths::open_browser(url);
+        }
+    }
+    if args.json {
+        println!("{result}");
+    } else {
+        println!(
+            "{} revision {} — {} ({} phases, {} tasks)\n{}",
+            result["artifact"].as_str().unwrap_or_default(),
+            result["revision"],
+            result["summary"].as_str().unwrap_or_default(),
+            result["phases"],
+            result["tasks"],
+            result["url"].as_str().unwrap_or_default(),
+        );
+    }
+    Ok(())
+}
+
+/// A `--resolutions` file is a JSON array of `{thread, status, note}`. Spec 5
+/// has it exist so one push can address many threads without one CLI call
+/// each; the server applies them in the same commit as the revision.
+fn read_resolutions(path: &Path) -> Result<serde_json::Value> {
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).with_context(|| format!("{} is not JSON", path.display()))?;
+    if !value.is_array() {
+        anyhow::bail!(
+            "{} must be a JSON array of {{thread, status, note}} entries",
+            path.display()
+        );
+    }
+    Ok(value)
 }
 
 #[cfg(test)]

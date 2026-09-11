@@ -167,3 +167,149 @@ fn a_foreign_format_is_a_hard_error() {
         "a log from another tool is not ours to read"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Multi-event commits. Codex finding #8: one `write_all` is not a transaction.
+// ---------------------------------------------------------------------------
+
+use artefacto::server::log::Pending;
+
+fn pending(kind: &str) -> Pending {
+    Pending::new("plan:x", 1, Actor::Reviewer, kind, data())
+}
+
+#[test]
+fn a_commit_numbers_its_events_in_order_and_marks_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut log = EventLog::open(dir.path()).unwrap();
+    let written = log
+        .append_all(vec![
+            pending("revision.published"),
+            pending("thread.resolved"),
+            pending("thread.resolved"),
+        ])
+        .unwrap();
+
+    assert_eq!(written.iter().map(|e| e.seq).collect::<Vec<_>>(), [1, 2, 3]);
+    let marks: Vec<_> = written.iter().map(|e| e.batch.clone().unwrap()).collect();
+    assert!(
+        marks.iter().all(|m| m.id == marks[0].id && m.count == 3),
+        "one commit, named once"
+    );
+    assert_eq!(marks.iter().map(|m| m.index).collect::<Vec<_>>(), [0, 1, 2]);
+    assert!(marks[2].is_last());
+}
+
+#[test]
+fn a_single_event_carries_no_batch_mark() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut log = EventLog::open(dir.path()).unwrap();
+    let one = log.append_all(vec![pending("chat.sent")]).unwrap();
+    assert!(
+        one[0].batch.is_none(),
+        "the torn-tail rule already makes one line all-or-nothing"
+    );
+    let plain = log
+        .append("plan:x", 1, Actor::Reviewer, "chat.sent", data())
+        .unwrap();
+    assert!(plain.batch.is_none());
+}
+
+/// Cut the log after `keep` whole lines, the way a crash mid-commit leaves it:
+/// every surviving line complete and newline-terminated.
+fn keep_lines(dir: &std::path::Path, keep: usize) {
+    let path = dir.join("events.ndjson");
+    let raw = std::fs::read_to_string(&path).unwrap();
+    let kept: String = raw.lines().take(keep).map(|l| format!("{l}\n")).collect();
+    std::fs::write(&path, kept).unwrap();
+}
+
+#[test]
+fn an_interrupted_commit_is_dropped_whole() {
+    // This is the failure the batch mark exists for. Every surviving line here
+    // is complete and terminated, so the torn-tail rule sees nothing wrong —
+    // and a revision would have been committed without its resolutions.
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut log = EventLog::open(dir.path()).unwrap();
+        log.append("plan:x", 1, Actor::Reviewer, "chat.sent", data())
+            .unwrap();
+        log.append_all(vec![
+            pending("revision.published"),
+            pending("thread.resolved"),
+            pending("thread.resolved"),
+        ])
+        .unwrap();
+    }
+    keep_lines(dir.path(), 3); // the chat, the revision, one resolution
+
+    let mut log = EventLog::open(dir.path()).unwrap();
+    assert_eq!(
+        log.last_seq(),
+        1,
+        "half a commit is not history; only the event before it survives"
+    );
+    assert_eq!(log.since(0).len(), 1);
+    assert_eq!(log.since(0)[0].r#type, "chat.sent");
+    assert_eq!(
+        log.append("plan:x", 1, Actor::Reviewer, "chat.sent", data())
+            .unwrap()
+            .seq,
+        2,
+        "and the dropped sequence numbers are reused"
+    );
+}
+
+#[test]
+fn an_interrupted_commit_is_dropped_from_the_file_too() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut log = EventLog::open(dir.path()).unwrap();
+        log.append_all(vec![
+            pending("revision.published"),
+            pending("thread.resolved"),
+        ])
+        .unwrap();
+    }
+    keep_lines(dir.path(), 1);
+    EventLog::open(dir.path()).unwrap();
+
+    let raw = std::fs::read_to_string(dir.path().join("events.ndjson")).unwrap();
+    assert!(
+        raw.is_empty(),
+        "the partial commit is cut from the file, not just from memory: {raw}"
+    );
+}
+
+#[test]
+fn a_complete_commit_survives_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut log = EventLog::open(dir.path()).unwrap();
+        log.append_all(vec![
+            pending("revision.published"),
+            pending("thread.resolved"),
+        ])
+        .unwrap();
+    }
+    let log = EventLog::open(dir.path()).unwrap();
+    assert_eq!(log.last_seq(), 2, "nothing incomplete about it");
+    assert_eq!(log.since(0).len(), 2);
+}
+
+#[test]
+fn a_commit_interrupted_at_its_first_record_leaves_nothing_of_it() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut log = EventLog::open(dir.path()).unwrap();
+        log.append_all(vec![
+            pending("revision.published"),
+            pending("thread.resolved"),
+            pending("thread.resolved"),
+        ])
+        .unwrap();
+    }
+    keep_lines(dir.path(), 1);
+    let log = EventLog::open(dir.path()).unwrap();
+    assert_eq!(log.last_seq(), 0);
+}

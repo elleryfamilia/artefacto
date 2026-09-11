@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 pub const EXIT_NO_SERVER: i32 = 4;
 /// Exit 6: the lease is held by another agent, or this token was superseded.
 pub const EXIT_LEASE: i32 = 6;
+/// Exit 7: the push was made against a revision the server has moved past.
+pub const EXIT_STALE_REVISION: i32 = 7;
 
 pub struct Client {
     server: ServerFile,
@@ -55,6 +57,19 @@ impl Client {
         query: &[(&str, String)],
         read_timeout: Duration,
     ) -> Result<serde_json::Value> {
+        self.call_body(method, route, query, "", read_timeout)
+    }
+
+    /// [`Client::call`] with a request body, for `push`, which carries a whole
+    /// plan.
+    pub fn call_body(
+        &self,
+        method: &str,
+        route: &str,
+        query: &[(&str, String)],
+        body: &str,
+        read_timeout: Duration,
+    ) -> Result<serde_json::Value> {
         let target = format!("/cli/{route}{}", query_string(query));
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", self.server.port))
             .with_context(|| format!("connecting to 127.0.0.1:{}", self.server.port))?;
@@ -62,8 +77,11 @@ impl Client {
         write!(
             stream,
             "{method} {target} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\n\
-             Content-Length: 0\r\nConnection: close\r\n\r\n",
-            self.server.port, self.server.secret
+             Content-Type: application/json\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n{body}",
+            self.server.port,
+            self.server.secret,
+            body.len()
         )?;
         let mut raw = String::new();
         stream.read_to_string(&mut raw)?;
@@ -123,6 +141,9 @@ fn check(value: serde_json::Value) -> Result<serde_json::Value> {
         .unwrap_or("the server refused the call");
     let exit = match code {
         "lease_held" | "lease_superseded" => EXIT_LEASE,
+        // Spec 5: a push refused for being behind is exit 7, and the agent
+        // re-reads with `status --json` rather than treating it as a failure.
+        "stale_base_revision" => EXIT_STALE_REVISION,
         _ => 2,
     };
     Err(Exit::new(exit, message).into())
