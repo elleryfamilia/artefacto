@@ -20,6 +20,7 @@ pub mod ingress;
 pub mod lease;
 pub mod log;
 pub mod page;
+pub mod poll;
 pub mod review;
 pub mod socket;
 pub mod state_dir;

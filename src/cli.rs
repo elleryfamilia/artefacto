@@ -28,6 +28,86 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Wait for something the agent should act on, then print one JSON result.
+    #[command(name = "await")]
+    Await(AwaitArgs),
+    /// Print frames as NDJSON: the backlog, or the live stream with --follow.
+    Events(EventsArgs),
+    /// Acknowledge part of a frame explicitly.
+    Ack(AckArgs),
+}
+
+/// `<n>` seconds, or `<n>s`, `<n>m`, `<n>h`. Spec 5 writes timeouts as `90s`
+/// and `15m`, so the CLI has to read them.
+pub fn parse_duration(raw: &str) -> Result<std::time::Duration, String> {
+    let raw = raw.trim();
+    let (digits, scale) = match raw.strip_suffix(['s', 'S']) {
+        Some(d) => (d, 1),
+        None => match raw.strip_suffix(['m', 'M']) {
+            Some(d) => (d, 60),
+            None => match raw.strip_suffix(['h', 'H']) {
+                Some(d) => (d, 3600),
+                None => (raw, 1),
+            },
+        },
+    };
+    let n: u64 = digits
+        .trim()
+        .parse()
+        .map_err(|_| format!("`{raw}` is not a duration; write it as 90s, 5m, or 1h"))?;
+    Ok(std::time::Duration::from_secs(n * scale))
+}
+
+/// Flags every agent-side command shares. Declared once so `await` and
+/// `events` cannot drift apart.
+#[derive(Args, Debug)]
+pub struct AwaitArgs {
+    /// How long to wait before returning `timeout`.
+    #[arg(long, default_value = "90s", value_parser = parse_duration)]
+    pub timeout: std::time::Duration,
+    /// Start from this sequence number instead of the lease's own cursor.
+    #[arg(long)]
+    pub since: Option<u64>,
+    /// Wake only for this artifact.
+    #[arg(long)]
+    pub artifact: Option<String>,
+    /// The lease name. One agent acts at a time, per name.
+    #[arg(long, default_value = "agent")]
+    pub agent: String,
+    /// The session token from a previous call. Omitting it takes a fresh
+    /// lease; presenting it refreshes the one you already hold.
+    #[arg(long)]
+    pub session: Option<String>,
+    /// Take the lease from whoever holds it.
+    #[arg(long)]
+    pub takeover: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct EventsArgs {
+    /// Stay attached and print frames as they happen.
+    #[arg(long)]
+    pub follow: bool,
+    #[arg(long)]
+    pub since: Option<u64>,
+    #[arg(long)]
+    pub artifact: Option<String>,
+    #[arg(long, default_value = "agent")]
+    pub agent: String,
+    #[arg(long)]
+    pub session: Option<String>,
+    #[arg(long)]
+    pub takeover: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct AckArgs {
+    /// The sequence number to acknowledge up to.
+    #[arg(long)]
+    pub seq: u64,
+    /// The session token. Spec 4.2: every agent mutation carries it.
+    #[arg(long)]
+    pub session: String,
 }
 
 #[derive(Args, Debug)]

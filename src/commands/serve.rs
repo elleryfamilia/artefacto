@@ -15,7 +15,7 @@ use std::time::Duration;
 
 /// Exit code for "there is no server". Agents branch on it, so it is part of
 /// the contract rather than an implementation detail.
-pub const EXIT_NO_SERVER: i32 = 4;
+pub use crate::client::EXIT_NO_SERVER;
 
 pub fn serve(args: &ServeArgs) -> Result<()> {
     let dir = current_state_dir()?;

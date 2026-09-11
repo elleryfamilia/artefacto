@@ -21,7 +21,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tiny_http::{Header, Request, Response};
@@ -74,6 +74,10 @@ pub struct Shared {
     /// The origin every lease age is measured from. See [`Shared::now_ms`].
     epoch: Instant,
     stopping: AtomicBool,
+    /// Requests being served right now. The accept loop waits for this to
+    /// reach zero before returning, so a long poll that is about to answer
+    /// "stopped" is not cut off by the process exiting underneath it.
+    in_flight: AtomicUsize,
 }
 
 impl Shared {
@@ -99,6 +103,7 @@ impl Shared {
             port,
             epoch: Instant::now(),
             stopping: AtomicBool::new(false),
+            in_flight: AtomicUsize::new(0),
         })
     }
 
@@ -115,8 +120,34 @@ impl Shared {
         self.stopping.load(Ordering::SeqCst)
     }
 
+    /// Refuse further work, and tell every open page on the way out.
+    ///
+    /// `server.stopping` is **delivered, never logged**. It carries no state a
+    /// restart needs to rebuild, and writing it down would mean the next
+    /// server to read that log hands every agent a frame saying it is shutting
+    /// down — while it is in fact running. It joins presence and nudges in the
+    /// class of things the fold deliberately ignores.
+    ///
+    /// Agents hear it as spec 5's `stopped` status, which `poll` derives from
+    /// this flag.
     pub fn request_stop(&self) {
-        self.stopping.store(true, Ordering::SeqCst);
+        if self.stopping.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        // Numbered as "after everything committed so far", because the page
+        // orders what it receives by seq and this is the last thing it gets.
+        let seq = self.log.lock().unwrap().last_seq();
+        let event = Event {
+            format: crate::server::event::EVENT_FORMAT.to_string(),
+            seq,
+            ts: crate::server::log::now_rfc3339(),
+            artifact: String::new(),
+            revision: 0,
+            actor: Actor::Server,
+            r#type: "server.stopping".to_string(),
+            data: serde_json::json!({}),
+        };
+        crate::server::socket::broadcast(self, &crate::server::event::Frame::of(vec![event]));
     }
 }
 
@@ -126,22 +157,40 @@ impl Shared {
 pub fn run(shared: Arc<Shared>, server: Arc<tiny_http::Server>, idle: Duration) {
     loop {
         if shared.stopping() {
-            return;
+            break;
         }
         match server.recv_timeout(Duration::from_millis(250)) {
             Ok(Some(request)) => {
+                shared.in_flight.fetch_add(1, Ordering::SeqCst);
                 let shared = Arc::clone(&shared);
-                std::thread::spawn(move || handle(shared, request));
+                std::thread::spawn(move || {
+                    handle(&shared, request);
+                    shared.in_flight.fetch_sub(1, Ordering::SeqCst);
+                });
             }
             // `Server::unblock` also produces this, which is why the stopping
             // flag is checked at the top rather than trusting the timeout.
             Ok(None) => {
                 if should_self_exit(&shared, idle) {
-                    return;
+                    break;
                 }
             }
-            Err(_) => return,
+            Err(_) => break,
         }
+    }
+    drain(&shared);
+}
+
+/// Give requests already in progress a moment to answer.
+///
+/// Without this, `stop` returns and the process exits while a long-polling
+/// `await` is still writing the `stopped` result it just computed, and the
+/// agent sees a dropped connection instead of a clean shutdown. Bounded,
+/// because a page's WebSocket lives in a request that never finishes.
+fn drain(shared: &Arc<Shared>) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while shared.in_flight.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -166,7 +215,7 @@ fn should_self_exit(shared: &Arc<Shared>, idle: Duration) -> bool {
     quiet > idle
 }
 
-fn handle(shared: Arc<Shared>, request: Request) {
+fn handle(shared: &Arc<Shared>, request: Request) {
     if !host_ok(&request, shared.port) {
         let _ = request.respond(error_response(
             421,
@@ -178,16 +227,16 @@ fn handle(shared: Arc<Shared>, request: Request) {
     let url = request.url().to_string();
 
     if url == "/ws" {
-        return crate::server::socket::handle_upgrade(&shared, request);
+        return crate::server::socket::handle_upgrade(shared, request);
     }
     if let Some(token) = url.strip_prefix("/b/") {
-        return crate::server::page::handle_bootstrap(&shared, request, token);
+        return crate::server::page::handle_bootstrap(shared, request, token);
     }
     if let Some(rest) = url.strip_prefix("/a/") {
         if let Some(artifact) = rest.strip_suffix("/cmd") {
-            return crate::server::ingress::handle_command(&shared, request, artifact);
+            return crate::server::ingress::handle_command(shared, request, artifact);
         }
-        return crate::server::page::serve_page(&shared, request, rest);
+        return crate::server::page::serve_page(shared, request, rest);
     }
     if url == "/healthz" {
         let _ = request.respond(json_response(200, "{\"ok\":true}"));
@@ -204,13 +253,18 @@ fn handle(shared: Arc<Shared>, request: Request) {
         }
         // Only an authenticated call counts as activity.
         shared.core.lock().unwrap().last_request_at = Instant::now();
-        return cli_route(&shared, request, rest);
+        let (route, query) = split_query(rest);
+        let route = route.to_string();
+        return cli_route(shared, request, &route, &query);
     }
     let _ = request.respond(error_response(404, "not_found", "no such route"));
 }
 
-fn cli_route(shared: &Arc<Shared>, request: Request, rest: &str) {
-    match rest {
+fn cli_route(shared: &Arc<Shared>, request: Request, route: &str, query: &Query) {
+    match route {
+        "await" => crate::server::poll::handle_await(shared, request, query),
+        "events" => crate::server::poll::handle_events(shared, request, query),
+        "ack" => crate::server::poll::handle_ack(shared, request, query),
         "status" => {
             let last_seq = shared.log.lock().unwrap().last_seq();
             let body = serde_json::json!({
@@ -232,6 +286,58 @@ fn cli_route(shared: &Arc<Shared>, request: Request, rest: &str) {
             let _ = request.respond(error_response(404, "not_found", "no such route"));
         }
     }
+}
+
+/// A request's query string, percent-decoded.
+pub type Query = HashMap<String, String>;
+
+/// Split `await?timeout=90s` into its route and its query. tiny_http hands
+/// over the raw request target, so this is the only place a `?` is parsed.
+pub fn split_query(target: &str) -> (&str, Query) {
+    match target.split_once('?') {
+        Some((route, rest)) => (route, parse_query(rest)),
+        None => (target, Query::new()),
+    }
+}
+
+fn parse_query(raw: &str) -> Query {
+    let mut out = Query::new();
+    for pair in raw.split('&').filter(|p| !p.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        out.insert(percent_decode(k), percent_decode(v));
+    }
+    out
+}
+
+/// Enough of the form encoding to carry a token, an agent name, and a number.
+/// A stray `%` is left as itself rather than dropping the rest of the value.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                Ok(byte) => {
+                    out.push(byte);
+                    i += 3;
+                }
+                Err(_) => {
+                    out.push(b'%');
+                    i += 1;
+                }
+            },
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// `HeaderField::equiv` needs a `&'static str`; a `&str` parameter does not

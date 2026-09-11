@@ -82,19 +82,44 @@ pub fn cursor_for(shared: &Shared, name: &str) -> u64 {
 /// `None` when nothing active is waiting: in digest mode passive traffic does
 /// not wake the agent, and an empty frame is not a thing spec 6.1 allows.
 pub fn frame_since(shared: &Shared, cursor: u64) -> Option<Frame> {
-    let log = shared.log.lock().unwrap();
-    let pending: Vec<Event> = log
-        .since(cursor)
-        .iter()
-        .filter(|e| deliverable(e))
-        .cloned()
-        .collect();
-    drop(log);
+    frame_since_for(shared, cursor, None)
+}
+
+/// [`frame_since`], woken only by an active event for `artifact`.
+///
+/// `--artifact` chooses **what wakes the agent**, not what it is allowed to
+/// see. The frame still carries every deliverable event before the one that
+/// ended it, whatever artifact those belong to, because the frame's seq is
+/// what gets acknowledged: dropping another artifact's events from the middle
+/// of a frame would move the cursor past events nobody ever received.
+pub fn frame_since_for(shared: &Shared, cursor: u64, artifact: Option<&str>) -> Option<Frame> {
+    let pending = pending_since(shared, cursor);
     // Spec 5: "when several active events are waiting, `await` returns at the
     // earliest one, and the frame stops there", so the agent handles events in
     // the order they happened rather than seeing a later one first.
-    let stop = pending.iter().position(|e| is_active(&e.r#type))?;
+    let stop = pending
+        .iter()
+        .position(|e| is_active(&e.r#type) && artifact.is_none_or(|a| e.artifact == a))?;
     Some(Frame::of(pending[..=stop].to_vec()))
+}
+
+/// The events a `timeout` carries: spec 5's table says the frame then "holds
+/// whatever passive events accumulated".
+///
+/// They are acknowledged along with it, because spec 6.4 requires that a
+/// passive event cannot be "delivered once by a poll and again by the next
+/// wake-up".
+pub fn passive_since(shared: &Shared, cursor: u64) -> Vec<Event> {
+    pending_since(shared, cursor)
+}
+
+fn pending_since(shared: &Shared, cursor: u64) -> Vec<Event> {
+    let log = shared.log.lock().unwrap();
+    log.since(cursor)
+        .iter()
+        .filter(|e| deliverable(e))
+        .cloned()
+        .collect()
 }
 
 /// Settle the previous frame for this session, then compute the next one.
@@ -108,35 +133,48 @@ pub fn frame_since(shared: &Shared, cursor: u64) -> Option<Frame> {
 /// rather than acknowledged: `events --since 0` must not quietly acknowledge
 /// the frame it is replaying past.
 pub fn offer(shared: &Shared, session: &LeaseRecord, since: Option<u64>) -> Result<Offered> {
-    // One gate across settle-then-compute, so a retrying CLI cannot have the
-    // cursor land between two frames.
-    let committer = Committer::open(shared);
-
-    // Any call from this session invalidates whatever was outstanding, whether
-    // or not it is about to be acknowledged.
-    let outstanding = take_offer(shared, &session.token);
-    let cursor = match since {
-        Some(named) => named,
-        None => {
-            if let Some(seq) = outstanding {
-                ack_under(shared, &committer, &session.name, seq)?;
-            }
-            committer.with_review(|r| r.cursors.get(&session.name).copied().unwrap_or(0))
-        }
-    };
-
+    let cursor = settle(shared, session, since)?;
     let frame = frame_since(shared, cursor);
     if let Some(f) = &frame {
-        shared.core.lock().unwrap().last_offer = Some(Offer {
-            token: session.token.clone(),
-            seq: f.seq,
-        });
+        hand_out(shared, session, f.seq);
     }
-    drop(committer);
     Ok(Offered {
         frame,
         since: cursor,
     })
+}
+
+/// Acknowledge whatever the previous call to this session returned, and hand
+/// back the cursor the next read starts from.
+///
+/// Split out of [`offer`] because a long poll settles once and then waits: the
+/// acknowledgement belongs to the call that is arriving, not to each of the
+/// hundred times it checks the log while it waits.
+pub fn settle(shared: &Shared, session: &LeaseRecord, since: Option<u64>) -> Result<u64> {
+    // One gate across settle-then-read, so a retrying CLI cannot have the
+    // cursor land between two frames.
+    let committer = Committer::open(shared);
+    // Any call from this session invalidates whatever was outstanding, whether
+    // or not it is about to be acknowledged.
+    let outstanding = take_offer(shared, &session.token);
+    match since {
+        Some(named) => Ok(named),
+        None => {
+            if let Some(seq) = outstanding {
+                ack_under(shared, &committer, &session.name, seq)?;
+            }
+            Ok(committer.with_review(|r| r.cursors.get(&session.name).copied().unwrap_or(0)))
+        }
+    }
+}
+
+/// Remember that everything up to `seq` was handed to this session, so its
+/// next call acknowledges it.
+pub fn hand_out(shared: &Shared, session: &LeaseRecord, seq: u64) {
+    shared.core.lock().unwrap().last_offer = Some(Offer {
+        token: session.token.clone(),
+        seq,
+    });
 }
 
 /// Acknowledge explicitly, as `artefacto ack --seq N --session TOKEN` does.

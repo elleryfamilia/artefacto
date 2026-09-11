@@ -47,18 +47,30 @@ impl Frame {
     }
 }
 
+/// The `await` status an event produces, or `None` when it is passive.
+///
+/// One table for both questions, so they cannot drift: spec 6.2's active list
+/// and spec 5's `await` status table are the same set seen from two sides, and
+/// an active event with no status would silently be reported as a timeout.
+///
+/// Spec 5's table is missing a `back` row; spec 6.2 lists `reviewer.back` as
+/// active. This follows 6.2, and the spec needs the row added.
+pub fn await_status(event_type: &str) -> Option<&'static str> {
+    match event_type {
+        "chat.sent" => Some("chat"),
+        "review.submitted" => Some("submitted"),
+        "reviewer.idle" => Some("idle"),
+        "reviewer.away" => Some("away"),
+        "reviewer.back" => Some("back"),
+        "server.stopping" => Some("stopped"),
+        _ => None,
+    }
+}
+
 /// Active events wake the agent; passive ones ride along with the next active
 /// one in digest mode. Spec 6.2 — including `reviewer.back`, which is active.
 pub fn is_active(event_type: &str) -> bool {
-    matches!(
-        event_type,
-        "chat.sent"
-            | "review.submitted"
-            | "reviewer.idle"
-            | "reviewer.away"
-            | "reviewer.back"
-            | "server.stopping"
-    )
+    await_status(event_type).is_some()
 }
 
 /// Control records the server writes so its own state folds from the log.
@@ -150,6 +162,29 @@ mod tests {
         ] {
             assert!(!is_active(t), "{t} is passive in spec 6.2");
         }
+    }
+
+    #[test]
+    fn every_active_event_has_an_await_status() {
+        // Spec 5 returns a status per active event. Without this, adding an
+        // active type and forgetting its status makes it arrive as `timeout`,
+        // which reads to an agent as "nothing happened".
+        for t in [
+            "chat.sent",
+            "review.submitted",
+            "reviewer.idle",
+            "reviewer.away",
+            "reviewer.back",
+            "server.stopping",
+        ] {
+            assert!(await_status(t).is_some(), "{t} needs an await status");
+        }
+        assert_eq!(await_status("thread.opened"), None);
+        assert_eq!(
+            await_status("reviewer.back"),
+            Some("back"),
+            "the row spec 5's table is missing"
+        );
     }
 
     #[test]

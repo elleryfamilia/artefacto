@@ -202,7 +202,10 @@ use std::sync::Arc;
 pub struct InProcess {
     pub port: u16,
     pub shared: Arc<Shared>,
-    pub dir: Option<tempfile::TempDir>,
+    /// The state directory this server reads and writes.
+    pub path: PathBuf,
+    /// Kept alive for as long as the server is, when the harness owns it.
+    owned: Option<Arc<tempfile::TempDir>>,
     server: Arc<tiny_http::Server>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -213,22 +216,94 @@ impl InProcess {
     }
 
     pub fn start_with_idle(idle: std::time::Duration) -> InProcess {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = Arc::new(tempfile::tempdir().expect("tempdir"));
+        let path = dir.path().to_path_buf();
         let secret = artefacto::server::state_dir::new_secret();
-        InProcess::boot(dir, secret, idle)
+        InProcess::boot(path, Some(dir), secret, idle)
     }
 
-    fn boot(dir: tempfile::TempDir, secret: String, idle: std::time::Duration) -> InProcess {
-        let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").expect("bind"));
+    /// Serve a real repository's state directory, and record this process in
+    /// `server.json`, so the `artefacto` binary run inside that repository
+    /// talks to **this** server.
+    ///
+    /// That is the only way to drive the real CLI against a log the test
+    /// controls: the page and `push` are what normally write events, and
+    /// neither exists yet on the agent side of the loop.
+    pub fn start_in(repo: &Repo) -> InProcess {
+        let path = repo.state_dir();
+        std::fs::create_dir_all(&path).expect("state dir");
+        let secret = artefacto::server::state_dir::new_secret();
+        let server = InProcess::boot(
+            path.clone(),
+            None,
+            secret.clone(),
+            std::time::Duration::from_secs(3600),
+        );
+        artefacto::server::state_dir::write_server_file(
+            &path,
+            &artefacto::server::state_dir::ServerFile {
+                pid: std::process::id(),
+                port: server.port,
+                secret,
+                started_at: "2026-09-10T00:00:00Z".to_string(),
+            },
+        )
+        .expect("server.json");
+        server
+    }
+
+    /// Boot on a repository's existing `server.json`: the same state
+    /// directory, secret, and port a previous server recorded, which is what
+    /// `serve` does when it restarts.
+    pub fn resume_in(repo: &Repo) -> InProcess {
+        let path = repo.state_dir();
+        let previous = artefacto::server::state_dir::read_server_file_any(&path)
+            .expect("a previous server recorded itself");
+        let server = InProcess::boot_on(
+            path.clone(),
+            None,
+            previous.secret.clone(),
+            std::time::Duration::from_secs(3600),
+            previous.port,
+        );
+        artefacto::server::state_dir::write_server_file(
+            &path,
+            &artefacto::server::state_dir::ServerFile {
+                pid: std::process::id(),
+                ..previous
+            },
+        )
+        .expect("server.json");
+        server
+    }
+
+    fn boot(
+        path: PathBuf,
+        owned: Option<Arc<tempfile::TempDir>>,
+        secret: String,
+        idle: std::time::Duration,
+    ) -> InProcess {
+        InProcess::boot_on(path, owned, secret, idle, 0)
+    }
+
+    fn boot_on(
+        path: PathBuf,
+        owned: Option<Arc<tempfile::TempDir>>,
+        secret: String,
+        idle: std::time::Duration,
+        port: u16,
+    ) -> InProcess {
+        let server = Arc::new(bind_retrying(port));
         let port = server.server_addr().to_ip().expect("ip").port();
-        let shared = Arc::new(Shared::new(dir.path(), secret, port).expect("shared"));
+        let shared = Arc::new(Shared::new(&path, secret, port).expect("shared"));
         let s = Arc::clone(&server);
         let sh = Arc::clone(&shared);
         let thread = std::thread::spawn(move || run(sh, s, idle));
         InProcess {
             port,
             shared,
-            dir: Some(dir),
+            path,
+            owned,
             server,
             thread: Some(thread),
         }
@@ -237,10 +312,38 @@ impl InProcess {
     /// Stop this server and start a new one over the **same** state directory
     /// and secret. Everything the new server knows, it read from the log.
     pub fn restart(mut self) -> InProcess {
-        let dir = self.dir.take().expect("a harness restarts once per step");
+        let owned = self.owned.take();
+        let path = self.path.clone();
         let secret = self.shared.secret.clone();
         self.shutdown();
-        InProcess::boot(dir, secret, std::time::Duration::from_secs(3600))
+        InProcess::boot(path, owned, secret, std::time::Duration::from_secs(3600))
+    }
+
+    /// Restart on the **same** port, the way `serve` does. A client that is
+    /// mid-retry reads the port once, so a restart onto a new one would be a
+    /// different failure from the one being tested.
+    pub fn restart_in_place(mut self) -> InProcess {
+        let owned = self.owned.take();
+        let path = self.path.clone();
+        let secret = self.shared.secret.clone();
+        let port = self.port;
+        self.shutdown();
+        // The listener lives in `self`, and it has to be closed before the
+        // next one can take the port. Dropping the harness after booting the
+        // replacement fails with EADDRINUSE, which reads like a flaky test.
+        drop(self);
+        InProcess::boot_on(
+            path,
+            owned,
+            secret,
+            std::time::Duration::from_secs(3600),
+            port,
+        )
+    }
+
+    /// The lease's mode, for tests that need to see `events --follow` attach.
+    pub fn lease_mode(&self) -> Option<String> {
+        artefacto::server::lease::current(&self.shared).map(|h| h.mode.as_str().to_string())
     }
 
     fn shutdown(&mut self) {
@@ -553,5 +656,91 @@ impl FakePage {
             "hello is always first"
         );
         frame["page"].as_u64().expect("a page id")
+    }
+}
+
+/// Bind, waiting for the port if a specific one was asked for.
+///
+/// `tiny_http::Server::drop` sets a close flag and pokes its accept thread
+/// awake, but does not join it, so the listener closes some moments after the
+/// value goes away. A restart onto the same port therefore races the previous
+/// server's teardown. The real `serve` does not care — it falls back to a new
+/// port and the page reports one — but a test that wants the same port has to
+/// wait for it.
+fn bind_retrying(port: u16) -> tiny_http::Server {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match tiny_http::Server::http(("127.0.0.1", port)) {
+            Ok(server) => return server,
+            Err(e) if port != 0 && std::time::Instant::now() < deadline => {
+                let _ = e;
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(e) => panic!("bind 127.0.0.1:{port}: {e}"),
+        }
+    }
+}
+
+/// A spawned `artefacto events --follow`, read line by line.
+///
+/// Lines are pumped off the child's stdout by a thread, so a test can wait for
+/// the next frame with a deadline instead of blocking forever on a pipe.
+pub struct Follower {
+    child: std::process::Child,
+    lines: std::sync::mpsc::Receiver<String>,
+}
+
+impl Follower {
+    pub fn spawn(repo: &Repo, args: &[&str]) -> Follower {
+        let mut child = repo.spawn(args);
+        let stdout = child.stdout.take().expect("piped stdout");
+        let (tx, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
+                if tx.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+        Follower { child, lines }
+    }
+
+    /// The next NDJSON frame, or a panic if none arrives. Bounded, so a
+    /// regression is a failing test rather than a hung job.
+    pub fn next_frame(&mut self) -> serde_json::Value {
+        let line = self
+            .lines
+            .recv_timeout(std::time::Duration::from_secs(15))
+            .expect("a frame should have arrived on stdout");
+        serde_json::from_str(&line).unwrap_or_else(|e| panic!("not a frame: {e}\n{line}"))
+    }
+
+    pub fn no_frame_within(&mut self, d: std::time::Duration) -> bool {
+        self.lines.recv_timeout(d).is_err()
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
+    pub fn wait_code(&mut self) -> i32 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while std::time::Instant::now() < deadline {
+            match self.child.try_wait().expect("try_wait") {
+                Some(status) => return status.code().unwrap_or(-1),
+                None => std::thread::sleep(std::time::Duration::from_millis(20)),
+            }
+        }
+        let _ = self.child.kill();
+        panic!("the follower did not exit");
     }
 }
