@@ -109,9 +109,12 @@ pub fn document(
         "verdict": verdict,
         "base_revision": base_revision,
         "comments": comments,
+        // An answer the reviewer removed is stored as empty text; it is not
+        // an answer.
         "answers": artifact
             .answers
             .iter()
+            .filter(|(_, text)| !text.is_empty())
             .map(|(question, text)| serde_json::json!({ "question": question, "text": text }))
             .collect::<Vec<_>>(),
         "reviewed": artifact.reviewed.iter().collect::<Vec<_>>(),
@@ -226,6 +229,25 @@ mod tests {
         assert_eq!(doc["answers"][0]["question"], "q-ttl");
         assert_eq!(doc["answers"][0]["text"], "an hour");
         assert_eq!(doc["reviewed"][0], "phase:p-one");
+    }
+
+    #[test]
+    fn a_removed_answer_is_not_in_the_document() {
+        let mut review = reviewed();
+        crate::server::fold::apply(
+            &mut review,
+            &ev(
+                6,
+                Actor::Reviewer,
+                "question.answered",
+                serde_json::json!({ "question": "q-ttl", "text": "" }),
+            ),
+        );
+        let doc = document(&review, "plan:demo", "comment", 1);
+        assert!(
+            doc["answers"].as_array().unwrap().is_empty(),
+            "an emptied answer is a removed one: {doc}"
+        );
     }
 
     #[test]

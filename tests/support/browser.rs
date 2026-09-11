@@ -416,6 +416,17 @@ impl Page {
         assert_eq!(ok, true, "no element matches {selector}");
     }
 
+    /// A full-page PNG, for looking at what a reviewer would see.
+    pub fn screenshot(&mut self, path: &std::path::Path) {
+        let r = self.call(
+            "Page.captureScreenshot",
+            serde_json::json!({ "format": "png", "captureBeyondViewport": true }),
+        );
+        let data = r["data"].as_str().expect("screenshot data");
+        let bytes = base64_decode(data);
+        std::fs::write(path, bytes).expect("write screenshot");
+    }
+
     /// Forget every cookie, so the next request is not signed in.
     pub fn clear_cookies(&mut self) {
         self.call("Network.enable", serde_json::json!({}));
@@ -438,3 +449,29 @@ impl Page {
 /// Unused by the harness itself; keeps `Read`/`Write` in scope for callers
 /// that need to speak raw HTTP to the DevTools endpoint.
 fn _keep_traits(_: &dyn Read, _: &dyn Write) {}
+
+/// Standard base64, enough for a screenshot payload; no dependency needed.
+fn base64_decode(text: &str) -> Vec<u8> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut lookup = [255u8; 256];
+    for (i, c) in ALPHABET.iter().enumerate() {
+        lookup[*c as usize] = i as u8;
+    }
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let mut acc: u32 = 0;
+    let mut bits = 0;
+    for b in text.bytes() {
+        let v = lookup[b as usize];
+        if v == 255 {
+            continue;
+        }
+        acc = (acc << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    out
+}

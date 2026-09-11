@@ -1755,9 +1755,9 @@ fn send_review_cannot_be_sent_twice_while_in_flight() {
         1,
         "and only one"
     );
-    assert_eq!(
-        page.text("document.querySelector('.feedback-bar-send').textContent"),
-        "Send review"
+    page.wait_until(
+        "document.querySelector('.feedback-bar-send').textContent === 'Send again'",
+        "the button to settle after its pulse",
     );
 }
 
@@ -2811,4 +2811,141 @@ fn cancelling_the_chat_composer_closes_the_chat() {
         0
     );
     let _ = s;
+}
+
+// --- what real use found ------------------------------------------------------
+
+#[test]
+fn a_phases_comment_sits_under_its_header_not_after_its_last_task() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.eval("(function(){ document.querySelectorAll('details.phase').forEach(function(d){ d.open = true; }); return true; })()");
+    comment(&mut page, "phase:p-core", "on the phase itself");
+    let thread_top = page
+        .eval("document.querySelector('[data-plan-ref=\"phase:p-core\"] .thread[data-thread=\"c-1\"]').getBoundingClientRect().top")
+        .as_f64()
+        .unwrap();
+    let first_task_top = page
+        .eval("document.querySelector('[data-plan-ref=\"phase:p-core\"] .task').getBoundingClientRect().top")
+        .as_f64()
+        .unwrap();
+    assert!(
+        thread_top < first_task_top,
+        "the phase's comment ({thread_top}) is above its first task ({first_task_top})"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('[data-plan-ref=\"phase:p-core\"] .task .thread')"),
+        false,
+        "and not inside any task card"
+    );
+}
+
+#[test]
+fn a_sent_review_is_unmistakable() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    comment(&mut page, "task:t-a", "fine");
+    page.click(".feedback-bar-send");
+    page.wait_until(
+        "document.querySelector('.pv-notice[data-kind=\"sent\"]')",
+        "the sent notice",
+    );
+    let text = page.text("document.querySelector('.pv-notice[data-kind=\"sent\"]').textContent");
+    assert!(
+        text.starts_with("Review sent for revision 1: 1 comment"),
+        "{text}"
+    );
+    assert!(text.contains("The agent has it"), "{text}");
+    page.wait_until(
+        "document.querySelector('.feedback-bar-send').textContent === 'Send again'",
+        "the button to say a second click is a second send",
+    );
+    assert!(page
+        .text("document.querySelector('.feedback-bar-sent').textContent")
+        .starts_with("review sent · rev 1 · "));
+    assert_eq!(s.server().count_events("review.submitted"), 1);
+
+    // A new revision reopens the review, and the notice goes with it.
+    s.edit_plan("Demo plan", "Demo plan, revised");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "revision 2",
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"sent\"]')"),
+        false
+    );
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-send').textContent"),
+        "Send review"
+    );
+}
+
+#[test]
+fn an_answer_can_be_edited_and_removed() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click("[data-plan-ref=\"question:q-ttl\"] .comment-btn");
+    page.type_into(
+        "[data-plan-ref=\"question:q-ttl\"] .composer textarea",
+        "an hour",
+    );
+    page.click("[data-plan-ref=\"question:q-ttl\"] .composer .composer-send");
+    page.wait_until(
+        "!document.querySelector('[data-plan-ref=\"question:q-ttl\"] .composer')",
+        "answered",
+    );
+
+    page.click(".pv-answer[data-answer-for=\"q-ttl\"] .pv-answer-edit");
+    assert_eq!(
+        page.text(
+            "document.querySelector('[data-plan-ref=\"question:q-ttl\"] .composer textarea').value"
+        ),
+        "an hour",
+        "Edit opens the composer with the current answer"
+    );
+    page.type_into(
+        "[data-plan-ref=\"question:q-ttl\"] .composer textarea",
+        "two hours",
+    );
+    page.click("[data-plan-ref=\"question:q-ttl\"] .composer .composer-send");
+    page.wait_until(
+        "document.querySelector('.pv-answer[data-answer-for=\"q-ttl\"] .pv-answer-text').textContent === 'two hours'",
+        "the edited answer",
+    );
+
+    page.click(".pv-answer[data-answer-for=\"q-ttl\"] .pv-answer-remove");
+    page.wait_until(
+        "document.querySelector('.pv-answer[data-answer-for=\"q-ttl\"]').hidden",
+        "the answer to be removed",
+    );
+    assert_eq!(
+        s.server().last_event_of_type("question.answered")["data"]["text"],
+        ""
+    );
+
+    // And a removed answer is not in the review.
+    page.click(".feedback-bar-send");
+    page.wait_until(
+        "document.querySelector('.pv-notice[data-kind=\"sent\"]')",
+        "sent",
+    );
+    let doc = s.server().last_event_of_type("review.submitted")["data"]["feedback"].clone();
+    assert_eq!(doc["answers"].as_array().unwrap().len(), 0, "{doc}");
 }

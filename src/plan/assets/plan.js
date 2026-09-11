@@ -1995,6 +1995,8 @@
         switch (e.type) {
           case "revision.published":
             S.previousTitle = before.title;
+            S.ui.sentAt = null;
+            notice("sent", null);
             if (frame.html && !swapped) {
               swapped = true;
               swapBody(frame.html, S.state.revision);
@@ -2116,7 +2118,7 @@
     function renderNotices() {
       const host = noticeHost();
       host.replaceChildren();
-      ["revision", "nudge", "stopping", "gone", "lost"].forEach(function (kind) {
+      ["sent", "revision", "nudge", "stopping", "gone", "lost"].forEach(function (kind) {
         const n = S.ui["notice:" + kind];
         if (!n) return;
         const node = el("div", { class: "pv-notice", dataset: { kind: kind }, title: n.title });
@@ -2127,6 +2129,26 @@
         if (n.dismiss) node.appendChild(el("button", { type: "button", class: "pv-textbtn pv-notice-dismiss", text: "Dismiss", "aria-label": "Dismiss", onclick: function () { notice(kind, null); } }));
         host.appendChild(node);
       });
+    }
+
+    /* Spec 6.6: what was sent, in the reviewer's terms, where they will see
+       it. Without it a Send review that worked looked like one that did
+       nothing, and got clicked four times. */
+    function sentNotice() {
+      const threads = S.state.threads.filter(function (t) { return t.status !== "unanchored"; });
+      const answers = Object.keys(S.state.answers).filter(function (q) { return S.state.answers[q]; }).length;
+      const parts = [];
+      parts.push(threads.length + (threads.length === 1 ? " comment" : " comments"));
+      parts.push(answers + (answers === 1 ? " answer" : " answers"));
+      const tasks = S.root ? S.root.querySelectorAll('.task[data-plan-ref^="task:"]').length : 0;
+      let k = 0;
+      S.state.reviewed.forEach(function (r) { if (r.indexOf("task:") === 0) k++; });
+      parts.push(k + " of " + tasks + " tasks reviewed");
+      notice("sent",
+        (S.approve ? "Approval sent" : "Review sent") + " for revision " + S.state.revision + ": "
+          + parts.join(", ") + ". The agent has it."
+          + (S.state.presence ? "" : " No agent is attached; it will be delivered when one is."),
+        { dismiss: true });
     }
 
     function revisionNotice(e, applied) {
@@ -2205,6 +2227,7 @@
     function threadNode(t) {
       const node = el("div", { class: "thread", dataset: { thread: t.id } });
       node.appendChild(el("div", { class: "thread-head" },
+        el("span", { class: "thread-label", text: "Comment" }),
         el("span", { class: "thread-id", text: t.id }),
         el("span", { class: "thread-status pv-chip", text: t.status }),
         el("span", { class: "thread-blocking", text: "blocks approval" }),
@@ -2309,10 +2332,17 @@
       taskEls.forEach(function (t) { if (S.state.reviewed.indexOf(t.getAttribute("data-plan-ref")) >= 0) k++; });
       bar.querySelector(".feedback-bar-reviewed").textContent = k + "/" + taskEls.length + " reviewed";
       bar.querySelector(".feedback-bar-approve input").checked = S.approve;
-      bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent · rev " + S.state.revision : "";
+      const when = S.ui.sentAt
+        ? " · " + String(S.ui.sentAt.getHours()).padStart(2, "0") + ":" + String(S.ui.sentAt.getMinutes()).padStart(2, "0")
+        : "";
+      bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent · rev " + S.state.revision + when : "";
       const send = bar.querySelector(".feedback-bar-send");
       send.disabled = S.lost || S.submitting;
-      send.textContent = S.submitting ? "Sending…" : S.approve ? "Send approval" : "Send review";
+      if (!send.classList.contains("is-sent")) {
+        send.textContent = S.submitting ? "Sending…"
+          : S.state.submitted ? (S.approve ? "Send approval again" : "Send again")
+            : S.approve ? "Send approval" : "Send review";
+      }
     }
 
     function renderChat() {
@@ -2376,7 +2406,20 @@
         S.submitting = true;
         renderBar();
         send({ cmd: "review.submit", verdict: S.approve ? "approve" : "comment", base_revision: S.state.revision })
-          .then(function () { S.submitting = false; renderBar(); cleared(document.querySelector(".feedback-bar-send")); })
+          .then(function () {
+            S.submitting = false;
+            S.ui.sentAt = new Date();
+            sentNotice();
+            renderBar();
+            const btn = document.querySelector(".feedback-bar-send");
+            cleared(btn);
+            /* One short pulse on the button the reviewer is looking at. */
+            if (btn) {
+              btn.classList.add("is-sent");
+              btn.textContent = "Sent ✓";
+              setTimeout(function () { btn.classList.remove("is-sent"); renderBar(); }, 2000);
+            }
+          })
           .catch(function (e) {
             S.submitting = false;
             renderBar();
@@ -2677,13 +2720,34 @@
         (slots.btn || target).appendChild(btn);
         if (!first) return;
         const boxHost = slots.box || target;
+        const mounted = [];
         if (isQuestion) {
-          boxHost.appendChild(el("div", { class: "pv-answer", dataset: { answerFor: ref.slice("question:".length) }, hidden: true },
-            el("span", { class: "pv-answer-label", text: "Your answer" }),
-            el("p", { class: "pv-answer-text" })));
+          const q = ref.slice("question:".length);
+          const answer = el("div", { class: "pv-answer", dataset: { answerFor: q }, hidden: true },
+            el("div", { class: "pv-answer-head" },
+              el("span", { class: "pv-answer-label", text: "Your answer" }),
+              el("button", { type: "button", class: "pv-textbtn pv-answer-edit", text: "Edit", onclick: function () {
+                openComposer({ kind: "answer", ref: ref, text: S.state.answers[q] || "" });
+              } }),
+              el("button", { type: "button", class: "pv-textbtn pv-answer-remove", text: "Remove", onclick: function (ev) {
+                const btn = ev.currentTarget;
+                send({ cmd: "question.answer", question: q, text: "", opened_revision: S.state.revision })
+                  .catch(function (e) { failed(btn, e); });
+              } })),
+            el("p", { class: "pv-answer-text" }));
+          mounted.push(answer);
         }
-        boxHost.appendChild(el("div", { class: "pv-threads", dataset: { threadsFor: ref } }));
-        boxHost.appendChild(el("div", { class: "pv-composers", dataset: { composersFor: ref } }));
+        mounted.push(el("div", { class: "pv-threads", dataset: { threadsFor: ref } }));
+        mounted.push(el("div", { class: "pv-composers", dataset: { composersFor: ref } }));
+        /* A phase's body holds its tasks. Its own comments go ABOVE them,
+           under the phase's header, or they read as comments on the last
+           task. Everything else appends after its own text. */
+        if (target.tagName === "DETAILS") {
+          const anchor = boxHost.firstChild;
+          mounted.forEach(function (node) { boxHost.insertBefore(node, anchor); });
+        } else {
+          mounted.forEach(function (node) { boxHost.appendChild(node); });
+        }
       });
 
       /* Reviewed marks on phase and task heads, as the static page has. */

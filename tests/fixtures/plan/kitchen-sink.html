@@ -1982,13 +1982,18 @@ pre code { font-size: 1em; }
 .pv-threads { display: flex; flex-direction: column; gap: 0.625rem; }
 .pv-threads:empty { display: none; }
 .pv-threads:not(:empty) { margin-top: 0.75rem; }
+/* Under a phase's header, above its tasks: room below as well, or the
+   comment runs into the dependencies label. */
+.phase-body > .pv-threads:not(:empty),
+.phase-body > .pv-composers:not(:empty) { margin: 0.25rem 0 1.25rem; }
 
+/* A comment and an answer are the same kind of thing on the page: the
+   reviewer's words, in a card with a mono label row above and the actions
+   below. Only the left border differs, by status. */
 .thread {
-  border: 1px solid var(--rule);
   border-left: 3px solid var(--rule);
-  border-radius: 4px;
-  padding: 0.5rem 0.75rem 0.625rem;
-  background: var(--page);
+  padding: 0.625rem 0.875rem 0.625rem;
+  background: var(--surface);
   max-width: 70ch;
   animation: pv-rise var(--t-mid) var(--ease) both;
 }
@@ -2008,7 +2013,13 @@ pre code { font-size: 1em; }
   color: var(--muted);
 }
 
-.thread-id { font-weight: 500; color: var(--ink); }
+.thread-label {
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.thread-id { color: var(--muted); }
 .thread-status.pv-chip { font-size: 0.625rem; }
 .thread-status.pv-chip-open { color: var(--accent); border-color: var(--accent); }
 .thread-status.pv-chip-changed { color: var(--ok); border-color: var(--ok); }
@@ -2018,7 +2029,7 @@ pre code { font-size: 1em; }
 .thread-blocking[hidden] { display: none; }
 .thread-target { color: var(--warn); }
 
-.thread-msgs { display: flex; flex-direction: column; gap: 0.375rem; margin: 0.5rem 0 0; }
+.thread-msgs { display: flex; flex-direction: column; gap: 0.5rem; margin: 0.375rem 0 0; }
 
 .thread-msg { display: grid; grid-template-columns: 3.25rem 1fr; gap: 0.5rem; align-items: baseline; }
 .thread-actor {
@@ -2032,8 +2043,9 @@ pre code { font-size: 1em; }
 .thread-text {
   margin: 0;
   font-family: var(--font-serif);
-  font-size: 0.9375rem;
+  font-size: 1rem;
   line-height: 1.5;
+  color: var(--ink);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -2060,21 +2072,35 @@ pre code { font-size: 1em; }
 }
 
 .pv-answer {
-  margin-top: 0.625rem;
-  padding: 0.5rem 0.75rem;
+  margin-top: 0.75rem;
+  padding: 0.625rem 0.875rem;
   border-left: 3px solid var(--ok);
   background: var(--surface);
   max-width: 70ch;
 }
 .pv-answer[hidden] { display: none; }
-.pv-answer-label {
+.pv-answer-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.875rem;
   font-family: var(--font-mono);
-  font-size: 0.625rem;
+  font-size: 0.688rem;
+}
+.pv-answer-label {
+  font-weight: 500;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ok);
 }
-.pv-answer-text { margin: 0.25rem 0 0; font-family: var(--font-serif); white-space: pre-wrap; }
+.pv-answer-text {
+  margin: 0.375rem 0 0;
+  font-family: var(--font-serif);
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 .feedback-bar.is-served .feedback-bar-banner { flex: 1 1 10rem; }
 .feedback-bar-sent { color: var(--ok); font-weight: 500; }
@@ -2107,6 +2133,8 @@ pre code { font-size: 1em; }
 }
 .feedback-bar-send:hover:not(:disabled) { filter: brightness(1.08); }
 .feedback-bar-send:disabled { opacity: 0.4; cursor: default; }
+.feedback-bar-send.is-sent { animation: pv-pop var(--t-mid) var(--ease); }
+.pv-notice[data-kind="sent"] { border-left-color: var(--ok); }
 
 .pv-chat {
   position: fixed;
@@ -4158,6 +4186,8 @@ pre code { font-size: 1em; }
         switch (e.type) {
           case "revision.published":
             S.previousTitle = before.title;
+            S.ui.sentAt = null;
+            notice("sent", null);
             if (frame.html && !swapped) {
               swapped = true;
               swapBody(frame.html, S.state.revision);
@@ -4279,7 +4309,7 @@ pre code { font-size: 1em; }
     function renderNotices() {
       const host = noticeHost();
       host.replaceChildren();
-      ["revision", "nudge", "stopping", "gone", "lost"].forEach(function (kind) {
+      ["sent", "revision", "nudge", "stopping", "gone", "lost"].forEach(function (kind) {
         const n = S.ui["notice:" + kind];
         if (!n) return;
         const node = el("div", { class: "pv-notice", dataset: { kind: kind }, title: n.title });
@@ -4290,6 +4320,26 @@ pre code { font-size: 1em; }
         if (n.dismiss) node.appendChild(el("button", { type: "button", class: "pv-textbtn pv-notice-dismiss", text: "Dismiss", "aria-label": "Dismiss", onclick: function () { notice(kind, null); } }));
         host.appendChild(node);
       });
+    }
+
+    /* Spec 6.6: what was sent, in the reviewer's terms, where they will see
+       it. Without it a Send review that worked looked like one that did
+       nothing, and got clicked four times. */
+    function sentNotice() {
+      const threads = S.state.threads.filter(function (t) { return t.status !== "unanchored"; });
+      const answers = Object.keys(S.state.answers).filter(function (q) { return S.state.answers[q]; }).length;
+      const parts = [];
+      parts.push(threads.length + (threads.length === 1 ? " comment" : " comments"));
+      parts.push(answers + (answers === 1 ? " answer" : " answers"));
+      const tasks = S.root ? S.root.querySelectorAll('.task[data-plan-ref^="task:"]').length : 0;
+      let k = 0;
+      S.state.reviewed.forEach(function (r) { if (r.indexOf("task:") === 0) k++; });
+      parts.push(k + " of " + tasks + " tasks reviewed");
+      notice("sent",
+        (S.approve ? "Approval sent" : "Review sent") + " for revision " + S.state.revision + ": "
+          + parts.join(", ") + ". The agent has it."
+          + (S.state.presence ? "" : " No agent is attached; it will be delivered when one is."),
+        { dismiss: true });
     }
 
     function revisionNotice(e, applied) {
@@ -4368,6 +4418,7 @@ pre code { font-size: 1em; }
     function threadNode(t) {
       const node = el("div", { class: "thread", dataset: { thread: t.id } });
       node.appendChild(el("div", { class: "thread-head" },
+        el("span", { class: "thread-label", text: "Comment" }),
         el("span", { class: "thread-id", text: t.id }),
         el("span", { class: "thread-status pv-chip", text: t.status }),
         el("span", { class: "thread-blocking", text: "blocks approval" }),
@@ -4472,10 +4523,17 @@ pre code { font-size: 1em; }
       taskEls.forEach(function (t) { if (S.state.reviewed.indexOf(t.getAttribute("data-plan-ref")) >= 0) k++; });
       bar.querySelector(".feedback-bar-reviewed").textContent = k + "/" + taskEls.length + " reviewed";
       bar.querySelector(".feedback-bar-approve input").checked = S.approve;
-      bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent · rev " + S.state.revision : "";
+      const when = S.ui.sentAt
+        ? " · " + String(S.ui.sentAt.getHours()).padStart(2, "0") + ":" + String(S.ui.sentAt.getMinutes()).padStart(2, "0")
+        : "";
+      bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent · rev " + S.state.revision + when : "";
       const send = bar.querySelector(".feedback-bar-send");
       send.disabled = S.lost || S.submitting;
-      send.textContent = S.submitting ? "Sending…" : S.approve ? "Send approval" : "Send review";
+      if (!send.classList.contains("is-sent")) {
+        send.textContent = S.submitting ? "Sending…"
+          : S.state.submitted ? (S.approve ? "Send approval again" : "Send again")
+            : S.approve ? "Send approval" : "Send review";
+      }
     }
 
     function renderChat() {
@@ -4539,7 +4597,20 @@ pre code { font-size: 1em; }
         S.submitting = true;
         renderBar();
         send({ cmd: "review.submit", verdict: S.approve ? "approve" : "comment", base_revision: S.state.revision })
-          .then(function () { S.submitting = false; renderBar(); cleared(document.querySelector(".feedback-bar-send")); })
+          .then(function () {
+            S.submitting = false;
+            S.ui.sentAt = new Date();
+            sentNotice();
+            renderBar();
+            const btn = document.querySelector(".feedback-bar-send");
+            cleared(btn);
+            /* One short pulse on the button the reviewer is looking at. */
+            if (btn) {
+              btn.classList.add("is-sent");
+              btn.textContent = "Sent ✓";
+              setTimeout(function () { btn.classList.remove("is-sent"); renderBar(); }, 2000);
+            }
+          })
           .catch(function (e) {
             S.submitting = false;
             renderBar();
@@ -4840,13 +4911,34 @@ pre code { font-size: 1em; }
         (slots.btn || target).appendChild(btn);
         if (!first) return;
         const boxHost = slots.box || target;
+        const mounted = [];
         if (isQuestion) {
-          boxHost.appendChild(el("div", { class: "pv-answer", dataset: { answerFor: ref.slice("question:".length) }, hidden: true },
-            el("span", { class: "pv-answer-label", text: "Your answer" }),
-            el("p", { class: "pv-answer-text" })));
+          const q = ref.slice("question:".length);
+          const answer = el("div", { class: "pv-answer", dataset: { answerFor: q }, hidden: true },
+            el("div", { class: "pv-answer-head" },
+              el("span", { class: "pv-answer-label", text: "Your answer" }),
+              el("button", { type: "button", class: "pv-textbtn pv-answer-edit", text: "Edit", onclick: function () {
+                openComposer({ kind: "answer", ref: ref, text: S.state.answers[q] || "" });
+              } }),
+              el("button", { type: "button", class: "pv-textbtn pv-answer-remove", text: "Remove", onclick: function (ev) {
+                const btn = ev.currentTarget;
+                send({ cmd: "question.answer", question: q, text: "", opened_revision: S.state.revision })
+                  .catch(function (e) { failed(btn, e); });
+              } })),
+            el("p", { class: "pv-answer-text" }));
+          mounted.push(answer);
         }
-        boxHost.appendChild(el("div", { class: "pv-threads", dataset: { threadsFor: ref } }));
-        boxHost.appendChild(el("div", { class: "pv-composers", dataset: { composersFor: ref } }));
+        mounted.push(el("div", { class: "pv-threads", dataset: { threadsFor: ref } }));
+        mounted.push(el("div", { class: "pv-composers", dataset: { composersFor: ref } }));
+        /* A phase's body holds its tasks. Its own comments go ABOVE them,
+           under the phase's header, or they read as comments on the last
+           task. Everything else appends after its own text. */
+        if (target.tagName === "DETAILS") {
+          const anchor = boxHost.firstChild;
+          mounted.forEach(function (node) { boxHost.insertBefore(node, anchor); });
+        } else {
+          mounted.forEach(function (node) { boxHost.appendChild(node); });
+        }
       });
 
       /* Reviewed marks on phase and task heads, as the static page has. */
