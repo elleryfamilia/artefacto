@@ -10,7 +10,7 @@
 //! Takes `core` briefly for the bootstrap table. Never while holding
 //! `sockets`, and never across I/O.
 
-use crate::server::http::{error_response, header, json_response, Shared};
+use crate::server::http::{error_response, header, json_response, Committer, Shared};
 use crate::server::state_dir::new_secret;
 use anyhow::{bail, Result};
 use std::io::Cursor;
@@ -132,9 +132,13 @@ pub fn nonce() -> String {
 /// Spec 8. No `sandbox` directive: it makes the origin opaque, which breaks
 /// the cookie the page authenticates with.
 pub fn csp_header(port: u16, nonce: &str) -> Header {
+    // `connect-src` names the socket and the page's own origin: commands
+    // are POSTed over HTTP and the page catches up from `/state`, so the
+    // socket alone would leave a page that can listen but never speak.
     let policy = format!(
         "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; \
-         img-src data:; font-src data:; connect-src ws://127.0.0.1:{port}; \
+         img-src data:; font-src data:; \
+         connect-src ws://127.0.0.1:{port} http://127.0.0.1:{port}; \
          base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     );
     Header::from_bytes(&b"Content-Security-Policy"[..], policy.as_bytes()).expect("csp header")
@@ -192,6 +196,140 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// The current revision of `artifact`, rendered. `None` when nothing has
+/// been pushed for it; an error when the log holds a plan the renderer will
+/// not take, which a validated push cannot produce.
+pub fn render_artifact(shared: &Shared, artifact: &str) -> Result<Option<(u32, String)>> {
+    let Some((revision, plan)) = crate::server::http::with_review(shared, |r| {
+        r.artifacts
+            .get(artifact)
+            .map(|a| (a.revision, a.plan.clone()))
+    }) else {
+        return Ok(None);
+    };
+    Ok(Some((revision, render_plan(&plan)?)))
+}
+
+/// Render the plan a `revision.published` event carries. The server validates
+/// on push, so this is the same document `plan render` would write.
+pub fn render_plan(plan: &serde_json::Value) -> Result<String> {
+    let raw = serde_json::to_string(plan)?;
+    let parsed = crate::plan::model::parse(&raw, false).map_err(|issues| {
+        let first = issues
+            .first()
+            .map(|i| format!("{}: {}", i.path, i.message))
+            .unwrap_or_default();
+        anyhow::anyhow!("the stored plan does not render: {first}")
+    })?;
+    Ok(crate::plan::render::render(&parsed.plan))
+}
+
+/// The served page is the render plus two attributes on `<body>`: the artifact
+/// id and the revision. Their presence is how the script knows it was served
+/// rather than opened from a file, which selects the server-mode store.
+pub fn served_document(rendered: &str, artifact: &str, revision: u32) -> String {
+    rendered.replacen(
+        "<body",
+        &format!(
+            "<body data-artefacto-artifact=\"{}\" data-artefacto-revision=\"{revision}\"",
+            html_escape(artifact).replace('"', "&quot;")
+        ),
+        1,
+    )
+}
+
+/// `<body …>…</body>` of a render, without the page's own script.
+///
+/// This is what a push delivers and what `/state` returns: the page it lands
+/// in already has the stylesheet and the script, and a second copy of the
+/// script would not run anyway — markup inserted through `innerHTML` never
+/// executes — but it would sit in the document as a lie. The data island is
+/// kept; it is the plan the script reads.
+pub fn body_fragment(rendered: &str) -> Option<String> {
+    let start = rendered.find("<body")?;
+    let end = rendered.rfind("</body>")? + "</body>".len();
+    let body = &rendered[start..end];
+    // The render emits the script as a bare `<script>` and the island as
+    // `<script type=…>`, so the bare form identifies the script alone.
+    let Some(s) = body.rfind("<script>") else {
+        return Some(body.to_string());
+    };
+    let Some(len) = body[s..].find("</script>") else {
+        return Some(body.to_string());
+    };
+    let mut out = String::with_capacity(body.len());
+    out.push_str(&body[..s]);
+    out.push_str(&body[s + len + "</script>".len()..]);
+    Some(out)
+}
+
+/// Everything a page needs to show a review from nothing: the rendered body,
+/// the raw plan, the folded threads, answers, marks and chat, who holds the
+/// lease, and the log's high-water mark.
+///
+/// Read under the commit gate, so `last_seq` and the state describe the same
+/// moment. Read separately, an event landing between the two reads is either
+/// counted twice or never — the page skips logged events at or below
+/// `last_seq` when it catches up, and that only works if the state includes
+/// every one of them.
+pub fn state_json(shared: &Arc<Shared>, artifact: &str) -> Result<Option<serde_json::Value>> {
+    let snapshot = {
+        let c = Committer::open(shared);
+        let Some(art) = c.with_review(|r| r.artifacts.get(artifact).cloned()) else {
+            return Ok(None);
+        };
+        let last_seq = shared.log.lock().unwrap().last_seq();
+        (art, last_seq)
+    };
+    let (art, last_seq) = snapshot;
+    let presence = crate::server::lease::current(shared)
+        .map(|h| serde_json::json!({ "agent": h.agent, "mode": h.mode }));
+    let html = body_fragment(&render_plan(&art.plan)?).unwrap_or_default();
+    Ok(Some(serde_json::json!({
+        "ok": true,
+        "artifact": art.id,
+        "revision": art.revision,
+        "plan_hash": art.plan_hash,
+        "plan": art.plan,
+        "html": html,
+        "threads": art.threads,
+        "answers": art.answers,
+        "reviewed": art.reviewed,
+        "chat": art.chat,
+        "submitted": art.submitted,
+        "presence": presence,
+        "last_seq": last_seq,
+    })))
+}
+
+/// `GET /a/<artifact>/state`. A same-origin GET carries no `Origin` header,
+/// so this takes the navigation rule: absent or exact.
+pub fn handle_state(shared: &Arc<Shared>, request: Request, artifact: &str) {
+    if !cookie_ok(&request, shared) {
+        let _ = request.respond(error_response(401, "unauthorized", "no session cookie"));
+        return;
+    }
+    if !origin_ok_navigation(&request, shared.port) {
+        let _ = request.respond(error_response(403, "bad_origin", "origin not allowed"));
+        return;
+    }
+    match state_json(shared, artifact) {
+        Ok(Some(state)) => {
+            let _ = request.respond(json_response(200, &state.to_string()));
+        }
+        Ok(None) => {
+            let _ = request.respond(error_response(
+                404,
+                "not_found",
+                "no revision has been pushed for this artifact",
+            ));
+        }
+        Err(e) => {
+            let _ = request.respond(error_response(500, "render_failed", &format!("{e:#}")));
+        }
+    }
+}
+
 pub fn serve_page(shared: &Arc<Shared>, request: Request, artifact: &str) {
     if !cookie_ok(&request, shared) {
         let _ = request.respond(error_response(401, "unauthorized", "no session cookie"));
@@ -201,8 +339,16 @@ pub fn serve_page(shared: &Arc<Shared>, request: Request, artifact: &str) {
         let _ = request.respond(error_response(403, "bad_origin", "origin not allowed"));
         return;
     }
+    let document = match render_artifact(shared, artifact) {
+        Ok(Some((revision, rendered))) => served_document(&rendered, artifact, revision),
+        Ok(None) => placeholder_document(artifact),
+        Err(e) => {
+            let _ = request.respond(error_response(500, "render_failed", &format!("{e:#}")));
+            return;
+        }
+    };
     let n = nonce();
-    let html = stamp_nonce(&placeholder_document(artifact), &n);
+    let html = stamp_nonce(&document, &n);
     let response = Response::from_string(html)
         .with_header(
             Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
@@ -278,6 +424,42 @@ mod tests {
         assert_eq!(doc.matches("<style").count(), 1);
         let out = stamp_nonce(&doc, "n");
         assert_eq!(out.matches("nonce=\"n\"").count(), 2);
+    }
+
+    #[test]
+    fn the_body_fragment_keeps_the_island_and_drops_the_script() {
+        let html = real_render();
+        let body = body_fragment(&html).expect("a body");
+        assert!(body.starts_with("<body"));
+        assert!(body.ends_with("</body>"));
+        assert!(body.contains("id=\"plan-data\""));
+        assert!(!body.contains("<style"), "the head stays behind");
+        assert_eq!(
+            body.matches("<script").count(),
+            1,
+            "the island only; the page's script must not travel"
+        );
+        assert!(
+            !body.contains("window.artefactoPlan"),
+            "no trace of the script"
+        );
+    }
+
+    #[test]
+    fn the_served_document_marks_the_body_once() {
+        let html = real_render();
+        let served = served_document(&html, "plan:auth-refactor", 3);
+        assert_eq!(
+            served
+                .matches("data-artefacto-artifact=\"plan:auth-refactor\"")
+                .count(),
+            1
+        );
+        assert!(served.contains("data-artefacto-revision=\"3\""));
+        assert!(
+            served.contains("<body data-artefacto-artifact="),
+            "on the body's own tag, where the script looks"
+        );
     }
 
     #[test]

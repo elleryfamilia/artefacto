@@ -67,6 +67,13 @@ pub struct Frame {
     pub format: String,
     pub seq: u64,
     pub events: Vec<Event>,
+    /// The rendered body, on the frame the socket delivers for a push. Spec
+    /// 4.3 wants the page to receive "one snapshot holding the rendered body,
+    /// thread state, and resolutions together", and the events alone carry
+    /// the raw plan. Never on an agent's frame: those are built from the log,
+    /// and the log holds the plan, not its rendering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
 }
 
 impl Frame {
@@ -78,6 +85,7 @@ impl Frame {
             format: FRAME_FORMAT.to_string(),
             seq,
             events,
+            html: None,
         }
     }
 }

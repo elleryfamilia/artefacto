@@ -551,10 +551,15 @@ impl InProcess {
             Actor::Agent,
             "revision.published",
             serde_json::json!({
+                // Valid under the strict parser, because the page renders
+                // what the log holds and a push only ever stores what
+                // validated.
                 "plan": {
                     "format": "artefacto.plan/1",
                     "meta": { "id": "demo", "title": "Demo" },
-                    "phases": [{ "id": "p-one", "tasks": [{ "id": "t-a" }, { "id": "t-b" }] }]
+                    "phases": [{ "id": "p-one", "title": "Phase one", "tasks": [
+                        { "id": "t-a", "title": "Task A" }, { "id": "t-b", "title": "Task B" }
+                    ] }]
                 },
                 "plan_hash": "sha256:abc",
                 "source_path": "/tmp/demo.json",
@@ -820,5 +825,17 @@ impl Follower {
         }
         let _ = self.child.kill();
         panic!("the follower did not exit");
+    }
+}
+
+impl FakePage {
+    /// The whole hello frame, for tests that read more than the page id.
+    pub fn hello_frame(&mut self) -> serde_json::Value {
+        let frame = self.next_frame();
+        assert_eq!(
+            frame["format"], "artefacto.hello/1",
+            "hello is always first"
+        );
+        frame
     }
 }

@@ -407,3 +407,81 @@ fn a_token_superseded_during_validation_is_refused_inside_the_gate() {
     );
     assert_eq!(server.last_seq(), before, "and nothing was appended");
 }
+
+// --- what the page receives -------------------------------------------------
+
+#[test]
+fn a_push_frame_carries_the_rendered_body_to_pages_and_nothing_to_agents() {
+    // Spec 4.3: the page gets one snapshot holding the rendered body, the
+    // thread state, and the resolutions together. The body rides on the frame
+    // the socket delivers; the agent's frame, which comes from the log, never
+    // carries it.
+    let (repo, server, plan) = attached();
+    push_json(&repo, &plan, &[]);
+    let cookie = server.session_cookie("plan:demo");
+    let opened = server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "thread.open", "client_id": "cid-1", "ref": "task:t-a",
+            "text": "x", "opened_revision": 1,
+        }),
+    );
+    let thread = opened["assigned"].as_str().unwrap().to_string();
+
+    let mut page = server.connect_page();
+    page.hello();
+    let resolutions = repo.path().join("resolutions.json");
+    std::fs::write(
+        &resolutions,
+        serde_json::json!([{ "thread": thread, "status": "changed", "note": "done" }]).to_string(),
+    )
+    .unwrap();
+    // The same plan, retitled: a second revision of the same artifact.
+    let second = repo.path().join("plan.json");
+    let revised = std::fs::read_to_string(&second)
+        .unwrap()
+        .replace("Demo plan", "Demo plan, revised");
+    std::fs::write(&second, revised).unwrap();
+    let v = push_json(
+        &repo,
+        second.to_str().unwrap(),
+        &[
+            "--base-revision",
+            "1",
+            "--resolutions",
+            resolutions.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(v["revision"], 2);
+
+    let frame = page.next_frame();
+    assert_eq!(frame["events"][0]["type"], "revision.published");
+    assert_eq!(frame["events"][1]["type"], "thread.resolved");
+    let html = frame["html"]
+        .as_str()
+        .expect("the rendered body rides with the frame");
+    assert!(html.starts_with("<body"));
+    assert!(
+        html.contains("Demo plan, revised"),
+        "the body is the new revision's"
+    );
+    assert!(html.contains("id=\"plan-data\""));
+    assert!(!html.contains("<style"));
+    assert!(
+        frame["events"][0]["data"].get("html").is_none(),
+        "the event itself is what the log holds"
+    );
+
+    let out = repo.run(&["await", "--timeout", "2s", "--agent", "codex", "--takeover"]);
+    let r: serde_json::Value = serde_json::from_str(out.success().stdout.trim()).unwrap();
+    assert!(
+        r.get("html").is_none(),
+        "an agent's frame comes from the log and carries no body"
+    );
+    assert!(
+        !out.stdout.contains("<body"),
+        "and no rendered markup leaks into the agent's transcript"
+    );
+    let _ = server;
+}

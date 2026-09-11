@@ -277,6 +277,9 @@ fn handle(shared: &Arc<Shared>, request: Request) {
         if let Some(artifact) = rest.strip_suffix("/cmd") {
             return crate::server::ingress::handle_command(shared, request, artifact);
         }
+        if let Some(artifact) = rest.strip_suffix("/state") {
+            return crate::server::page::handle_state(shared, request, artifact);
+        }
         return crate::server::page::serve_page(shared, request, rest);
     }
     if url == "/healthz" {

@@ -173,7 +173,21 @@ pub fn handle_upgrade(shared: &Arc<Shared>, request: Request) {
     // Always the first frame. The page needs its own id so it can put it in
     // the commands it POSTs; `broadcast_except` then skips it, and it does not
     // count its own change twice.
-    let hello = serde_json::json!({ "format": HELLO_FORMAT, "page": id }).to_string();
+    //
+    // It also carries who holds the lease right now. Presence is announced on
+    // change only, so a page that connects after the agent attached would
+    // otherwise never be told there is one. And the log's high-water mark, so
+    // the page knows where the state it is about to fetch begins.
+    let last_seq = shared.log.lock().unwrap().last_seq();
+    let presence = crate::server::lease::current(shared)
+        .map(|h| serde_json::json!({ "agent": h.agent, "mode": h.mode }));
+    let hello = serde_json::json!({
+        "format": HELLO_FORMAT,
+        "page": id,
+        "presence": presence,
+        "last_seq": last_seq,
+    })
+    .to_string();
     if ws.send(Message::text(hello)).is_err() {
         shared.sockets.pages.lock().unwrap().retain(|p| p.id != id);
         return;

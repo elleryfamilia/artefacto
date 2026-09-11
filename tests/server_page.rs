@@ -294,3 +294,195 @@ fn a_malformed_upgrade_is_refused_before_the_takeover() {
     assert_eq!(status_of(&r), 400);
     assert!(r.contains("bad_handshake"));
 }
+
+// --- the served plan --------------------------------------------------------
+
+#[test]
+fn the_page_serves_the_pushed_plan_and_names_its_artifact() {
+    let s = InProcess::start();
+    s.seed_artifact();
+    let cookie = s.session_cookie("plan:demo");
+    let r = s.get("/a/plan:demo", &[("Cookie", &cookie)]);
+    assert_eq!(status_of(&r), 200);
+    let body = r.split("\r\n\r\n").nth(1).expect("a body");
+    assert!(body.contains("Demo"), "the plan's title is on the page");
+    assert!(
+        body.contains("id=\"plan-data\""),
+        "the plan island the page's script reads"
+    );
+    assert!(
+        body.contains("data-artefacto-artifact=\"plan:demo\""),
+        "the page learns which artifact it is, and that it was served, from the body"
+    );
+    assert!(
+        !body.contains("No revision has been pushed"),
+        "not the placeholder"
+    );
+}
+
+#[test]
+fn an_artifact_nobody_has_pushed_gets_the_placeholder() {
+    let s = InProcess::start();
+    let cookie = s.session_cookie("plan:nothing");
+    let r = s.get("/a/plan:nothing", &[("Cookie", &cookie)]);
+    assert_eq!(status_of(&r), 200);
+    assert!(r.contains("No revision has been pushed"));
+}
+
+#[test]
+fn the_served_plan_is_stamped_and_carries_no_meta_policy() {
+    // The real render carries a meta CSP with no connect-src; left in place it
+    // blocks the socket. And every one of its inline tags must be stamped.
+    let s = InProcess::start();
+    s.seed_artifact();
+    let cookie = s.session_cookie("plan:demo");
+    let r = s.get("/a/plan:demo", &[("Cookie", &cookie)]);
+    let body = r.split("\r\n\r\n").nth(1).expect("a body");
+    let nonce = r
+        .split("'nonce-")
+        .nth(1)
+        .and_then(|x| x.split('\'').next())
+        .expect("a nonce in the header");
+    assert!(!body.contains("http-equiv=\"Content-Security-Policy\""));
+    let opens = body.matches("<script").count() + body.matches("<style").count();
+    assert!(opens >= 3, "a style, a data island, and the script");
+    assert_eq!(body.matches(&format!("nonce=\"{nonce}\"")).count(), opens);
+}
+
+#[test]
+fn the_csp_lets_the_page_post_commands_and_fetch_its_state() {
+    // Commands go over HTTP, not the socket, so `connect-src` has to name the
+    // page's own origin as well as the socket's.
+    let s = InProcess::start();
+    let cookie = s.session_cookie("plan:x");
+    let r = s.get("/a/plan:x", &[("Cookie", &cookie)]);
+    let csp = r
+        .lines()
+        .find(|l| {
+            l.to_ascii_lowercase()
+                .starts_with("content-security-policy:")
+        })
+        .expect("a CSP header");
+    assert!(
+        csp.contains(&format!("http://127.0.0.1:{}", s.port)),
+        "{csp}"
+    );
+    assert!(csp.contains(&format!("ws://127.0.0.1:{}", s.port)), "{csp}");
+}
+
+// --- the state route --------------------------------------------------------
+
+#[test]
+fn the_state_route_returns_the_folded_review_and_the_rendered_body() {
+    let s = InProcess::start();
+    s.seed_artifact();
+    let cookie = s.session_cookie("plan:demo");
+    s.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "thread.open", "client_id": "cid-1", "ref": "task:t-a",
+            "text": "why?", "blocking": true, "opened_revision": 1,
+        }),
+    );
+    s.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({ "cmd": "element.reviewed", "client_id": "cid-2", "ref": "task:t-b", "on": true }),
+    );
+
+    let r = s.get("/a/plan:demo/state", &[("Cookie", &cookie)]);
+    assert_eq!(status_of(&r), 200);
+    let body = r.split("\r\n\r\n").nth(1).expect("a body");
+    let v: serde_json::Value = serde_json::from_str(body).expect("json");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["artifact"], "plan:demo");
+    assert_eq!(v["revision"], 1);
+    assert_eq!(v["plan_hash"], "sha256:abc");
+    assert_eq!(v["threads"][0]["id"], "c-1");
+    assert_eq!(v["threads"][0]["target"], "task:t-a");
+    assert_eq!(v["threads"][0]["status"], "open");
+    assert_eq!(v["threads"][0]["messages"][0]["text"], "why?");
+    assert_eq!(v["reviewed"][0], "task:t-b");
+    assert_eq!(v["submitted"], false);
+    assert!(v["presence"].is_null(), "no agent has attached");
+    assert_eq!(v["last_seq"], s.last_seq());
+    assert!(
+        v["plan"]["phases"].is_array(),
+        "the raw plan, for re-anchoring"
+    );
+    let html = v["html"].as_str().expect("the rendered body");
+    assert!(html.starts_with("<body"), "{}", &html[..40.min(html.len())]);
+    assert!(html.trim_end().ends_with("</body>"));
+    assert!(
+        html.contains("id=\"plan-data\""),
+        "the island travels with the body"
+    );
+    assert!(
+        !html.contains("<style"),
+        "the stylesheet is already on the page"
+    );
+    assert_eq!(
+        html.matches("<script").count(),
+        1,
+        "only the data island; the page's own script must not run twice"
+    );
+}
+
+#[test]
+fn the_state_route_reports_the_lease_holder() {
+    let s = InProcess::start();
+    s.seed_artifact();
+    artefacto::server::lease::acquire(
+        &s.shared,
+        artefacto::server::lease::Claim::waiting("claude"),
+    )
+    .unwrap();
+    let cookie = s.session_cookie("plan:demo");
+    let r = s.get("/a/plan:demo/state", &[("Cookie", &cookie)]);
+    let body = r.split("\r\n\r\n").nth(1).expect("a body");
+    let v: serde_json::Value = serde_json::from_str(body).expect("json");
+    assert_eq!(v["presence"]["agent"], "claude");
+    assert_eq!(v["presence"]["mode"], "waiting");
+}
+
+#[test]
+fn the_state_route_needs_the_cookie_and_knows_no_unknown_artifact() {
+    let s = InProcess::start();
+    s.seed_artifact();
+    assert_eq!(status_of(&s.get("/a/plan:demo/state", &[])), 401);
+    let cookie = s.session_cookie("plan:demo");
+    assert_eq!(
+        status_of(&s.get("/a/plan:nothing/state", &[("Cookie", &cookie)])),
+        404
+    );
+}
+
+// --- what the socket says first ---------------------------------------------
+
+#[test]
+fn hello_carries_the_presence_at_the_moment_of_connecting() {
+    // Presence is announced on change only, so a page that connects after
+    // the agent attached would otherwise never be told there is one.
+    let s = InProcess::start();
+    s.seed_artifact();
+    artefacto::server::lease::acquire(
+        &s.shared,
+        artefacto::server::lease::Claim::waiting("claude"),
+    )
+    .unwrap();
+    let mut page = s.connect_page();
+    let hello = page.hello_frame();
+    assert_eq!(hello["presence"]["agent"], "claude");
+    assert_eq!(hello["presence"]["mode"], "waiting");
+    assert_eq!(hello["last_seq"], s.last_seq());
+}
+
+#[test]
+fn hello_says_no_agent_when_there_is_none() {
+    let s = InProcess::start();
+    let mut page = s.connect_page();
+    let hello = page.hello_frame();
+    assert!(hello["presence"].is_null());
+    assert!(hello["page"].is_u64());
+}

@@ -145,7 +145,11 @@ pub fn handle_push(shared: &Arc<Shared>, mut request: Request, query: &Query) {
 
     match commit(shared, &session, &body) {
         Ok(done) => {
-            crate::server::socket::broadcast(shared, &done.frame);
+            // Pages get the body with the events, as one frame. The frame an
+            // agent receives is built from the log and never sees this.
+            let mut page_frame = done.frame.clone();
+            page_frame.html = Some(done.html);
+            crate::server::socket::broadcast(shared, &page_frame);
             let mut result = done.result;
             result["session"] = serde_json::json!(session.token);
             let _ = request.respond(json_response(200, &result.to_string()));
@@ -160,6 +164,8 @@ pub fn handle_push(shared: &Arc<Shared>, mut request: Request, query: &Query) {
 pub struct Published {
     pub result: serde_json::Value,
     pub frame: Frame,
+    /// The rendered `<body>` of this revision, for the page's frame.
+    pub html: String,
 }
 
 /// Validate, check the token and the base revision, append, and fold — all
@@ -188,6 +194,10 @@ pub fn commit(
     let plan = parsed.plan;
     let artifact = artifact_id(&plan);
     let plan_hash = model::plan_hash(&plan);
+    // Rendered before the gate opens: it is a pure function of the plan, and
+    // nothing else should wait on it.
+    let html =
+        crate::server::page::body_fragment(&crate::plan::render::render(&plan)).unwrap_or_default();
 
     let committer = Committer::open(shared);
     lease::validate(shared, &session.token).map_err(Refusal::Lease)?;
@@ -295,6 +305,7 @@ pub fn commit(
             "revision_seq": events.last().map(|e| e.seq).unwrap_or(0),
         }),
         frame: Frame::of(events),
+        html,
     })
 }
 
