@@ -21,8 +21,8 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-413 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
-clean. Fifty-five of the tests run the served page in a headless Chromium;
+416 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+clean. Fifty-eight of the tests run the served page in a headless Chromium;
 they skip with a printed line on a machine without one (see "Plan 3" below).
 
 | area | file | notes |
@@ -293,7 +293,7 @@ one the tests print a skip line and pass, and `ARTEFACTO_REQUIRE_BROWSER=1`
 makes that a failure. **CI must install a Chromium or set that variable**, or
 the browser suite is silently green.
 
-The fifty-five tests cover the loop end to end and the races spec 14 names:
+The fifty-eight tests cover the loop end to end and the races spec 14 names:
 a push while typing (draft kept, `opened_revision` is the old one), a draft
 and a thread whose element was removed (recovery panel, re-anchoring when it
 returns), focus and caret across a push, scroll anchored to an element across
@@ -570,10 +570,44 @@ closed in commit `3403a82`:
    line's `preventDefault` is the mechanism. Removed, with the redundant
    `stopPropagation`.
 
-The mutation pass caught three of five. The survivors are the two
+The mutation pass caught three of five. The survivors were the two
 live-socket guards: with the timer gone, a superseded probe's own
-`connect()` is a no-op on a live socket, so nothing reaches them. They stay
-as defence.
+`connect()` is a no-op on a live socket, so nothing reaches them. Round
+twelve found the first of them dead by construction and removed it; the
+probe-callback guard stays as defence.
+
+## Review round twelve: the sixth fix slice, reviewed fresh, and why the loop stops
+
+An eighth fresh reviewer read commit `3403a82` and drove it. Three confirmed
+defects, all low to medium and none in the reconnect logic, two test-strength
+gaps, and two suspicions, all closed in commit `44376f9`:
+
+1. **Focus in a chat composer nobody had typed into was lost across a
+   push**: it had no draft to be restored from, and its replacement got a
+   new id the focus restore could not find. The panel's composer keeps one
+   id per page load, however it was opened.
+2. **Retry cleared the notice but left the pill saying "server gone"** until
+   the next attempt settled. It renders the pill.
+3. **Cancel on the chat's only composer was undone by the next render**,
+   which gave the open panel a composer back. Cancel closes the chat.
+4. A guard in `scheduleReconnect` was dead by construction (the socket is
+   always null there) and is gone; the lost path's render had no test and
+   has one.
+5. **A lost page discarded the reviewer's own buffered replies**, so a mark
+   the server had accepted showed unchecked. It applies them before it
+   stops.
+
+The mutation pass caught four of four.
+
+**The loop stops here.** Eight rounds on the page found 5, 9, 8, 3, 5, 2, 2
+and 3 confirmed defects. Every real finding after round seven was in the
+reconnect and catch-up machinery, and from round eight on the most serious
+finding in each round was a regression introduced by the previous round's
+fix. Round twelve's reviewer found nothing in that machinery. What remains
+is the polish and test-strength level, and a ninth round would be paid for
+in the same coin as the last three: one narrow finding, one regression from
+fixing it. The judgement is recorded here rather than tested for: the
+next real finding on the page will come from use, not from another read.
 
 ## Where the code diverges from plan 2b, with the reason
 
@@ -738,7 +772,9 @@ storing an empty draft, and a lost page left catching up. Round eleven's
 fixes: an open panel left without a composer after a swap, (survived,
 redundant) a reconnect scheduled on a live socket, superseded read as
 failed, a lost page keeping its pending marks, and (survived, redundant) a
-probe result applied on a live socket.
+probe result applied on a live socket. Round twelve's fixes: the chat
+composer's id not stable across a swap, Retry not rendering the pill,
+Cancel not closing the chat, and a lost page dropping its accepted writes.
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,
