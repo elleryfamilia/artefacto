@@ -2292,6 +2292,11 @@ fn a_gone_artifact_found_by_the_probe_reads_as_lost_everywhere() {
     assert!(page
         .text("document.querySelector('.pv-notice[data-kind=\"lost\"]').textContent")
         .contains("no longer on the server"));
+    assert_eq!(
+        page.eval("window.artefactoPlan.debug().syncing"),
+        false,
+        "a lost page is not left catching up with a buffer nobody empties"
+    );
 }
 
 #[test]
@@ -2388,6 +2393,11 @@ fn a_sent_chat_message_leaves_a_place_for_the_next() {
         ""
     );
     let _ = s;
+    assert_eq!(
+        page.eval("Object.keys(window.artefactoPlan.debug().drafts).length"),
+        0,
+        "a composer nobody has typed into is not a draft"
+    );
 }
 
 // --- the round-nine fix slice, reviewed fresh ---------------------------------
