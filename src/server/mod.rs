@@ -12,6 +12,7 @@
 //! guard.
 
 pub mod daemon;
+pub mod delivery;
 pub mod event;
 pub mod fold;
 pub mod http;

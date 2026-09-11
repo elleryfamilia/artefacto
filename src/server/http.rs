@@ -56,6 +56,9 @@ pub struct Core {
     /// It is not folded from the log on purpose: liveness is about this
     /// process, so a replayed lease starts its TTL fresh.
     pub lease_seen_ms: i64,
+    /// The frame last handed to a session, waiting for that session's next
+    /// call to acknowledge it. See `delivery::offer`.
+    pub last_offer: Option<crate::server::delivery::Offer>,
 }
 
 pub struct Shared {
@@ -88,6 +91,7 @@ impl Shared {
                 last_request_at: Instant::now(),
                 last_reviewer_activity_at: Instant::now(),
                 lease_seen_ms: 0,
+                last_offer: None,
             }),
             sockets: Default::default(),
             page_cookie: derive_credential(&secret, "page-cookie"),

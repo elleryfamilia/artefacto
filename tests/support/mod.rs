@@ -399,6 +399,43 @@ impl InProcess {
         "plan:demo".to_string()
     }
 
+    /// Append one event the way the server would, for tests that need a log
+    /// to deliver from. Returns its `seq`.
+    pub fn log_event(
+        &self,
+        actor: artefacto::server::event::Actor,
+        kind: &str,
+        data: serde_json::Value,
+    ) -> u64 {
+        let c = artefacto::server::http::Committer::open(&self.shared);
+        c.append("plan:demo", 1, actor, kind, data)
+            .expect("append")
+            .seq
+    }
+
+    pub fn log_reviewer(&self, kind: &str) -> u64 {
+        self.log_event(
+            artefacto::server::event::Actor::Reviewer,
+            kind,
+            serde_json::json!({}),
+        )
+    }
+
+    pub fn log_agent(&self, kind: &str) -> u64 {
+        self.log_event(
+            artefacto::server::event::Actor::Agent,
+            kind,
+            serde_json::json!({}),
+        )
+    }
+
+    /// An agent's delivery cursor, as the fold holds it.
+    pub fn cursor_of(&self, name: &str) -> u64 {
+        artefacto::server::http::with_review(&self.shared, |r| {
+            r.cursors.get(name).copied().unwrap_or(0)
+        })
+    }
+
     pub fn last_seq(&self) -> u64 {
         self.shared.log.lock().unwrap().last_seq()
     }
