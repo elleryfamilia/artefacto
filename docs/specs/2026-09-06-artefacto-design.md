@@ -348,8 +348,10 @@ artefacto serve  [--port N] [--idle 15m] [--away 5m] [--passive digest|live] [--
 artefacto stop
 artefacto status [--json]
 artefacto list   [--json]            # every artifact for this repo, newest first
-artefacto open   [--artifact ID]     # mint a fresh bootstrap URL and open the browser;
-                                     # with no id, opens the artifact index
+artefacto open   [--artifact ID] [--no-open] [--json]
+                                     # mint a fresh bootstrap URL and open the browser;
+                                     # with no id and one artifact, that one; with no
+                                     # id and several, the artifact index (plan 4)
 
 artefacto plan check  <file>... [--json] [--lenient]   # prints plan_hash, title, counts, per file
 artefacto plan render <file> [--out PATH] [--no-open] [--json]

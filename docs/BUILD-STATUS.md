@@ -1,6 +1,6 @@
 # Server build status
 
-Current as of 2026-09-11, branch `feat/server-spine`.
+Current as of 2026-09-11, branch `feat/skill`.
 
 ## Why this file exists
 
@@ -21,7 +21,7 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-413 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+440 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
 clean. Sixty-one of the tests run the served page in a headless Chromium;
 they skip with a printed line on a machine without one (see "Plan 3" below).
 
@@ -47,6 +47,10 @@ they skip with a printed line on a machine without one (see "Plan 3" below).
 | the served page | `src/server/page.rs` | the rendered plan at `/a/<artifact>`, the JSON snapshot at `/a/<artifact>/state`, both read under the commit gate |
 | the page itself | `src/plan/assets/plan.js`, `plan.css` | one pure fold, a re-entrant `mount(root)`, the socket client, POSTed commands, composers with drafts, the body swap and its restore, presence, notices, the recovery panel; the static export in the same file |
 | the browser harness | `tests/support/browser.rs`, `tests/browser.rs` | headless Chromium over the DevTools protocol, tungstenite as the client |
+| `open` | `src/commands/serve.rs`, `src/server/page.rs` | a fresh one-time link over the CLI route; starts the server if none |
+| `status --json` | `src/server/status.rs` | artifacts, threads, cursors, presence, and the follow line, read at one moment |
+| the skill | `src/commands/skill.rs`, `skills/artefacto-plan/` | `--print` manifest and `--install DIR`; the package is compiled in |
+| the skill's proofs | `tests/skill_package.rs`, `tests/skill_loop.rs` | every prescribed command parses; the loop runs against a real daemon in both modes |
 
 ## What only running could establish
 
@@ -634,6 +638,149 @@ the orientation banner on a served page says "send your review" rather
 than "copy your feedback". The lesson goes with the one from round twelve:
 the reviews found what a read finds; what a look finds is different.
 
+## Plan 5: `open`, `status --json`, and the skill
+
+Spec 4.5 and 7, with `open` and the fuller `status --json` from spec 5 built
+first because the skill needs both. Three slices, each built, tested,
+mutated, and committed before the next; then the prose; then a hand-drive.
+
+### What was built
+
+- **`artefacto open [--artifact ID] [--no-open] [--json]`.** Asks the server
+  for a fresh bootstrap link over the authenticated CLI route
+  (`POST /cli/open`), prints it, and opens the browser unless `--no-open` or
+  `--json`. With no name it follows `reply`'s rule: one artifact needs no
+  name, several do. An id the fold does not know is refused (exit 2) rather
+  than minted for, because a link that lands on the placeholder page is a
+  link that lied. **It starts the server if none is running**, as `push`
+  does: the page's advice for a dead link or a gone server is "run
+  `artefacto open`", and after a self-exit the log is still there, so one
+  command should be enough.
+- **`status --json`** now carries what spec 5 lists: each artifact with its
+  kind, title, revision, hash, source and feedback paths, `submitted`, open,
+  unanchored and blocking counts, page-level chat, answer and reviewed
+  counts; every lease's cursor; the holder with its age and `acked_seq`;
+  reviewer presence (`pages`, `present`, `seen`, `last_activity_secs`,
+  `idle`, `away`); and the follow line as both `follow.command` and
+  `follow.argv`, under the holder's name. The artifacts and `last_seq` are
+  read under the commit gate, as `/state` reads them, so they describe one
+  moment. Beyond the spec's list: each artifact's **thread list** with
+  `last_actor`, and `chat_last_actor`, because spec 7's rule 3 ("check the
+  thread for an existing agent reply first") was not executable from
+  anything an agent could run. The token is never in the output; `Holder`
+  has no field for it. The text mode prints the same facts in five lines.
+- **`artefacto skill --print | --install DIR`.** The manifest is
+  `{"format":"artefacto.skill/1","artefacto":"<version>","skills":[{"name",
+  "files":[{"path","contents"}]}]}`; the directory form writes the same
+  files, replacing what is there. Both are `include_str!` of
+  `skills/artefacto-plan/`, so a binary is a complete distribution of the
+  skill that matches it, and `plan schema` prints the same reference.
+- **The skill.** `SKILL.md` is written to be invoked by the model, with a
+  description that says when it applies, a generic section (push, the poll
+  loop, act by the frame's last event, acknowledge, address a review with
+  `--resolutions`), and a Claude Code section (arm a Monitor on the follow
+  line, `ack` after each frame, `PushNotification` on `away`, `TaskStop`
+  when done, and what each monitor exit code means). `reference.md` keeps
+  its schema half unchanged and replaces the command half with the real
+  surface: synopsis, every result's shape, the event table with each type's
+  `data` and whether it wakes the agent, the feedback document as the server
+  writes it, the resolutions file, and `status --json`.
+
+### How the prose is kept honest
+
+- **Every command line in a fenced `bash` block of either file is parsed by
+  the real clap definition** (`tests/skill_package.rs`), after `<seq>` and
+  `"$SESSION"` placeholders are filled. A synopsis lives in a `text` block,
+  which the extractor ignores. Renaming a flag in the binary, or misspelling
+  one in the prose, fails the test; both were mutated to prove it.
+- **`tests/skill_loop.rs` drives a real daemon with exactly the commands the
+  skill prescribes**, in both modes. Monitor mode: push with no server, arm
+  the `follow.argv` status prints, the session line equals the push's
+  token, a chat frame with its passive event, check `last_actor` before and
+  after the reply, `ack` twice, the submitted frame's document equals the
+  file on disk, a revision with resolutions in one push, exit 7 on a stale
+  base, kill the follow, exit 6 on the dead token, re-arm without
+  `--session` and resume at the cursor with nothing replayed, exit 0 on
+  `stop`. Poll mode: rejoin by name with no token, the same frame again
+  without `--ack`, the cursor moving with it, `chat_last_actor` before and
+  after a page-level reply, and a submitted review acknowledged by the next
+  call. The reviewer's cookie comes from `open`, as a browser's would;
+  nothing reaches into the server.
+- **The reference's JSON plan examples still validate** under the real
+  deserializer, as before.
+
+### What only running could establish
+
+1. **macOS has no `timeout`.** The first hand-drive's follow never started
+   and every later step read an empty file. A harness fact, not a product
+   one; the second drive used a background process and `kill -9`.
+2. **A departed page is noticed only on a failed write**, so a status test
+   that closes a page must drive writes (`broadcast_test_frame`) as the
+   loop and page tests already do, or wait twenty seconds for the
+   heartbeat.
+3. **The `chat_last_actor` rule survived its own test** with one page-level
+   message, where first and last coincide, and was caught only by the loop
+   test. The status test now replies at page level and asserts the flip.
+
+### Where this diverges from the spec, with the reason
+
+- `open` has `--no-open` and `--json`, which spec 5 did not list; every
+  other browser-opening command has them, and a test cannot open a
+  browser. Recorded in the spec's CLI surface.
+- The follow line is unscoped: `artefacto events --follow --agent <name>`,
+  no `--artifact`. The status route does not know which artifact the
+  caller is working on, and a scoped follow would miss another artifact's
+  review on the same server.
+- `status --json` prints more than spec 5 lists (above). Nothing it lists
+  is missing.
+- The manifest's shape is this plan's choice; spec 4.5 says only "a JSON
+  manifest of relative paths and their contents".
+
+### What is not covered by a test
+
+- **`open_browser` is never exercised**: every test passes `--no-open` or
+  `--json`, because a test that opened a real browser would open one on the
+  developer's machine. The rule that `--json` implies no browser is a unit
+  test on `should_open`, shared with `render`.
+- **The Claude Code section describes another tool.** Monitor,
+  PushNotification and TaskStop are named from their current definitions;
+  no test runs them. The follow line, the session line, and the per-frame
+  `ack` are what the loop test proves.
+- **`reviewer.idle` and `reviewer.away` are not in the loop test.** The
+  nudge command parses, and the events themselves are tested in
+  `server_loop.rs`; the skill's handling of them is prose.
+- **A follow whose server dies without a `stop` also exits 0** (the follow
+  treats a vanished server as the stop, by design). The skill says exit 0
+  means the server stopped and tells the agent to push or `serve` if the
+  review is still open, which covers both, but the two are not told apart.
+- `status --json`'s `answers` count has no fixture with a question behind
+  it in the status test; it mirrors `feedback.rs`'s non-empty rule, which
+  is tested there. `last_activity_secs` is asserted to exist, not for its
+  value.
+- **The `revision_seq` hazard is prose only.** Nothing stops an agent from
+  running `ack --seq <revision_seq>` and skipping reviewer events it never
+  saw. A server-side guard (refuse an ack beyond the highest seq delivered
+  to that name) would make the rule structural; it is noted, not built,
+  because delivery is not logged and the guard would have a hole across a
+  restart.
+
+### The hand-drive
+
+Against a real daemon in a scratch repository with the built binary, twice.
+First: push with no server, `status` in both modes, `open --json` and the
+cookie from its link, a thread and a chat from the page, `reply`,
+`resolve`, a push with resolutions, a stale push refused with exit 7 and a
+message naming `status --json`, `stop`, then `status` exiting 4. Second,
+the monitor half: the follow line copied from `status`, its session line
+carrying the push's token and the lease live with the follow's pid, the
+chat frame with its passive event first, `last_actor` flipping on the
+reply, `ack`, the submitted frame naming the feedback file, the agent's
+own push not delivered back, `kill -9` releasing the lease within half a
+second, the dead token refused with exit 6 and a message saying why, the
+re-armed follow's session line at the acknowledged cursor with a
+generation-2 token, and `stop` exiting it 0 with nothing printed but that
+line.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
@@ -675,24 +822,20 @@ All are in `docs/specs/2026-09-06-artefacto-design.md`:
    spec 7's rules say the agent acknowledges after acting. The sentence that
    had the next call acknowledge by itself is marked as the at-most-once it
    was. `events` prints an `artefacto.session/1` line first.
+5. `open` gained `--no-open` and `--json`, and its no-id form is spelled out:
+   one artifact needs no id; several open the index, which is plan 4.
 
 ## What is not built
 
-- **`status --json` returns a minimal shape.** It has the port, the last seq and
-  the lease; spec 5 also wants artifacts, revisions, thread counts, reviewer
-  presence, and the `events --follow` command line for the skill to arm.
-- **`open` is not implemented.** `push` mints a bootstrap URL, so there is no
-  way to get a fresh one without pushing.
 - **`--passive live` is not implemented.** Delivery is digest-only, which is
   spec 16's default. Live mode's rate limit (one passive frame per 30 seconds,
   a 5 minute age cap, coalescing repeated edits to the same ref) is plan 2b's
   Task 5 and is untouched.
 - **`list`, the artifact index, and posters** are plan 4.
 - **`clean`** is plan 4.
-- **`skill --print` / `--install`** are plan 5.
-- **`artefacto open`** is still not implemented, so a page that says "run
-  `artefacto open` for a fresh link" is pointing at a command that does not
-  exist yet. A second `push` is the only way to mint one.
+- **cargo-dist release configuration** is the rest of plan 5.
+- **The no-id form of `open` with several artifacts** opens nothing: it asks
+  for `--artifact`, because the index it should open is plan 4.
 - **Question `options`** (spec 4.3): answers are free text, as v1 says.
 
 ## What is not covered by a test
@@ -800,6 +943,23 @@ failed, a lost page keeping its pending marks, and (survived, redundant) a
 probe result applied on a live socket. Round twelve's fixes: the chat
 composer's id not stable across a swap, Retry not rendering the pill,
 Cancel not closing the chat, and a lost page dropping its accepted writes.
+
+Plan 5 was checked the same way. `open`: an unknown artifact minted for,
+the first of several artifacts picked without a name, the server not
+started, the page route returned instead of a fresh mint, and nothing
+pushed minted for anyway. `status`: `last_actor` from the first message,
+unanchored always zero, open counting every thread, the follow line
+ignoring the holder, a name never quoted, `present` always true, `seen`
+never true, the feedback path as the source path, blocking counting
+resolved threads, chat counting thread messages, cursors empty, the text
+mode without the follow line, `submitted` never reported, and the revision
+always 1. The skill: `--install` skipping the reference, manifest paths
+without the skill directory, the wrong format string, a flag the binary
+lacks and a subcommand the binary lacks written into SKILL.md, a plan field
+that does not exist written into the reference's example, and
+`chat_last_actor` from the first message (survived the status test alone,
+caught by the loop test, and the status test then strengthened). Every one
+fails the test that names it.
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,

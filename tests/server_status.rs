@@ -176,6 +176,15 @@ fn status_json_lists_each_artifact_with_its_review_state() {
         a["chat_last_actor"], "reviewer",
         "rule 3 for page-level chat: whose message is last: {a}"
     );
+    r.repo
+        .run(&["reply", "--session", &r.session, "hello yourself"])
+        .success();
+    let a = &r.status()["artifacts"][0];
+    assert_eq!(a["chat"], 2, "{a}");
+    assert_eq!(
+        a["chat_last_actor"], "agent",
+        "the last message, not the first: {a}"
+    );
     assert_eq!(a["reviewed"], 1, "{a}");
 
     let threads = a["threads"].as_array().expect("threads");
