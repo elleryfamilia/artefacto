@@ -3054,17 +3054,20 @@ fn the_index_page_lists_artifacts_and_removes_a_row_in_a_real_browser() {
     page.screenshot(&screenshot_path("index-after-remove"));
 
     // A live row leads to its page, and the page leads back.
+    // Each navigation waits for the element the next step needs, not for
+    // the path alone: the path changes when the navigation commits, before
+    // the new document has finished parsing.
     page.click(".ix-row.is-live .ix-title a");
-    page.wait_until("location.pathname.startsWith('/a/plan:')", "the plan page");
-    assert_eq!(
-        page.eval("!!document.querySelector('.pv-topbar-link')"),
-        true,
-        "a served page links to the index"
+    page.wait_until(
+        "location.pathname.startsWith('/a/plan:') && !!document.querySelector('.pv-topbar-link')",
+        "the plan page, with its link to the index",
     );
     page.screenshot(&screenshot_path("plan-page-with-index-link"));
     page.click(".pv-topbar-link");
-    page.wait_until("location.pathname === '/'", "back at the index");
-    assert_eq!(page.eval("document.querySelectorAll('.ix-row').length"), 2);
+    page.wait_until(
+        "location.pathname === '/' && document.querySelectorAll('.ix-row').length === 2",
+        "back at the index, with its two rows",
+    );
     assert!(page.errors().is_empty(), "{:?}", page.errors());
     drop(server);
 }
