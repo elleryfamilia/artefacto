@@ -129,9 +129,8 @@ fn open_needs_a_name_when_there_are_several_artifacts_and_refuses_an_unknown_one
 }
 
 #[test]
-fn open_with_nothing_pushed_says_so() {
+fn open_with_nothing_pushed_says_so_and_starts_nothing() {
     let repo = Repo::new();
-    repo.run(&["serve", "--no-open"]).success();
     let out = repo.run(&["open", "--no-open"]);
     repo_stop_later(&repo, || {
         assert_eq!(out.code, 2, "{}", out.stdout);
@@ -145,6 +144,23 @@ fn open_with_nothing_pushed_says_so() {
             "no link is printed: {}",
             out.stdout
         );
+        assert_eq!(
+            repo.run(&["status", "--json"]).code,
+            4,
+            "no daemon was started just to say no"
+        );
+    });
+}
+
+#[test]
+fn open_against_a_running_server_with_nothing_pushed_says_so() {
+    let repo = Repo::new();
+    repo.run(&["serve", "--no-open"]).success();
+    let out = repo.run(&["open", "--no-open"]);
+    repo_stop_later(&repo, || {
+        assert_eq!(out.code, 2, "{}", out.stdout);
+        assert!(out.stderr.contains("push"), "{}", out.stderr);
+        assert!(out.stdout.trim().is_empty(), "{}", out.stdout);
     });
 }
 
@@ -185,6 +201,32 @@ fn an_open_link_is_a_page_route_and_needs_no_bearer() {
             &format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"),
         );
         assert_eq!(status_of(&response), 302, "{response}");
+    });
+}
+
+#[test]
+fn the_open_route_needs_the_bearer_secret() {
+    // Minting a link is minting a credential; only the CLI, which holds the
+    // bearer, may do it.
+    let repo = Repo::new();
+    let plan = plan_in(&repo, "minimal.json");
+    push(&repo, &plan);
+    let port = repo.port();
+    repo_stop_later(&repo, || {
+        for method in ["POST", "GET"] {
+            let response = raw(
+                port,
+                &format!(
+                    "{method} /cli/open HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+                     Connection: close\r\n\r\n"
+                ),
+            );
+            assert_eq!(status_of(&response), 401, "{method}: {response}");
+            assert!(
+                !response.contains("/b/"),
+                "no link without the bearer: {response}"
+            );
+        }
     });
 }
 

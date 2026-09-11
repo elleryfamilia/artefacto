@@ -21,7 +21,7 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-440 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+445 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
 clean. Sixty-one of the tests run the served page in a headless Chromium;
 they skip with a printed line on a machine without one (see "Plan 3" below).
 
@@ -664,11 +664,12 @@ mutated, and committed before the next; then the prose; then a hand-drive.
   `idle`, `away`); and the follow line as both `follow.command` and
   `follow.argv`, under the holder's name. The artifacts and `last_seq` are
   read under the commit gate, as `/state` reads them, so they describe one
-  moment. Beyond the spec's list: each artifact's **thread list** with
-  `last_actor`, and `chat_last_actor`, because spec 7's rule 3 ("check the
-  thread for an existing agent reply first") was not executable from
-  anything an agent could run. The token is never in the output; `Holder`
-  has no field for it. The text mode prints the same facts in five lines.
+  moment. Beyond the spec's list: each artifact's **thread list with its
+  messages**, and the page-level chat, as `{actor, text, ts}` in log order,
+  because spec 7's rule 3 ("check the thread for an existing agent reply
+  first") was not executable from anything an agent could run. The token is
+  never in the output; `Holder` has no field for it. The text mode prints
+  the same facts in five lines.
 - **`artefacto skill --print | --install DIR`.** The manifest is
   `{"format":"artefacto.skill/1","artefacto":"<version>","skills":[{"name",
   "files":[{"path","contents"}]}]}`; the directory form writes the same
@@ -696,15 +697,16 @@ mutated, and committed before the next; then the prose; then a hand-drive.
 - **`tests/skill_loop.rs` drives a real daemon with exactly the commands the
   skill prescribes**, in both modes. Monitor mode: push with no server, arm
   the `follow.argv` status prints, the session line equals the push's
-  token, a chat frame with its passive event, check `last_actor` before and
-  after the reply, `ack` twice, the submitted frame's document equals the
+  token, a chat frame with its passive event, the thread's messages before
+  and after the reply, `ack` twice, the submitted frame's document equals the
   file on disk, a revision with resolutions in one push, exit 7 on a stale
   base, kill the follow, exit 6 on the dead token, re-arm without
   `--session` and resume at the cursor with nothing replayed, exit 0 on
   `stop`. Poll mode: rejoin by name with no token, the same frame again
-  without `--ack`, the cursor moving with it, `chat_last_actor` before and
-  after a page-level reply, and a submitted review acknowledged by the next
-  call. The reviewer's cookie comes from `open`, as a browser's would;
+  without `--ack`, the cursor moving with it, the page-level chat's
+  messages before and after a reply, and a submitted review acknowledged by
+  the next call. A third test ages a waiting lease past its TTL and drives
+  the recovery the skill prescribes. The reviewer's cookie comes from `open`, as a browser's would;
   nothing reaches into the server.
 - **The reference's JSON plan examples still validate** under the real
   deserializer, as before.
@@ -718,15 +720,24 @@ mutated, and committed before the next; then the prose; then a hand-drive.
    that closes a page must drive writes (`broadcast_test_frame`) as the
    loop and page tests already do, or wait twenty seconds for the
    heartbeat.
-3. **The `chat_last_actor` rule survived its own test** with one page-level
+3. **A "last actor" rule survived its own test** with one page-level
    message, where first and last coincide, and was caught only by the loop
-   test. The status test now replies at page level and asserts the flip.
+   test; the review then found the rule itself wrong (round thirteen), and
+   the field is gone.
 
 ### Where this diverges from the spec, with the reason
 
 - `open` has `--no-open` and `--json`, which spec 5 did not list; every
   other browser-opening command has them, and a test cannot open a
-  browser. Recorded in the spec's CLI surface.
+  browser. Recorded in the spec's CLI surface. It starts the server only
+  when the state directory has a log; with nothing ever pushed it starts
+  nothing and says so.
+- `--agent` refuses an empty name, a leading `-`, and control characters.
+  The name comes back out of `status --json` as a command line, and a name
+  clap could not read back is a follow line that cannot be armed.
+- `await` and `events` results carry `cursor`, where the call started
+  reading, alongside `seq`, the acknowledgement point. The `events` session
+  record's `seq` is that cursor, which is what spec 5 calls it.
 - The follow line is unscoped: `artefacto events --follow --agent <name>`,
   no `--artifact`. The status route does not know which artifact the
   caller is working on, and a scoped follow would miss another artifact's
@@ -773,13 +784,88 @@ cookie from its link, a thread and a chat from the page, `reply`,
 message naming `status --json`, `stop`, then `status` exiting 4. Second,
 the monitor half: the follow line copied from `status`, its session line
 carrying the push's token and the lease live with the follow's pid, the
-chat frame with its passive event first, `last_actor` flipping on the
+chat frame with its passive event first, the thread's messages showing the
 reply, `ack`, the submitted frame naming the feedback file, the agent's
 own push not delivered back, `kill -9` releasing the lease within half a
 second, the dead token refused with exit 6 and a message saying why, the
 re-armed follow's session line at the acknowledged cursor with a
 generation-2 token, and `stop` exiting it 0 with nothing printed but that
 line.
+
+### Review round thirteen: plan 5, reviewed fresh
+
+A fresh reviewer on a different model read the five commits against the
+spec in a detached worktree, followed SKILL.md step by step against a real
+daemon, ran a five-and-a-half-minute lease-expiry experiment and a hostile
+agent-name experiment, and found the locking sound, no credential in
+`status`, the open route gated, the manifest as described, and every spec 7
+rule present. Five confirmed defects, two suspicions, ten prose findings,
+and eight test-strength findings. What changed:
+
+1. **The "check first" rule lost the second of two back-to-back questions**
+   (high). The skill said: if the thread's last message is yours, skip.
+   After answering the first of two questions the last message is the
+   agent's and the second is unanswered, and no seq comparison can tell the
+   two apart either, because the reply to the first comes after the second
+   in the log. `status --json` now carries every thread's `messages` and
+   the page-level `chat` as arrays of `{actor, text, ts}` in log order, and
+   the rule is what spec 7 literally says: read the thread and reply to what
+   is unanswered. `last_actor` and `chat_last_actor` are gone; they invited
+   the wrong check. The loop test drives two questions in a row and asserts
+   the data the rule reads.
+2. **The poll loop was told the wrong recovery for its own expired token.**
+   Five minutes without a call releases a waiting lease, and every call
+   with the old token then exits 6 — the same code as "another agent holds
+   it" — where the skill said to consider `--takeover`. One rule for both
+   modes now: call again without `--session` under the same name; if that
+   answers, its token is the new one and the cursor was kept; if it exits 6
+   too, another agent has the review. A test ages the lease and drives the
+   recovery.
+3. **An agent name starting with `-` produced an unrunnable follow line.**
+   clap refuses a hyphen-leading value in separated form, and `--agent=-x`
+   was the one way to choose such a name. `--agent` now refuses an empty
+   name, a leading `-`, and control characters, on every command that
+   takes it.
+4. **`open` on a repository with nothing pushed started a daemon and
+   abandoned it** for half an hour. It starts one only when the state
+   directory has a log to open; otherwise it says "push a plan first" and
+   starts nothing. The test that had run `serve` first hid this; it no
+   longer does, and asserts no server was started.
+5. `revision_seq` is the seq of the **last** event the push appended (the
+   last resolution, when there are any), not of `revision.published`. The
+   prose said the latter.
+
+Suspicion adopted: **the session record's `seq` was the first poll's result
+seq, not the cursor.** With a frame pending when a follow re-armed, the line
+named that frame's seq; an agent that took it for its position and
+acknowledged it would have skipped the frame. The `await` and `events`
+results now carry `cursor` (where the call started reading), the session
+line prints that, and the loop test re-arms with a chat pending and asserts
+the line's seq is the acknowledged cursor and the pending frame follows.
+The hand-drive's "at the acknowledged cursor" had been true only because
+nothing was pending.
+
+Prose findings adopted: the Monitor example lacked the tool's required
+`timeout_ms`; `PushNotification` is "if available" in both places; a
+redelivered `review.submitted` has a check-first step (the review's open
+comments already `changed` or `declined`); `--base-revision` after exit 7
+is stated once, plainly (the re-read revision is the new base); a restart
+after exit 0 is `artefacto serve`, not a push that mints a revision the
+reviewer sees; "the next call exits 4" holds only when the server is gone;
+`quote` is `""` in the event and `null` in the document. Test-strength
+findings adopted: the open route's 401 is asserted; the two paths that had
+failed by hand are driven. Left as is, and noted: the negative
+`no_frame_within` assertions (the positive frame that follows each one
+covers them); the reference contributes no `bash` block to the parse test
+(its synopsis was checked against `--help` by hand, flag for flag);
+`--json` implies `--no-open` for `open` and `render` but not `push`, which
+opens the reviewer's browser on the first push by design; `ack --seq
+<revision_seq>` is accepted by the server, recorded above as prose-only by
+decision.
+
+The second suspicion — that `PushNotification` might not exist as a tool —
+is answered by its definition in this harness; the prose says "if
+available" because another harness may lack it.
 
 ## Where the code diverges from plan 2b, with the reason
 
@@ -957,9 +1043,12 @@ always 1. The skill: `--install` skipping the reference, manifest paths
 without the skill directory, the wrong format string, a flag the binary
 lacks and a subcommand the binary lacks written into SKILL.md, a plan field
 that does not exist written into the reference's example, and
-`chat_last_actor` from the first message (survived the status test alone,
-caught by the loop test, and the status test then strengthened). Every one
-fails the test that names it.
+a "last actor" field from the first message (survived the status test alone,
+caught by the loop test; the field was then removed in round thirteen).
+Every one fails the test that names it. Round thirteen's fixes: the session
+line printing the result's seq instead of the cursor, `open` starting a
+server with no log, a leading-dash agent name accepted, a thread's messages
+without their text, and the open route answering without the bearer.
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,

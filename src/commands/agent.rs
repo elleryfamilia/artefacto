@@ -122,12 +122,17 @@ pub fn events(args: &EventsArgs) -> Result<()> {
     Ok(())
 }
 
+/// Spec 5: the session record carries "the session token and the cursor".
+/// The cursor, not the result's `seq`: a follow's first poll may already
+/// hold a frame, and its `seq` would then name events the agent has not
+/// acted on. An agent that read that as its position and acknowledged it
+/// would skip them.
 fn session_line(result: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "format": SESSION_FORMAT,
         "session": result["session"],
         "agent": result["agent"],
-        "seq": result["seq"],
+        "seq": result["cursor"],
     })
 }
 

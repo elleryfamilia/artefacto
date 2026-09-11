@@ -77,7 +77,7 @@ pub fn handle_await(shared: &Arc<Shared>, request: Request, query: &Query) {
             return refuse(request, e);
         }
         if let Some(frame) = delivery::frame_since_for(shared, cursor, artifact.as_deref()) {
-            return answer(request, &session, &frame);
+            return answer(request, &session, cursor, &frame);
         }
         let stopping = shared.stopping();
         if stopping || Instant::now() >= deadline {
@@ -86,7 +86,7 @@ pub fn handle_await(shared: &Arc<Shared>, request: Request, query: &Query) {
             // into a timeout instead, it would be acknowledged as "nothing
             // actionable" and never delivered as what it is.
             if let Some(frame) = delivery::frame_since_for(shared, cursor, artifact.as_deref()) {
-                return answer(request, &session, &frame);
+                return answer(request, &session, cursor, &frame);
             }
             // Spec 5: `timeout` and `stopped` carry "whatever passive events
             // accumulated" — and only those. The tail stops before the first
@@ -97,7 +97,7 @@ pub fn handle_await(shared: &Arc<Shared>, request: Request, query: &Query) {
             let status = if stopping { "stopped" } else { "timeout" };
             let _ = request.respond(json_response(
                 200,
-                &result(status, &session, seq, &tail).to_string(),
+                &result(status, &session, seq, cursor, &tail).to_string(),
             ));
             return;
         }
@@ -105,12 +105,12 @@ pub fn handle_await(shared: &Arc<Shared>, request: Request, query: &Query) {
     }
 }
 
-fn answer(request: Request, session: &LeaseRecord, frame: &Frame) {
+fn answer(request: Request, session: &LeaseRecord, cursor: u64, frame: &Frame) {
     let status = await_status(&frame.events.last().expect("a frame has events").r#type)
         .expect("a frame always ends at an active event");
     let _ = request.respond(json_response(
         200,
-        &result(status, session, frame.seq, &frame.events).to_string(),
+        &result(status, session, frame.seq, cursor, &frame.events).to_string(),
     ));
 }
 
@@ -135,6 +135,8 @@ pub fn handle_events(shared: &Arc<Shared>, request: Request, query: &Query) {
         Err(e) => return fail(request, &e),
     };
 
+    // Where this call started reading: the acknowledged cursor, or `since`.
+    let settled = cursor;
     let mut frames: Vec<Frame> = Vec::new();
     while frames.len() < MAX_BACKLOG_FRAMES {
         let Some(frame) = delivery::frame_since_for(shared, cursor, artifact.as_deref()) else {
@@ -148,6 +150,7 @@ pub fn handle_events(shared: &Arc<Shared>, request: Request, query: &Query) {
         "session": session.token,
         "agent": session.name,
         "seq": cursor,
+        "cursor": settled,
         "frames": frames,
     });
     let _ = request.respond(json_response(200, &body.to_string()));
@@ -185,11 +188,21 @@ pub fn handle_ack(shared: &Arc<Shared>, request: Request, query: &Query) {
 }
 
 /// Spec 5: the result carries `status`, `seq`, `events`, and `session`.
-fn result(status: &str, session: &LeaseRecord, seq: u64, events: &[Event]) -> serde_json::Value {
+/// `cursor` is where this call started reading — the acknowledged position,
+/// or `--since` — which the `events` session record reports as the agent's
+/// position; `seq` is the acknowledgement point for what this result holds.
+fn result(
+    status: &str,
+    session: &LeaseRecord,
+    seq: u64,
+    cursor: u64,
+    events: &[Event],
+) -> serde_json::Value {
     serde_json::json!({
         "ok": true,
         "status": status,
         "seq": seq,
+        "cursor": cursor,
         // Spec 5: "await and events return it in their result as session".
         // An agent takes it from the first call and passes it to every
         // mutation until a call hands back a new one.

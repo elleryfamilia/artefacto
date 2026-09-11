@@ -293,8 +293,9 @@ artefacto skill  (--print | --install DIR)
 | `serve`, `stop` | the daemon by hand; `push` and `open` start it for you |
 | `skill` | this package, as a JSON manifest (`--print`) or written under a directory (`--install`) |
 
-Names and tokens: `--agent` is the lease name (default `agent`). One agent
-acts at a time per name. `--session` is the token a previous call returned;
+Names and tokens: `--agent` is the lease name (default `agent`; not empty,
+not starting with `-`, no control characters). One agent acts at a time per
+name. `--session` is the token a previous call returned;
 present it to refresh the lease you hold, omit it to take or rejoin the lease
 under `--agent`. `--takeover` takes the lease from another name and
 invalidates its token; use it only when the user says so.
@@ -328,9 +329,9 @@ What each command prints with `--json` (or always, for the agent commands).
 ```
 
 `artifact` is `plan:<meta.id>`. `session` is the token to carry. `url` is
-one-time. `revision_seq` is the seq of the push's own event and is **never
-acknowledged**. `summary` is derived by comparing the previous revision with
-this one.
+one-time. `revision_seq` is the seq of the last event the push appended (the
+revision, or the last of its resolutions) and is **never acknowledged**.
+`summary` is derived by comparing the previous revision with this one.
 
 `await`:
 
@@ -344,7 +345,8 @@ this one.
 `events`, or the cursor unchanged when there were none. `events` holds every
 undelivered event up to and including the one that woke you, oldest first.
 If the server could not be reached for the whole timeout, the result is a
-`timeout` with an `unreachable` field; the next call exits 4.
+`timeout` with an `unreachable` field; the next call exits 4 if the server
+is gone, or returns another such `timeout` if it is alive but not answering.
 
 `events` prints lines. The first is the session record, then one frame per
 line:
@@ -357,10 +359,11 @@ line:
 { "format": "artefacto.frame/1", "seq": 21, "events": [ "…" ] }
 ```
 
-Without `--follow`, that is the backlog since the cursor (or `--since`), then
-exit. With it, frames keep coming. A follow prints only frames that end at
-an active event; passive events ride along in the next such frame. It never
-acknowledges anything itself.
+The session record's `seq` is the agent's acknowledged cursor; the frames
+that follow start after it. Without `--follow`, that is the backlog since
+the cursor (or `--since`), then exit. With it, frames keep coming. A follow
+prints only frames that end at an active event; passive events ride along in
+the next such frame. It never acknowledges anything itself.
 
 `ack`: `{ "ok": true, "session": "…", "seq": 21 }`, where `seq` is the cursor
 after the call.
@@ -383,8 +386,12 @@ after the call.
     "feedback_path": "/repo/docs/plan-feedback.json", "submitted": false,
     "open_threads": 1, "unanchored_threads": 0, "blocking_threads": 1,
     "threads": [ { "id": "c-1", "ref": "task:t-session-store", "status": "open",
-                   "blocking": true, "messages": 3, "last_actor": "agent" } ],
-    "chat": 2, "chat_last_actor": "reviewer", "answers": 1, "reviewed": 4 } ],
+                   "blocking": true, "quote": "no direct sled calls",
+                   "messages": [
+                     { "actor": "reviewer", "text": "Also assert this in the CLI layer.", "ts": "2026-09-06T16:02:11Z" },
+                     { "actor": "agent", "text": "Added a CLI-layer test.", "ts": "2026-09-06T16:04:00Z" } ] } ],
+    "chat": [ { "actor": "reviewer", "text": "How long will this take?", "ts": "2026-09-06T16:05:30Z" } ],
+    "answers": 1, "reviewed": 4 } ],
   "lease": { "agent": "agent", "generation": 1, "mode": "live", "pid": 4242,
              "age_secs": 3, "acked_seq": 21 },
   "cursors": { "agent": 21 },
@@ -398,8 +405,9 @@ after the call.
 `lease` is `null` when nobody holds it; `mode` is `live` for a `--follow`
 process and `waiting` for a poll-mode agent between calls. `follow.command`
 is the line to arm, under the holder's name, or `agent` when there is no
-holder. `last_actor` and `chat_last_actor` are `null` when there is no
-message. The token is never in this output.
+holder. A thread's `messages` are its comment and every reply, in order, by
+reviewer or agent; `chat` is the page-level conversation the same way. The
+token is never in this output.
 
 ## Events
 
@@ -419,7 +427,7 @@ name as `data.agent`. Your own events are not delivered back to you.
 
 | type | actor | wakes you | `data` |
 |------|-------|-----------|--------|
-| `thread.opened` | reviewer | no | `thread`, `ref`, `text`, `blocking`, `quote`, `opened_revision` |
+| `thread.opened` | reviewer | no | `thread`, `ref`, `text`, `blocking`, `quote` (`""` when nothing was selected; `null` in the feedback document), `opened_revision` |
 | `thread.replied` | reviewer or agent | no | `thread`, `text` |
 | `thread.edited` | reviewer | no | `thread`, `text` |
 | `thread.deleted` | reviewer | no | `thread` |

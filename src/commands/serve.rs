@@ -235,10 +235,20 @@ fn status_text(value: &serde_json::Value) -> String {
 /// The page sends a reviewer here when its link is spent or the server went
 /// away, so this starts the server if none is running — the log is still
 /// there after a self-exit, and a reviewer told to run `serve` first and then
-/// `open` has been given two commands where one would do. A link is printed
-/// on stdout whatever else happens, so a caller who cannot open a browser
-/// (an agent sandbox, a remote shell) still has it.
+/// `open` has been given two commands where one would do. It starts one only
+/// when that log exists: with nothing ever pushed there is nothing to open,
+/// and a daemon started just to say so would sit idle for half an hour. A
+/// link is printed on stdout whatever else happens, so a caller who cannot
+/// open a browser (an agent sandbox, a remote shell) still has it.
 pub fn open(args: &OpenArgs) -> Result<()> {
+    let dir = current_state_dir()?;
+    if state_dir::read_server_file(&dir).is_none() && !crate::server::log::exists(&dir) {
+        return Err(crate::commands::Exit::new(
+            2,
+            "there is nothing to open yet; push a plan first",
+        )
+        .into());
+    }
     serve(&ServeArgs {
         no_open: true,
         ..Default::default()

@@ -171,20 +171,21 @@ fn status_json_lists_each_artifact_with_its_review_state() {
         a["blocking_threads"], 1,
         "a resolved thread blocks nothing, whatever its checkbox said: {a}"
     );
-    assert_eq!(a["chat"], 1, "page-level chat, not thread chat: {a}");
-    assert_eq!(
-        a["chat_last_actor"], "reviewer",
-        "rule 3 for page-level chat: whose message is last: {a}"
-    );
+    let chat = a["chat"].as_array().expect("page-level chat as messages");
+    assert_eq!(chat.len(), 1, "page-level chat, not thread chat: {a}");
+    assert_eq!(chat[0]["actor"], "reviewer");
+    assert_eq!(chat[0]["text"], "hello");
     r.repo
         .run(&["reply", "--session", &r.session, "hello yourself"])
         .success();
     let a = &r.status()["artifacts"][0];
-    assert_eq!(a["chat"], 2, "{a}");
+    let chat = a["chat"].as_array().unwrap();
+    assert_eq!(chat.len(), 2, "{a}");
     assert_eq!(
-        a["chat_last_actor"], "agent",
-        "the last message, not the first: {a}"
+        chat[1]["actor"], "agent",
+        "in order, so the reply is last: {a}"
     );
+    assert_eq!(chat[1]["text"], "hello yourself");
     assert_eq!(a["reviewed"], 1, "{a}");
 
     let threads = a["threads"].as_array().expect("threads");
@@ -193,18 +194,31 @@ fn status_json_lists_each_artifact_with_its_review_state() {
     assert_eq!(threads[0]["ref"], "task:t-a");
     assert_eq!(threads[0]["status"], "open");
     assert_eq!(threads[0]["blocking"], true);
+    let messages = threads[0]["messages"].as_array().expect("messages");
     assert_eq!(
-        threads[0]["messages"], 3,
+        messages.len(),
+        3,
         "the comment, the question, the answer: {a}"
     );
+    assert_eq!(messages[0]["actor"], "reviewer");
+    assert_eq!(messages[0]["text"], "about task:t-a");
+    assert_eq!(messages[1]["text"], "and why?");
     assert_eq!(
-        threads[0]["last_actor"], "agent",
-        "spec 7 rule 3: an agent checks for its own reply before replying again"
+        messages[2]["actor"], "agent",
+        "spec 7 rule 3: the thread shows the agent its own reply: {a}"
     );
+    assert_eq!(messages[2]["text"], "because");
+    assert!(messages[2]["ts"].is_string(), "{a}");
     assert_eq!(threads[1]["id"], second);
     assert_eq!(threads[1]["status"], "declined");
     assert_eq!(threads[1]["blocking"], false);
-    assert_eq!(threads[1]["last_actor"], "agent", "the note is a message");
+    let notes = threads[1]["messages"].as_array().unwrap();
+    assert_eq!(
+        notes.last().unwrap()["actor"],
+        "agent",
+        "the note is a message"
+    );
+    assert_eq!(notes.last().unwrap()["text"], "out of scope");
 }
 
 #[test]

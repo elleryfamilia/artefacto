@@ -68,6 +68,12 @@ pub struct EventLog {
     poisoned: bool,
 }
 
+/// Whether this state directory has a log with anything in it: something
+/// was pushed here once, so there is a review to open or resume.
+pub fn exists(dir: &Path) -> bool {
+    std::fs::metadata(dir.join("events.ndjson")).is_ok_and(|m| m.len() > 0)
+}
+
 impl EventLog {
     pub fn open(dir: &Path) -> Result<EventLog> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;

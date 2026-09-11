@@ -11,7 +11,7 @@
 mod support;
 
 use std::path::Path;
-use support::{get, raw, Follower, Repo};
+use support::{get, raw, Follower, InProcess, Repo};
 
 fn plan_in(repo: &Repo) -> String {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plan/minimal.json");
@@ -148,11 +148,16 @@ fn monitor_mode_runs_the_loop_the_skill_prescribes() {
         );
         let chat_seq = frame["seq"].as_u64().unwrap();
 
-        // Rule 3, "check first": status says whose message is last.
+        // Rule 3, "check first": the thread's messages say what is answered.
         let before = repo.json(&["status", "--json"]);
-        assert_eq!(
-            before["artifacts"][0]["threads"][0]["last_actor"],
-            "reviewer"
+        let messages = before["artifacts"][0]["threads"][0]["messages"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(messages.len(), 2, "the comment and the question: {before}");
+        assert!(
+            messages.iter().all(|m| m["actor"] == "reviewer"),
+            "no reply of mine yet: {before}"
         );
         repo.run(&[
             "reply",
@@ -164,9 +169,14 @@ fn monitor_mode_runs_the_loop_the_skill_prescribes() {
         ])
         .success();
         let after = repo.json(&["status", "--json"]);
+        let messages = after["artifacts"][0]["threads"][0]["messages"]
+            .as_array()
+            .unwrap()
+            .clone();
         assert_eq!(
-            after["artifacts"][0]["threads"][0]["last_actor"], "agent",
-            "a redelivered frame would be skipped on this"
+            (messages[2]["actor"].as_str(), messages[2]["text"].as_str()),
+            (Some("agent"), Some("so Redis can slot in")),
+            "a redelivered frame finds the answer already in the thread"
         );
 
         // Rule 8: acknowledge after acting; and twice is harmless.
@@ -182,6 +192,87 @@ fn monitor_mode_runs_the_loop_the_skill_prescribes() {
             follow.no_frame_within(std::time::Duration::from_millis(300)),
             "the agent's own reply is not delivered back to it"
         );
+
+        // Two questions in a row, while the agent was thinking. Each is its
+        // own frame. After answering the first, the last message in the
+        // thread is the agent's and the second question is still open: the
+        // skill's rule reads the thread's messages, and this is the data it
+        // reads.
+        for (client, text) in [
+            ("cid-q2", "which Redis client?"),
+            ("cid-q3", "and the TTL?"),
+        ] {
+            page(
+                &repo,
+                &cookie,
+                serde_json::json!({
+                    "cmd": "chat.send", "client_id": client, "thread": thread,
+                    "text": text, "opened_revision": 1,
+                }),
+            );
+        }
+        let q2 = follow.next_frame();
+        let q3 = follow.next_frame();
+        assert_eq!(last_event(&q2)["data"]["text"], "which Redis client?");
+        assert_eq!(last_event(&q3)["data"]["text"], "and the TTL?");
+        assert!(q3["seq"].as_u64() > q2["seq"].as_u64());
+        repo.run(&[
+            "reply",
+            "--session",
+            &session,
+            "--thread",
+            &thread,
+            "redis-rs, the async client",
+        ])
+        .success();
+        repo.run(&[
+            "ack",
+            "--seq",
+            &q2["seq"].to_string(),
+            "--session",
+            &session,
+        ])
+        .success();
+        let thread_now = repo.json(&["status", "--json"])["artifacts"][0]["threads"][0].clone();
+        let texts: Vec<String> = thread_now["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| {
+                format!(
+                    "{}: {}",
+                    m["actor"].as_str().unwrap(),
+                    m["text"].as_str().unwrap()
+                )
+            })
+            .collect();
+        assert_eq!(
+            texts[texts.len() - 3..],
+            [
+                "reviewer: which Redis client?",
+                "reviewer: and the TTL?",
+                "agent: redis-rs, the async client",
+            ],
+            "the last message is the agent's and the TTL question is unanswered; \
+             only reading the thread tells the two apart"
+        );
+        repo.run(&[
+            "reply",
+            "--session",
+            &session,
+            "--thread",
+            &thread,
+            "one hour",
+        ])
+        .success();
+        repo.run(&[
+            "ack",
+            "--seq",
+            &q3["seq"].to_string(),
+            "--session",
+            &session,
+        ])
+        .success();
 
         // The reviewer sends the review.
         page(
@@ -263,11 +354,20 @@ fn monitor_mode_runs_the_loop_the_skill_prescribes() {
 
         // Claude Code, exit 6: a killed monitor's token is dead. Re-armed
         // with --session it exits 6; re-armed without, under the same name,
-        // it rejoins with nothing lost.
+        // it rejoins with nothing lost. A chat lands while the monitor is
+        // down, so "nothing lost" is something the test can see.
         follow.kill();
         support::wait_for(
             || repo.json(&["status", "--json"])["lease"].is_null(),
             "a dead follow releases the lease",
+        );
+        page(
+            &repo,
+            &cookie,
+            serde_json::json!({
+                "cmd": "chat.send", "client_id": "cid-down", "text": "still there?",
+                "opened_revision": 2,
+            }),
         );
         let mut dead = Follower::spawn(&repo, &["events", "--follow", "--session", &session]);
         assert_eq!(dead.wait_code(), 6, "a dead token is refused, not adopted");
@@ -279,17 +379,21 @@ fn monitor_mode_runs_the_loop_the_skill_prescribes() {
         assert_ne!(fresh, session, "a new token");
         assert_eq!(
             hello["seq"], submit_seq,
-            "the cursor is keyed by name: it resumes after the last acknowledged frame"
+            "the session line's seq is the acknowledged cursor, keyed by name, \
+             even with a frame pending"
         );
-        assert!(
-            follow.no_frame_within(std::time::Duration::from_millis(300)),
-            "everything was acknowledged, so nothing is replayed"
-        );
-        repo.run(&["reply", "--session", &fresh, "on it"]).success();
+        let pending = follow.next_frame();
         assert_eq!(
-            repo.json(&["status", "--json"])["artifacts"][0]["chat_last_actor"],
-            "agent"
+            last_event(&pending)["data"]["text"],
+            "still there?",
+            "the frame that arrived while the monitor was down comes back"
         );
+        assert!(pending["seq"].as_u64() > submit_seq.into());
+        repo.run(&["reply", "--session", &fresh, "on it"]).success();
+        let chat = repo.json(&["status", "--json"])["artifacts"][0]["chat"].clone();
+        let last = chat.as_array().unwrap().last().unwrap().clone();
+        assert_eq!(last["actor"], "agent", "the new token writes: {chat}");
+        assert_eq!(last["text"], "on it");
 
         // Exit 0: the server stopped.
         repo.run(&["stop"]).success();
@@ -337,17 +441,16 @@ fn poll_mode_runs_the_loop_the_skill_prescribes() {
         assert_eq!(first["events"][0]["type"], "thread.opened");
         let chat_seq = first["seq"].as_u64().unwrap();
 
-        // Rule 3 for page-level chat.
-        assert_eq!(
-            repo.json(&["status", "--json"])["artifacts"][0]["chat_last_actor"],
-            "reviewer"
-        );
+        // Rule 3 for page-level chat: the chat's messages, in order.
+        let chat = repo.json(&["status", "--json"])["artifacts"][0]["chat"].clone();
+        assert_eq!(chat.as_array().unwrap().len(), 1);
+        assert_eq!(chat[0]["text"], "hello?");
         repo.run(&["reply", "--session", &session, "hello back"])
             .success();
-        assert_eq!(
-            repo.json(&["status", "--json"])["artifacts"][0]["chat_last_actor"],
-            "agent"
-        );
+        let chat = repo.json(&["status", "--json"])["artifacts"][0]["chat"].clone();
+        assert_eq!(chat.as_array().unwrap().len(), 2);
+        assert_eq!(chat[1]["actor"], "agent");
+        assert_eq!(chat[1]["text"], "hello back");
 
         // A call without --ack is handed the same frame again.
         let again = repo.json(&["await", "--session", &session, "--timeout", "1s"]);
@@ -411,4 +514,50 @@ fn poll_mode_runs_the_loop_the_skill_prescribes() {
             true
         );
     });
+}
+
+#[test]
+fn poll_mode_recovers_an_expired_token_the_way_the_skill_says() {
+    // A poll-mode lease has no pid; five minutes without a call releases it,
+    // and every call with the old token then exits 6 — the same code as
+    // "another agent holds it". The skill's recovery is one rule for both:
+    // call again without --session under the same name. An in-process server
+    // so the clock can be moved instead of waited on.
+    let repo = Repo::new();
+    let server = InProcess::start_in(&repo);
+    let plan = plan_in(&repo);
+    let pushed = repo.json(&["plan", "push", &plan, "--json", "--no-open"]);
+    let session = pushed["session"].as_str().unwrap().to_string();
+
+    let cookie = server.session_cookie("plan:demo");
+    server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "chat.send", "client_id": "cid-1", "text": "hello?", "opened_revision": 1,
+        }),
+    );
+    let heard = repo.json(&["await", "--session", &session, "--timeout", "5s"]);
+    assert_eq!(heard["status"], "chat");
+    let seq = heard["seq"].as_u64().unwrap();
+    repo.run(&["ack", "--seq", &seq.to_string(), "--session", &session])
+        .success();
+
+    // A long edit: nothing calls for six minutes.
+    server.age_lease(std::time::Duration::from_secs(6 * 60));
+    let stale = repo.run(&["await", "--session", &session, "--timeout", "1s"]);
+    assert_eq!(stale.code, 6, "{}", stale.stderr);
+    let stale_reply = repo.run(&["reply", "--session", &session, "late"]);
+    assert_eq!(stale_reply.code, 6, "{}", stale_reply.stderr);
+
+    // The recovery: the same command without --session, same name.
+    let fresh = repo.json(&["await", "--timeout", "1s"]);
+    assert_eq!(fresh["status"], "timeout");
+    let token = fresh["session"].as_str().unwrap().to_string();
+    assert_ne!(token, session, "a new token");
+    assert_eq!(fresh["seq"], seq, "the cursor is kept by name");
+    repo.run(&["reply", "--session", &token, "late, but here"])
+        .success();
+    let chat = repo.json(&["status", "--json"])["artifacts"][0]["chat"].clone();
+    assert_eq!(chat[1]["text"], "late, but here");
 }

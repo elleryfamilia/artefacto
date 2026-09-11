@@ -139,6 +139,26 @@ pub fn parse_duration(raw: &str) -> Result<std::time::Duration, String> {
     Ok(std::time::Duration::from_secs(n * scale))
 }
 
+/// A lease name. `status --json` prints it back as an `--agent` argument in
+/// a command line, and clap reads a separated value that starts with `-` as
+/// another flag, so a name that starts with one would produce a follow line
+/// that cannot be run. Empty, and control characters, are refused for the
+/// same reason: a name has to survive a trip through a shell.
+pub fn parse_agent_name(raw: &str) -> Result<String, String> {
+    if raw.is_empty() {
+        return Err("an agent name cannot be empty".to_string());
+    }
+    if raw.starts_with('-') {
+        return Err(format!("an agent name cannot start with `-`: {raw:?}"));
+    }
+    if raw.chars().any(char::is_control) {
+        return Err(format!(
+            "an agent name cannot contain a control character: {raw:?}"
+        ));
+    }
+    Ok(raw.to_string())
+}
+
 /// Flags every agent-side command shares. Declared once so `await` and
 /// `events` cannot drift apart.
 #[derive(Args, Debug)]
@@ -158,7 +178,7 @@ pub struct AwaitArgs {
     #[arg(long)]
     pub artifact: Option<String>,
     /// The lease name. One agent acts at a time, per name.
-    #[arg(long, default_value = "agent")]
+    #[arg(long, default_value = "agent", value_parser = parse_agent_name)]
     pub agent: String,
     /// The session token from a previous call. Omitting it takes a fresh
     /// lease; presenting it refreshes the one you already hold.
@@ -181,7 +201,7 @@ pub struct EventsArgs {
     pub ack: Option<u64>,
     #[arg(long)]
     pub artifact: Option<String>,
-    #[arg(long, default_value = "agent")]
+    #[arg(long, default_value = "agent", value_parser = parse_agent_name)]
     pub agent: String,
     #[arg(long)]
     pub session: Option<String>,
@@ -311,7 +331,7 @@ pub struct PushArgs {
     #[arg(long)]
     pub session: Option<String>,
     /// The lease name.
-    #[arg(long, default_value = "agent")]
+    #[arg(long, default_value = "agent", value_parser = parse_agent_name)]
     pub agent: String,
     /// Take the lease from whoever holds it.
     #[arg(long)]
@@ -334,4 +354,52 @@ pub struct PushArgs {
     /// Do not open a browser on the first push.
     #[arg(long)]
     pub no_open: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parses(args: &[&str]) -> bool {
+        Cli::try_parse_from(args).is_ok()
+    }
+
+    fn strs(v: &[String]) -> Vec<&str> {
+        v.iter().map(String::as_str).collect()
+    }
+
+    #[test]
+    fn an_agent_name_a_follow_line_could_not_carry_is_refused_everywhere() {
+        for cmd in [
+            vec!["artefacto", "await"],
+            vec!["artefacto", "events", "--follow"],
+            vec!["artefacto", "plan", "push", "plan.json"],
+        ] {
+            let with = |name: &str| {
+                let mut v = cmd.clone();
+                v.push("--agent");
+                v.push(name);
+                v.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+            };
+            assert!(parses(&strs(&with("claude"))), "{cmd:?}");
+            assert!(
+                parses(&strs(&with("my agent's"))),
+                "spaces and quotes are fine"
+            );
+            assert!(!parses(&strs(&with(""))), "empty: {cmd:?}");
+            assert!(!parses(&strs(&with("a\nb"))), "control character: {cmd:?}");
+            // `--agent=-x` is the only way a leading dash reaches the parser.
+            let mut eq = cmd.clone();
+            eq.push("--agent=-x");
+            assert!(!parses(&eq), "leading dash: {cmd:?}");
+        }
+    }
+
+    #[test]
+    fn the_name_rule_says_why() {
+        assert!(parse_agent_name("-x").unwrap_err().contains("start with"));
+        assert!(parse_agent_name("").unwrap_err().contains("empty"));
+        assert!(parse_agent_name("a\tb").unwrap_err().contains("control"));
+        assert_eq!(parse_agent_name("ok name").unwrap(), "ok name");
+    }
 }

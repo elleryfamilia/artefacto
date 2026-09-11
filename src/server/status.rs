@@ -59,9 +59,11 @@ pub fn status_json(shared: &Arc<Shared>) -> serde_json::Value {
     })
 }
 
-/// One artifact, with the counts spec 5 names and the thread list the
-/// skill's rule 3 needs: an agent about to answer a redelivered chat frame
-/// looks at `last_actor` before replying a second time.
+/// One artifact, with the counts spec 5 names and every thread's messages,
+/// which spec 7's rule 3 needs: an agent checks the thread for an existing
+/// reply before answering. The messages themselves, not who wrote the last
+/// one — a reviewer who asks two questions in a row gets one reply and then
+/// a "last message is mine" check would skip the second question.
 fn artifact_json(artifact: &Artifact) -> serde_json::Value {
     let count = |status: ThreadStatus| {
         artifact
@@ -79,8 +81,8 @@ fn artifact_json(artifact: &Artifact) -> serde_json::Value {
                 "ref": t.target,
                 "status": t.status.as_str(),
                 "blocking": t.blocking,
-                "messages": t.messages.len(),
-                "last_actor": t.messages.last().map(|m| m.actor.as_str()),
+                "quote": t.quote,
+                "messages": t.messages,
             })
         })
         .collect();
@@ -101,8 +103,7 @@ fn artifact_json(artifact: &Artifact) -> serde_json::Value {
             .filter(|t| t.blocking && t.status == ThreadStatus::Open)
             .count(),
         "threads": threads,
-        "chat": artifact.chat.len(),
-        "chat_last_actor": artifact.chat.last().map(|m| m.actor.as_str()),
+        "chat": artifact.chat,
         "answers": artifact.answers.values().filter(|a| !a.is_empty()).count(),
         "reviewed": artifact.reviewed.len(),
     })
