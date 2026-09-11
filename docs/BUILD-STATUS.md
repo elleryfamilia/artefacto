@@ -21,7 +21,7 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-315 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+326 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
 clean.
 
 | area | file | notes |
@@ -35,11 +35,11 @@ clean.
 | WebSocket | `src/server/socket.rs` | **outbound only** — see below |
 | page commands | `src/server/ingress.rs` | `POST /a/<artifact>/cmd`; submit writes the feedback file first |
 | the lease | `src/server/lease.rs` | one gate around decide, mint, append and fold |
-| delivery | `src/server/delivery.rs` | cursor-driven frames, and the offer that makes the next call an ack |
+| delivery | `src/server/delivery.rs` | cursor-driven frames; the cursor moves only on the agent's `--ack` |
 | `await`, `events`, `ack` | `src/server/poll.rs`, `src/commands/agent.rs` | long poll on a thread |
 | `push` | `src/server/push.rs`, `src/commands/plan.rs` | base-revision check and resolutions in one commit |
 | `reply`, `resolve` | `src/server/verbs.rs` | agent writes, validated inside the append's gate |
-| presence and nudges | `src/server/presence.rs` | announced vs. logged, and the two timers |
+| presence and nudges | `src/server/presence.rs` | presence synced from the lease every tick; the two timers |
 | the feedback document | `src/server/feedback.rs` | `artefacto.feedback/1`, written atomically before the event |
 | CLI client | `src/client.rs` | bearer auth, exit codes, the reconnect rule |
 | `serve`, `stop`, `status` | `src/commands/serve.rs` | real double-fork daemon |
@@ -79,6 +79,77 @@ Each of these was written one way, built, and found to be wrong.
    `value_parser` yielding the `Option` itself is a panic at parse time, not a
    compile error. `--idle off` needs a newtype.
 
+## Review round three: a fresh cross-model pass, and what it changed
+
+After the five slices landed, a fresh reviewer on a different model read the
+code against the spec with no context from the build. It found the locking
+sound — every append through the gate, lock order held everywhere it traced —
+and the **delivery contract wrong in three ordinary ways**, plus four things
+the page or a monitor-mode agent would have hit on day one. All of these are
+now fixed, each with a test that fails without it:
+
+1. **Delivery was at-most-once across an agent crash.** The server remembered
+   the frame it last handed out and acknowledged it on the session's next
+   call. An agent that received a frame and restarted before acting on it
+   called again with no memory, and the server acknowledged on its behalf —
+   the exact failure spec 16 names. Now the agent says what it has dealt with
+   (`--ack <seq>` on the next call, or `ack --seq`), the server never guesses,
+   and a call that acknowledges nothing is handed the same frame again. The
+   test that claimed to cover an agent crash actually exercised a *server*
+   restart; it now covers both.
+2. **`events` and `--follow` never printed the session token**, so a
+   monitor-mode agent could not `reply`. Both print an `artefacto.session/1`
+   line first. The follow's first poll returns at once, because a first poll
+   that waited its full minute held the token back for as long.
+3. **A `--since` replay followed by a plain call exited 2**, because the
+   replayed frame's ack was behind the cursor and refused. Acknowledging is
+   idempotent now: at or behind the cursor is a no-op.
+4. **The timeout tail swept active events into "nothing actionable".** Under
+   `--artifact`, another artifact's chat rode along in a timeout and was
+   acknowledged without ever being delivered as a chat — and the test
+   `await_wakes_only_for_the_artifact_it_was_given` asserted exactly that. The
+   tail is passive-only and stops before the first active event of any
+   artifact; the wait takes one last look for a frame before giving up.
+5. **`push` did not validate the token inside the commit gate.** `reply` and
+   `resolve` did; the biggest mutation did not, and a takeover during plan
+   validation let a superseded agent publish.
+6. **A same-name `push` demoted a live `--follow` lease** to waiting with no
+   pid, so killing the follow stopped releasing it, and the pill flipped twice
+   per push. A `Waiting` claim never demotes a `Live` lease.
+7. **A running server never announced `agent.detached`.** Nothing calls
+   `release` in production, and expiry was the lease simply no longer being
+   current. Presence is now a view over the lease, synced on every tick; a
+   takeover, a release, an expiry and a dead follow all reach the page the
+   same way. The tick itself now runs on every accept-loop iteration,
+   rate-limited, rather than only when no request arrived.
+8. `await` after the server dies mid-wait returned exit 2. Spec 5 says
+   `timeout`; it does that now, and the next call finds no server and exits 4.
+9. `submitted` never reset on a new revision, so round two of a review could
+   never be away or idle. It resets.
+10. A page opened against a server older than the idle window was nudged for
+    idleness on the first tick. A page's arrival now counts as activity.
+11. `--follow` in digest mode printed passive-only timeout frames, waking the
+    monitor for nothing. It prints only frames that end at an active event.
+12. A corrupt batch mark panicked the server on every start (an integer
+    underflow). It is a hard error, and a group missing its earlier members is
+    refused whether or not its mark says it is complete.
+
+One reviewer note was adopted rather than argued with: **expiry is a release.**
+The build had let an expired lease's holder revive it by presenting its token,
+which left `status` saying no agent while a `reply` with the old token still
+worked. Now `status`, the pill, and a write all agree.
+
+**Still open from that review**, all notes for plan 3 and the skill rather
+than defects: the default `--agent agent` means two harnesses on one repo are
+never refused (#13); a feedback-file write failure blocks the submit rather
+than committing the event without a path (#14); the push frame is the raw plan
+plus resolutions, not a rendered snapshot, so the page recomputes anchoring
+(#15); announced events reuse `seq = last_seq()`, so the page must not dedupe
+by seq (#16); a follow that receives `stopped` with no events prints nothing
+before exiting (#17); a replayed lease after a restart blocks other names for
+up to five minutes with an age measured from server start (#18); every push
+prints a fresh bootstrap URL into the transcript (#19).
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
@@ -86,18 +157,21 @@ Each of these was written one way, built, and found to be wrong.
   else, 6.7 rebuilds "every piece of state", and spec 5 promises `await` retries
   after "the server restarts mid-wait" — which it could not, if the restart
   killed its token.
-- **The TTL lets another agent in; it does not punish the holder.** While
-  nobody else has taken the lease, presenting its own token revives it.
+- **The agent acknowledges; nothing is implicit.** Spec 5's "calling `await`
+  or `events` again acknowledges everything the previous call returned" is
+  at-most-once, and spec 16 forbids it. The next call acknowledges only what
+  the agent names with `--ack`.
 - **`events --follow` is a loop of long polls, not a streamed response body.**
   Streaming would mean a chunked `tiny_http` response fed by a pipe whose
   flushing is not ours to control, for no gain. The held connection's one real
   benefit — "a `--follow` disconnect releases the lease immediately" — comes
-  from `Mode::Live` recording the process's pid instead.
-- **The offer is memory-only.** Losing it on a restart costs one redelivery,
-  which spec 5 already requires every handler to tolerate.
+  from `Mode::Live` recording the process's pid instead. The follow never
+  acknowledges on its own; it advances its own read position and the agent
+  runs `ack --seq` after acting.
 - **`--artifact` chooses what wakes an agent, not what it may see.** Dropping
   another artifact's events from the middle of a frame would move the
-  acknowledged cursor past events nobody received.
+  acknowledged cursor past events nobody received. The timeout tail is the
+  exception: it stops before any active event.
 - **The change summary is derived**, by diffing the previous plan against the
   new one, because spec 5's push surface has no flag for it.
 - **Spec 6.2's 30-second activity throttle is the page's, not the server's.**
@@ -106,13 +180,17 @@ Each of these was written one way, built, and found to be wrong.
 
 ## Spec edits made
 
-Both plans named two, and building found a third. All three are now in
-`docs/specs/2026-09-06-artefacto-design.md`:
+Both plans named two, building found a third, and the review found a fourth.
+All are in `docs/specs/2026-09-06-artefacto-design.md`:
 
 1. Spec 5's `await` status table gained a `back` row, matching 6.2's active list.
 2. `reply` gained `--nudge`, which 6.3's `nudge` event needed and 5 had no flag for.
 3. `plan push` gained optional `--session`, `--agent` and `--takeover`, because
    push is usually an agent's first command and has no token to present yet.
+4. `await` and `events` gained `--ack SEQ`, and spec 5's delivery paragraph and
+   spec 7's rules say the agent acknowledges after acting. The sentence that
+   had the next call acknowledge by itself is marked as the at-most-once it
+   was. `events` prints an `artefacto.session/1` line first.
 
 ## What is not built
 
@@ -144,6 +222,10 @@ Stated plainly, because a passing suite is not the same as a covered one.
 - **The `away` timer's real-time path is not exercised end to end.** The tests
   drive `presence::tick` with an explicit clock. The accept loop calls it with
   the real one, which is a one-line difference, but it is a difference.
+- **A follow that restarts mid-stream is not tested as a process.** That it
+  replays what was printed but never acknowledged follows from the follow
+  acknowledging nothing (tested) and the cursor being in the log (tested); no
+  test kills a follow after a frame and starts another.
 
 ## How this was checked
 
@@ -151,18 +233,28 @@ Each slice was built, then its rules were mutated one at a time to confirm a
 test fails. The mutations that were tried, and all of which were caught:
 deciding the lease outside the gate (eight callers all compute generation 1),
 dropping the dead-pid rule, making a refresh mint a new lease, disabling the
-TTL, making internal records deliverable, letting an agent hear itself, keying
-the offer without a token, running a frame past the first active event,
-acknowledging under `--since`, returning from the long poll without waiting,
-dropping `--follow`'s pid, skipping the implicit ack, reading the base revision
-from the server, appending a revision and its resolutions separately, storing
-only a summary instead of the plan, dropping the batch mark, writing the
-feedback file after the event, logging presence instead of announcing it,
-firing idle every tick, ignoring submission in the away rule, and truncating
-the feedback file in place.
+TTL, making internal records deliverable, letting an agent hear itself,
+running a frame past the first active event, returning from the long poll
+without waiting, dropping `--follow`'s pid, reading the base revision from the
+server, appending a revision and its resolutions separately, storing only a
+summary instead of the plan, dropping the batch mark, writing the feedback
+file after the event, logging presence instead of announcing it, firing idle
+every tick, ignoring submission in the away rule, and truncating the feedback
+file in place.
 
-The loop was then driven by hand against a real daemon: push with no server
-running, bootstrap a page, comment, ask, `await`, `reply`, `resolve`, a stale
-push refused with exit 7, submit, and the feedback document on disk with
-server-assigned ids. `events --follow` attached as a live lease with its pid,
-streamed a frame, survived a same-name push, and exited 0 on `stop`.
+The fix slice after the review was checked the same way: having the server
+acknowledge the frame it hands out, printing no session line, refusing an ack
+behind the cursor, letting the timeout tail carry active events, skipping the
+token check in push's gate, demoting a live lease on a waiting claim, never
+announcing detached, never resetting `submitted`, and reverting the batch-mark
+subtraction to one that underflows. Each fails the test that names it.
+
+The loop was then driven by hand against a real daemon, twice. First: push
+with no server running, bootstrap a page, comment, ask, `await`, `reply`,
+`resolve`, a stale push refused with exit 7, submit, and the feedback document
+on disk with server-assigned ids. After the fixes: a second `await` without
+`--ack` handed back the same frame and `--ack` moved the cursor; `events
+--follow` printed its session line at once, that token worked for `reply`, the
+lease was live with the follow's pid and gone within half a second of `kill
+-9`; and an `await` whose daemon was killed mid-wait returned `timeout` with
+exit 0, with the next call exiting 4.
