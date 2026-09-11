@@ -334,3 +334,182 @@ fn list_outside_a_repository_is_a_usage_error() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("git repository"));
 }
+
+// ---------------------------------------------------------------------------
+// The server's half: a push records the row, and the review keeps it current.
+// ---------------------------------------------------------------------------
+
+use support::InProcess;
+
+struct Live {
+    repo: Repo,
+    server: InProcess,
+    plan: String,
+    session: String,
+}
+
+fn pushed(fixture_name: &str) -> Live {
+    let repo = Repo::new();
+    let server = InProcess::start_in(&repo);
+    let plan = plan_in(&repo, fixture_name, "plan.json");
+    let out = repo.json(&["plan", "push", &plan, "--json", "--no-open"]);
+    Live {
+        repo,
+        server,
+        plan,
+        session: out["session"].as_str().expect("a session").to_string(),
+    }
+}
+
+impl Live {
+    /// The one row, since these tests push one plan.
+    fn row(&self) -> serde_json::Value {
+        let listed = list(&self.repo);
+        let rows = listed["artifacts"].as_array().expect("rows");
+        assert_eq!(rows.len(), 1, "one row per artifact: {listed}");
+        rows[0].clone()
+    }
+
+    fn poster(&self) -> String {
+        let row = self.row();
+        let path = row["poster"].as_str().expect("a poster path");
+        std::fs::read_to_string(path).expect("the poster is on disk")
+    }
+
+    fn open_thread(&self, artifact: &str, client: &str, target: &str, blocking: bool) -> String {
+        let cookie = self.server.session_cookie(artifact);
+        let opened = self.server.post_cmd(
+            &cookie,
+            artifact,
+            serde_json::json!({
+                "cmd": "thread.open", "client_id": client, "ref": target,
+                "text": format!("about {target}"), "blocking": blocking, "opened_revision": 1,
+            }),
+        );
+        opened["assigned"].as_str().expect("an id").to_string()
+    }
+
+    fn push_again(&self, base: u32) -> serde_json::Value {
+        let base = base.to_string();
+        self.repo.json(&[
+            "plan",
+            "push",
+            &self.plan,
+            "--json",
+            "--no-open",
+            "--session",
+            &self.session,
+            "--base-revision",
+            &base,
+        ])
+    }
+}
+
+#[test]
+fn push_records_the_revision_and_every_later_change_to_the_review() {
+    let l = pushed("minimal.json");
+    let row = l.row();
+    assert_eq!(row["id"], "plan:demo");
+    assert_eq!(row["revision"], 1);
+    assert_eq!(row["source_path"], l.plan);
+    assert_eq!(
+        row["rendered_path"],
+        serde_json::Value::Null,
+        "never rendered statically"
+    );
+    let status = l.repo.json(&["status", "--json"]);
+    assert_eq!(
+        row["revised_at"], status["artifacts"][0]["revised_at"],
+        "the row's time is the revision event's own"
+    );
+    let poster = l.poster();
+    assert!(poster.contains(">rev 1<"), "{poster}");
+    assert!(poster.contains("0 open · in review"), "{poster}");
+
+    let thread = l.open_thread("plan:demo", "cid-1", "task:t-a", true);
+    assert_eq!(l.row()["open_threads"], 1, "a thread opened by the page");
+    assert!(l.poster().contains("1 open · in review"));
+
+    l.repo
+        .run(&["resolve", &thread, "--session", &l.session, "--changed"])
+        .success();
+    assert_eq!(l.row()["open_threads"], 0, "resolved by the agent");
+
+    let cookie = l.server.session_cookie("plan:demo");
+    l.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "review.submit", "client_id": "cid-2",
+            "verdict": "approve", "base_revision": 1,
+        }),
+    );
+    let row = l.row();
+    assert_eq!(row["verdict"], "approve");
+    assert_eq!(row["submitted"], true);
+    assert!(l.poster().contains("0 open · approved"));
+    let status = l.repo.json(&["status", "--json"]);
+    assert_eq!(status["artifacts"][0]["verdict"], "approve", "{status}");
+
+    // A second revision reopens the review and keeps the last verdict.
+    let out = l.push_again(1);
+    assert_eq!(out["revision"], 2);
+    let row = l.row();
+    assert_eq!(row["revision"], 2);
+    assert_eq!(row["submitted"], false);
+    assert_eq!(row["verdict"], "approve", "the last verdict, still");
+    assert!(l.poster().contains(">rev 2<"));
+    assert!(
+        row["revised_at"].as_str().unwrap()
+            >= status["artifacts"][0]["revised_at"].as_str().unwrap(),
+        "revised_at moves with the revision"
+    );
+}
+
+#[test]
+fn a_static_render_and_its_push_are_one_row_that_keeps_the_rendered_path() {
+    let repo = Repo::new();
+    let plan = plan_in(&repo, "minimal.json", "plan.json");
+    render(&repo, &plan, "plan.html");
+    let _server = InProcess::start_in(&repo);
+    repo.json(&["plan", "push", &plan, "--json", "--no-open"]);
+
+    let listed = list(&repo);
+    let rows = listed["artifacts"].as_array().unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the same plan, rendered then pushed, is one row"
+    );
+    assert_eq!(rows[0]["revision"], 1);
+    assert_eq!(
+        rows[0]["rendered_path"],
+        real(&repo).join("plan.html").display().to_string(),
+        "the push does not forget where the static page was written"
+    );
+    let poster = std::fs::read_to_string(rows[0]["poster"].as_str().unwrap()).unwrap();
+    assert!(poster.contains(">rev 1<"), "the push redrew the poster");
+}
+
+#[test]
+fn a_thread_whose_element_a_push_removed_counts_as_unanchored() {
+    let l = pushed("kitchen-sink.json");
+    l.open_thread("plan:auth-refactor", "cid-1", "task:t-bench", false);
+    assert_eq!(l.row()["open_threads"], 1);
+
+    let text = std::fs::read_to_string(&l.plan).unwrap();
+    let without = text.replace(
+        r#",
+        { "id": "t-bench", "title": "Benchmarks", "status": "cut", "risk": "low" }"#,
+        "",
+    );
+    assert_ne!(text, without, "the edit found its line");
+    std::fs::write(&l.plan, without).unwrap();
+    let out = l.push_again(1);
+    assert_eq!(out["revision"], 2, "{out}");
+
+    let row = l.row();
+    assert_eq!(row["open_threads"], 0);
+    assert_eq!(row["unanchored_threads"], 1);
+    assert!(l.poster().contains("1 unanchored"));
+}

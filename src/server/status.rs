@@ -95,6 +95,8 @@ fn artifact_json(artifact: &Artifact) -> serde_json::Value {
         "source_path": artifact.source_path,
         "feedback_path": crate::server::feedback::feedback_path(Path::new(&artifact.source_path)),
         "submitted": artifact.submitted,
+        "verdict": artifact.verdict,
+        "revised_at": artifact.revised_at,
         "open_threads": count(ThreadStatus::Open),
         "unanchored_threads": count(ThreadStatus::Unanchored),
         "blocking_threads": artifact

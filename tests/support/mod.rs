@@ -527,6 +527,30 @@ impl FakePage {
         }
     }
 
+    /// The next frame carrying a logged event. Presence announcements
+    /// (`agent.attached`, `agent.detached`, `nudge`) are broadcast from the
+    /// accept loop's tick, which runs on the next request's arrival once
+    /// 200 ms have passed, so one can land just ahead of the frame a test is
+    /// waiting for. A test that wants the push, not the pill, reads past
+    /// them here.
+    pub fn next_logged_frame(&mut self) -> serde_json::Value {
+        loop {
+            let frame = self.next_frame();
+            let announced = frame["events"].as_array().is_some_and(|events| {
+                !events.is_empty()
+                    && events.iter().all(|e| {
+                        matches!(
+                            e["type"].as_str(),
+                            Some("agent.attached" | "agent.detached" | "nudge")
+                        )
+                    })
+            });
+            if !announced {
+                return frame;
+            }
+        }
+    }
+
     /// True when nothing arrives within `d`.
     pub fn no_frame_within(&mut self, d: std::time::Duration) -> bool {
         self.set_deadline(Some(d));

@@ -111,6 +111,11 @@ pub struct Artifact {
     /// Page-level chat, folded so a restart can rebuild the conversation.
     pub chat: Vec<Message>,
     pub submitted: bool,
+    /// The last verdict sent, kept across a new revision: a new revision
+    /// reopens the review, and the verdict is still the last one given.
+    pub verdict: Option<String>,
+    /// When the current revision was published, from its event.
+    pub revised_at: String,
 }
 
 impl Thread {

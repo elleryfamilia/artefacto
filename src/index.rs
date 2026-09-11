@@ -112,6 +112,81 @@ pub fn render_entry(
     }
 }
 
+/// Which events change what a row says. A reply, an answer, a reviewed
+/// mark, or a chat message changes nothing the index shows.
+pub fn changes_row(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "revision.published"
+            | "thread.opened"
+            | "thread.deleted"
+            | "thread.resolved"
+            | "review.submitted"
+    )
+}
+
+/// The rows to write after `events` were folded: one per distinct artifact
+/// that a row-changing event named, with its poster.
+pub fn rows_for(
+    review: &crate::server::review::Review,
+    events: &[crate::server::event::Event],
+) -> Vec<(Entry, String)> {
+    let mut seen = std::collections::BTreeSet::new();
+    events
+        .iter()
+        .filter(|e| !e.artifact.is_empty() && changes_row(&e.r#type))
+        .filter(|e| seen.insert(e.artifact.clone()))
+        .filter_map(|e| review.artifacts.get(&e.artifact))
+        .filter_map(review_entry)
+        .collect()
+}
+
+/// The row a live review records, and its poster, from the folded artifact.
+/// `None` when the stored plan will not parse even leniently, which a
+/// validated push cannot produce; the row is then left as it was.
+pub fn review_entry(artifact: &crate::server::review::Artifact) -> Option<(Entry, String)> {
+    use crate::server::review::ThreadStatus;
+    let raw = serde_json::to_string(&artifact.plan).ok()?;
+    let plan = crate::plan::model::parse(&raw, true).ok()?.plan;
+    let count = |status: ThreadStatus| {
+        artifact
+            .threads
+            .iter()
+            .filter(|t| t.status == status)
+            .count()
+    };
+    let state = crate::plan::poster::ReviewState {
+        revision: artifact.revision,
+        open_threads: count(ThreadStatus::Open),
+        unanchored_threads: count(ThreadStatus::Unanchored),
+        submitted: artifact.submitted,
+        verdict: artifact.verdict.clone(),
+    };
+    let poster = crate::plan::poster::poster_svg(&plan, &state);
+    let entry = Entry {
+        id: artifact.id.clone(),
+        kind: artifact
+            .id
+            .split_once(':')
+            .map(|(kind, _)| kind)
+            .unwrap_or_default()
+            .to_string(),
+        title: plan.meta.title.clone(),
+        plan_hash: artifact.plan_hash.clone(),
+        source_path: artifact.source_path.clone(),
+        rendered_path: None,
+        revision: artifact.revision,
+        revised_at: artifact.revised_at.clone(),
+        recorded_at: String::new(),
+        open_threads: state.open_threads,
+        unanchored_threads: state.unanchored_threads,
+        submitted: state.submitted,
+        verdict: state.verdict,
+        extra: BTreeMap::new(),
+    };
+    Some((entry, poster))
+}
+
 /// The version number of an `artefacto.index/N` string, if it is one.
 fn format_version(format: &str) -> Option<u32> {
     format.strip_prefix("artefacto.index/")?.parse().ok()
@@ -202,7 +277,12 @@ impl Index {
         let tmp = self.dir.join("index.json.tmp");
         let text = serde_json::to_string_pretty(&self.file)?;
         fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
-        fs::File::open(&tmp)?.sync_all()?;
+        // No fsync, on purpose. The server writes this under its commit
+        // gate, and a full fsync on macOS costs tens of milliseconds per
+        // commit for a file that is a convenience: a crash that loses the
+        // newest row loses nothing the next state change does not write
+        // again, and a torn file loads empty and is repaired by that write.
+        // The rename still makes each row's contents all-or-nothing.
         fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))?;
         Ok(())
     }
@@ -220,6 +300,12 @@ pub enum Outcome {
 /// Upsert `entry` by id, and write its poster beside it. The row goes to
 /// the front. Under the lock: a concurrent writer's row is reloaded before
 /// this one is added, not overwritten.
+///
+/// A render and a push of one plan are one row, and each knows something
+/// the other does not: the render its output path, the push nothing of it.
+/// A field the new row leaves empty keeps the old row's value, so a push
+/// does not erase where the static page was written, and fields a newer
+/// artefacto wrote survive a rewrite by this one.
 pub fn record(dir: &Path, mut entry: Entry, poster_svg: Option<&str>) -> Result<Outcome> {
     let _lock = IndexLock::acquire(dir)?;
     let mut index = Index::load(dir);
@@ -229,6 +315,17 @@ pub fn record(dir: &Path, mut entry: Entry, poster_svg: Option<&str>) -> Result<
     entry.recorded_at = crate::time::now_rfc3339();
     if let Some(svg) = poster_svg {
         write_poster(dir, &entry.id, svg)?;
+    }
+    if let Some(previous) = index.file.artifacts.iter().find(|e| e.id == entry.id) {
+        if entry.rendered_path.is_none() {
+            entry.rendered_path = previous.rendered_path.clone();
+        }
+        for (key, value) in &previous.extra {
+            entry
+                .extra
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
+        }
     }
     index.file.artifacts.retain(|e| e.id != entry.id);
     index.file.artifacts.insert(0, entry);

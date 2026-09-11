@@ -106,6 +106,7 @@ fn revision(review: &mut Review, event: &Event) {
     entry.source_path = str_field(event, "source_path");
     entry.summary = str_field(event, "summary");
     entry.plan = plan;
+    entry.revised_at = event.ts.clone();
     // A new revision reopens the review. Spec 7 rule 4 has the agent push the
     // next revision after a submit "and keep the monitor armed for the next
     // round"; a review that stayed submitted would never be away again and
@@ -251,6 +252,9 @@ fn chat(review: &mut Review, event: &Event) {
 fn submitted(review: &mut Review, event: &Event) {
     if let Some(artifact) = artifact_mut(review, event) {
         artifact.submitted = true;
+        if let Some(verdict) = event.data.get("verdict").and_then(|v| v.as_str()) {
+            artifact.verdict = Some(verdict.to_string());
+        }
     }
 }
 

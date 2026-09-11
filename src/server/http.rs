@@ -78,6 +78,8 @@ pub struct Core {
 }
 
 pub struct Shared {
+    /// The state directory: the log's home, and the index's.
+    pub dir: std::path::PathBuf,
     /// The mutation gate. Acquire before `log` or `core` for any state change.
     pub commit: Mutex<()>,
     pub log: Mutex<EventLog>,
@@ -115,6 +117,7 @@ impl Shared {
         // server knows about a review, it read from here.
         let review = crate::server::fold::fold(log.since(0));
         Ok(Shared {
+            dir: dir.to_path_buf(),
             commit: Mutex::new(()),
             log: Mutex::new(log),
             core: Mutex::new(Core {
@@ -551,10 +554,22 @@ impl<'a> Committer<'a> {
             let mut log = self.shared.log.lock().unwrap();
             log.append_all(entries)?
         };
-        {
+        let rows = {
             let mut core = self.shared.core.lock().unwrap();
             for event in &events {
                 crate::server::fold::apply(&mut core.review, event);
+            }
+            crate::index::rows_for(&core.review, &events)
+        };
+        // The artifact index (spec 4.4), for every artifact whose row these
+        // events changed. Still under the gate, so rows land in commit
+        // order, but after `core` is released: the write is a file and a
+        // lock, and nothing blocking runs under `core`. Best effort, on
+        // purpose: the commit is already in the log, and a registry problem
+        // is reported in the server's log rather than as a failed write.
+        for (entry, poster) in rows {
+            if let Err(e) = crate::index::record(&self.shared.dir, entry, Some(&poster)) {
+                eprintln!("index: {e:#}");
             }
         }
         Ok(events)
