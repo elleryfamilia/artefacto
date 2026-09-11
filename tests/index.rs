@@ -656,6 +656,13 @@ fn a_render_of_a_live_artifact_keeps_the_reviews_facts() {
     let thread = l.open_thread("plan:demo", "cid-1", "task:t-a", true);
     let before = l.row();
     assert_eq!(before["open_threads"], 1);
+    // Backdate the revision in the file, so "the render's time" and "the
+    // revision's time" cannot coincide within one second.
+    let index_path = l.repo.state_dir().join("index.json");
+    let mut file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&index_path).unwrap()).unwrap();
+    file["artifacts"][0]["revised_at"] = serde_json::json!("2026-09-01T00:00:00Z");
+    std::fs::write(&index_path, file.to_string()).unwrap();
 
     let out = render(&l.repo, &l.plan, "plan.html");
     assert_eq!(out["index"]["recorded"], true, "{out}");
@@ -663,9 +670,10 @@ fn a_render_of_a_live_artifact_keeps_the_reviews_facts() {
     assert_eq!(row["revision"], 1, "still the pushed revision: {row}");
     assert_eq!(row["open_threads"], 1);
     assert_eq!(
-        row["revised_at"], before["revised_at"],
+        row["revised_at"], "2026-09-01T00:00:00Z",
         "the revision's time, not the render's"
     );
+    assert_eq!(row["age"], "on 2026-09-01");
     assert_eq!(
         row["rendered_path"],
         real(&l.repo).join("plan.html").display().to_string()
