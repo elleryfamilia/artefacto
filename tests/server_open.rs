@@ -22,9 +22,10 @@ fn push(repo: &Repo, plan: &str) -> serde_json::Value {
     repo.json(&["plan", "push", plan, "--json", "--no-open"])
 }
 
-/// The link's whole job: one GET signs the browser in and sends it to the
-/// artifact; a second GET is refused.
-fn assert_signs_in_once(port: u16, url: &str, artifact: &str) {
+/// The link's whole job: one GET signs the browser in and sends it to
+/// `landing` — an artifact's page, or the index at `/`; a second GET is
+/// refused.
+fn assert_signs_in_once(port: u16, url: &str, landing: &str) {
     let path = url
         .strip_prefix(&format!("http://127.0.0.1:{port}"))
         .unwrap_or_else(|| panic!("the link must point at this server: {url}"));
@@ -35,8 +36,8 @@ fn assert_signs_in_once(port: u16, url: &str, artifact: &str) {
         "the link trades itself for the page cookie: {first}"
     );
     assert!(
-        first.contains(&format!("Location: /a/{artifact}")),
-        "and lands on the artifact: {first}"
+        first.contains(&format!("Location: {landing}\r\n")),
+        "and lands on {landing}: {first}"
     );
     let second = get(port, path);
     assert_eq!(
@@ -69,7 +70,7 @@ fn open_mints_a_fresh_link_that_signs_a_browser_in_once() {
             !url.contains(&repo.secret()),
             "the link is a one-time token, never the bearer secret"
         );
-        assert_signs_in_once(port, &url, "plan:demo");
+        assert_signs_in_once(port, &url, "/a/plan:demo");
     });
 }
 
@@ -85,12 +86,12 @@ fn open_json_carries_the_contract_and_the_link_works() {
         assert_eq!(out["ok"], true);
         assert_eq!(out["artifact"], "plan:demo");
         let url = out["url"].as_str().expect("a url");
-        assert_signs_in_once(port, url, "plan:demo");
+        assert_signs_in_once(port, url, "/a/plan:demo");
     });
 }
 
 #[test]
-fn open_needs_a_name_when_there_are_several_artifacts_and_refuses_an_unknown_one() {
+fn open_with_several_artifacts_lands_on_the_index_and_refuses_an_unknown_name() {
     let repo = Repo::new();
     let demo = plan_in(&repo, "minimal.json");
     let sink = plan_in(&repo, "kitchen-sink.json");
@@ -111,12 +112,9 @@ fn open_needs_a_name_when_there_are_several_artifacts_and_refuses_an_unknown_one
     let unknown = repo.run(&["open", "--no-open", "--artifact", "plan:nope"]);
     let named = repo.run(&["open", "--no-open", "--artifact", "plan:auth-refactor"]);
     repo_stop_later(&repo, || {
-        assert_eq!(unnamed.code, 2, "{}", unnamed.stdout);
-        assert!(
-            unnamed.stderr.contains("--artifact"),
-            "the refusal says how to fix it: {}",
-            unnamed.stderr
-        );
+        // Spec 5: "with no id and several, the artifact index".
+        let index_url = unnamed.success().stdout.trim().to_string();
+        assert_signs_in_once(port, &index_url, "/");
         assert_eq!(unknown.code, 2, "{}", unknown.stdout);
         assert!(
             unknown.stderr.contains("plan:nope"),
@@ -124,7 +122,7 @@ fn open_needs_a_name_when_there_are_several_artifacts_and_refuses_an_unknown_one
             unknown.stderr
         );
         let url = named.success().stdout.trim().to_string();
-        assert_signs_in_once(port, &url, "plan:auth-refactor");
+        assert_signs_in_once(port, &url, "/a/plan:auth-refactor");
     });
 }
 
@@ -188,7 +186,7 @@ fn open_recovers_a_log_whose_torn_tail_ends_inside_a_multibyte_character() {
     let port = repo.port();
     repo_stop_later(&repo, || {
         let url = out.success().stdout.trim().to_string();
-        assert_signs_in_once(port, &url, "plan:demo");
+        assert_signs_in_once(port, &url, "/a/plan:demo");
     });
 }
 
@@ -218,7 +216,7 @@ fn open_starts_the_server_when_none_is_running() {
     let port = repo.port();
     repo_stop_later(&repo, || {
         let url = out.success().stdout.trim().to_string();
-        assert_signs_in_once(port, &url, "plan:demo");
+        assert_signs_in_once(port, &url, "/a/plan:demo");
     });
 }
 

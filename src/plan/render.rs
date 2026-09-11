@@ -569,6 +569,12 @@ fn phase_progress(phase: &Phase) -> String {
     }
 }
 
+/// The page stylesheet, for another served page that should look like the
+/// plan page. The index (`server::index_page`) is the one so far.
+pub fn stylesheet() -> &'static str {
+    CSS
+}
+
 pub fn render(plan: &Plan) -> String {
     let hash = plan_hash(plan);
     let island = escape_json_island(

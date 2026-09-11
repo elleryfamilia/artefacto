@@ -78,6 +78,8 @@ pub struct Core {
 }
 
 pub struct Shared {
+    /// The state directory: the log's home, and the index's.
+    pub dir: std::path::PathBuf,
     /// The mutation gate. Acquire before `log` or `core` for any state change.
     pub commit: Mutex<()>,
     pub log: Mutex<EventLog>,
@@ -97,6 +99,9 @@ pub struct Shared {
     /// reach zero before returning, so a long poll that is about to answer
     /// "stopped" is not cut off by the process exiting underneath it.
     in_flight: AtomicUsize,
+    /// The index refused a row because a newer artefacto wrote the file.
+    /// Said once in the server's log, not on every commit.
+    index_readonly_said: AtomicBool,
 }
 
 impl Shared {
@@ -115,6 +120,7 @@ impl Shared {
         // server knows about a review, it read from here.
         let review = crate::server::fold::fold(log.since(0));
         Ok(Shared {
+            dir: dir.to_path_buf(),
             commit: Mutex::new(()),
             log: Mutex::new(log),
             core: Mutex::new(Core {
@@ -138,6 +144,7 @@ impl Shared {
             epoch: Instant::now(),
             stopping: AtomicBool::new(false),
             in_flight: AtomicUsize::new(0),
+            index_readonly_said: AtomicBool::new(false),
         })
     }
 
@@ -304,6 +311,12 @@ fn handle(shared: &Arc<Shared>, request: Request) {
                 let _ = request.respond(error_response(404, "not_found", "no such route"));
             }
         };
+    }
+    if path == "/" {
+        return crate::server::index_page::serve_index(shared, request);
+    }
+    if path == "/index/remove" {
+        return crate::server::index_page::handle_remove(shared, request);
     }
     if path == "/healthz" {
         let _ = request.respond(json_response(200, "{\"ok\":true}"));
@@ -551,10 +564,31 @@ impl<'a> Committer<'a> {
             let mut log = self.shared.log.lock().unwrap();
             log.append_all(entries)?
         };
-        {
+        let rows = {
             let mut core = self.shared.core.lock().unwrap();
             for event in &events {
                 crate::server::fold::apply(&mut core.review, event);
+            }
+            crate::index::rows_for(&core.review, &events)
+        };
+        // The artifact index (spec 4.4), for every artifact whose row these
+        // events changed. Still under the gate, so rows land in commit
+        // order, but after `core` is released: the write is a file and a
+        // lock, and nothing blocking runs under `core`. Best effort, on
+        // purpose: the commit is already in the log, and a registry problem
+        // is reported in the server's log rather than as a failed write.
+        for (entry, poster) in rows {
+            match crate::index::record(&self.shared.dir, entry, Some(&poster)) {
+                Ok(crate::index::Outcome::Recorded) => {}
+                Ok(crate::index::Outcome::ReadOnlyNewer) => {
+                    if !self.shared.index_readonly_said.swap(true, Ordering::SeqCst) {
+                        eprintln!(
+                            "index: index.json was written by a newer artefacto; rows are not \
+                             being kept current"
+                        );
+                    }
+                }
+                Err(e) => eprintln!("index: {e:#}"),
             }
         }
         Ok(events)

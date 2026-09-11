@@ -8,9 +8,11 @@
 //! exists:
 //!
 //! 1. An **unterminated** final line is a torn write and is truncated.
-//!    Anything else that does not parse — a bad line in the middle, a sequence
-//!    gap, a foreign format — is a hard error. Dropping committed history
-//!    quietly is worse than refusing to start.
+//!    Anything else that does not parse — a bad line in the middle, a
+//!    sequence number that does not go up, a foreign format — is a hard
+//!    error. Dropping committed history quietly is worse than refusing to
+//!    start. A **gap** in the numbers is not an error: `clean` takes a
+//!    finished review's events out and leaves the rest at their numbers.
 //! 2. A final **incomplete batch** is an interrupted commit and is dropped
 //!    whole. One `write_all` is not a transaction: the kernel can take a
 //!    prefix of the buffer and the process can die, leaving two complete,
@@ -84,6 +86,74 @@ pub fn has_artifact(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the log would open: the same reading as [`EventLog::open`] with
+/// nothing written back, for a caller that must know before it acts. A
+/// torn tail or an interrupted commit passes (open would recover them); a
+/// bad line, a foreign format, or a number that does not go up fails.
+pub fn check(dir: &Path) -> Result<()> {
+    let path = dir.join("events.ndjson");
+    if !path.exists() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    parse(&path, &bytes).map(|_| ())
+}
+
+/// Every complete record of `bytes`, and where the good bytes end.
+fn parse(path: &Path, bytes: &[u8]) -> Result<(Vec<Event>, usize)> {
+    let mut events = Vec::new();
+    let mut offset = 0usize;
+    let mut line_no = 0usize;
+    let mut good_bytes = 0usize;
+    // Where each accepted record starts, so an interrupted commit can be
+    // cut back to the byte before its first member.
+    let mut starts: Vec<usize> = Vec::new();
+
+    while offset < bytes.len() {
+        starts.push(offset);
+        let rest = &bytes[offset..];
+        let Some(nl) = rest.iter().position(|b| *b == b'\n') else {
+            // No terminator: a torn tail. Truncate it, whatever it holds.
+            break;
+        };
+        line_no += 1;
+        let line = &rest[..nl];
+        let text = std::str::from_utf8(line)
+            .with_context(|| format!("{}: line {line_no} is not utf-8", path.display()))?;
+        let event: Event = serde_json::from_str(text)
+            .with_context(|| format!("{}: line {line_no} is not an event", path.display()))?;
+        if event.format != EVENT_FORMAT {
+            bail!(
+                "{}: line {line_no} declares {}, not {EVENT_FORMAT}",
+                path.display(),
+                event.format
+            );
+        }
+        // Strictly increasing, not contiguous: `clean` takes a finished
+        // review's events out and leaves the rest at their numbers, so a
+        // gap is history, not corruption. A number that does not go up is.
+        let last = events.last().map(|e: &Event| e.seq).unwrap_or(0);
+        if event.seq <= last {
+            bail!(
+                "{}: line {line_no} has seq {}, not above seq {last}",
+                path.display(),
+                event.seq
+            );
+        }
+        events.push(event);
+        offset += nl + 1;
+        good_bytes = offset;
+    }
+
+    // An interrupted commit: the last record on disk says it is one of
+    // several, and the rest never arrived.
+    if let Some(cut) = incomplete_batch_start(&events, &starts)? {
+        events.truncate(cut);
+        good_bytes = starts[cut];
+    }
+    Ok((events, good_bytes))
+}
+
 impl EventLog {
     pub fn open(dir: &Path) -> Result<EventLog> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -93,63 +163,16 @@ impl EventLog {
         if path.exists() {
             let bytes =
                 std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-            let mut offset = 0usize;
-            let mut line_no = 0usize;
-            let mut good_bytes = 0usize;
-            // Where each accepted record starts, so an interrupted commit can
-            // be cut back to the byte before its first member.
-            let mut starts: Vec<usize> = Vec::new();
-
-            while offset < bytes.len() {
-                starts.push(offset);
-                let rest = &bytes[offset..];
-                let Some(nl) = rest.iter().position(|b| *b == b'\n') else {
-                    // No terminator: a torn tail. Truncate it, whatever it holds.
-                    break;
-                };
-                line_no += 1;
-                let line = &rest[..nl];
-                let text = std::str::from_utf8(line)
-                    .with_context(|| format!("{}: line {line_no} is not utf-8", path.display()))?;
-                let event: Event = serde_json::from_str(text).with_context(|| {
-                    format!("{}: line {line_no} is not an event", path.display())
-                })?;
-                if event.format != EVENT_FORMAT {
-                    bail!(
-                        "{}: line {line_no} declares {}, not {EVENT_FORMAT}",
-                        path.display(),
-                        event.format
-                    );
-                }
-                let expected = events.len() as u64 + 1;
-                if event.seq != expected {
-                    bail!(
-                        "{}: line {line_no} has seq {}, expected seq {expected}",
-                        path.display(),
-                        event.seq
-                    );
-                }
-                events.push(event);
-                offset += nl + 1;
-                good_bytes = offset;
-            }
-
-            // An interrupted commit: the last record on disk says it is one of
-            // several, and the rest never arrived.
-            if let Some(cut) = incomplete_batch_start(&events, &starts)? {
-                events.truncate(cut);
-                good_bytes = starts[cut];
-            }
-
+            let (parsed, good_bytes) = parse(&path, &bytes)?;
+            events = parsed;
             if good_bytes < bytes.len() {
                 let f = OpenOptions::new().write(true).open(&path)?;
                 f.set_len(good_bytes as u64)?;
                 f.sync_all()?;
             }
         }
-
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        let next_seq = events.len() as u64 + 1;
+        let next_seq = events.last().map(|e| e.seq + 1).unwrap_or(1);
         Ok(EventLog {
             path,
             file,
@@ -244,6 +267,93 @@ impl EventLog {
     }
 }
 
+/// What `clean` did to the log.
+#[derive(Debug, Default)]
+pub struct Cleaned {
+    /// Artifacts whose review was sent, and whose events are gone.
+    pub removed: Vec<String>,
+    /// Artifacts still in the log, their review open.
+    pub kept: Vec<String>,
+    pub events_removed: usize,
+}
+
+/// `artefacto clean` (spec 6.7): drop every event of every artifact whose
+/// review was sent, keep the rest at their numbers (spec 4.2: "it never
+/// renumbers"), and end the log with a `log.cleaned` record numbered past
+/// the old high-water mark. That last record is what keeps a cursor
+/// honest: an agent that acknowledged seq 50 before the clean must not
+/// find the next event numbered 41 and never see it, so the log's highest
+/// number survives even when the events that carried it do not. Lease and
+/// cursor records name no artifact and stay.
+///
+/// Runs only with no server, because the server is the log's only writer
+/// while it lives; the command stops it first.
+pub fn clean(dir: &Path) -> Result<Cleaned> {
+    let log = EventLog::open(dir)?;
+    let events = log.since(0).to_vec();
+    let last_seq = log.last_seq();
+    drop(log);
+    let review = crate::server::fold::fold(&events);
+    let submitted: std::collections::BTreeSet<String> = review
+        .artifacts
+        .values()
+        .filter(|a| a.submitted)
+        .map(|a| a.id.clone())
+        .collect();
+    let kept_ids: Vec<String> = review
+        .artifacts
+        .keys()
+        .filter(|id| !submitted.contains(*id))
+        .cloned()
+        .collect();
+    if submitted.is_empty() {
+        return Ok(Cleaned {
+            removed: Vec::new(),
+            kept: kept_ids,
+            events_removed: 0,
+        });
+    }
+    let (kept, removed): (Vec<Event>, Vec<Event>) = events
+        .into_iter()
+        .partition(|e| !submitted.contains(&e.artifact));
+    let marker = Event {
+        format: EVENT_FORMAT.to_string(),
+        seq: last_seq + 1,
+        ts: now_rfc3339(),
+        artifact: String::new(),
+        revision: 0,
+        actor: Actor::Server,
+        r#type: "log.cleaned".to_string(),
+        data: serde_json::json!({
+            "removed": submitted.iter().collect::<Vec<_>>(),
+            "events": removed.len(),
+        }),
+        batch: None,
+    };
+    let mut buffer = String::with_capacity(4096);
+    for event in kept.iter().chain(std::iter::once(&marker)) {
+        buffer.push_str(&serde_json::to_string(event)?);
+        buffer.push('\n');
+    }
+    let path = dir.join("events.ndjson");
+    let tmp = dir.join("events.ndjson.tmp");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&tmp)
+        .with_context(|| format!("creating {}", tmp.display()))?;
+    file.write_all(buffer.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))?;
+    Ok(Cleaned {
+        removed: submitted.into_iter().collect(),
+        kept: kept_ids,
+        events_removed: removed.len(),
+    })
+}
+
 /// Where an interrupted commit begins, as an index into `events`.
 ///
 /// Only the tail can be interrupted: the log has one writer, appends in order,
@@ -296,47 +406,5 @@ fn batch_id() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// RFC 3339 in UTC to the second. No date crate: the only consumers are a
-/// human reading the log and a client echoing the string back.
-pub fn now_rfc3339() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let (y, m, d) = civil_from_days((secs / 86_400) as i64);
-    let tod = secs % 86_400;
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
-        tod / 3600,
-        (tod % 3600) / 60,
-        tod % 60
-    )
-}
-
-/// Howard Hinnant's days-to-civil algorithm, public domain.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::civil_from_days;
-
-    #[test]
-    fn civil_from_days_matches_known_dates() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1), "the epoch");
-        assert_eq!(civil_from_days(19_000), (2022, 1, 8));
-        assert_eq!(civil_from_days(20_000), (2024, 10, 4));
-        // A leap day, where naive implementations go wrong.
-        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
-    }
-}
+/// Kept here by name for its callers; the implementation lives in `time`.
+pub use crate::time::now_rfc3339;

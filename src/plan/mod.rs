@@ -2,5 +2,6 @@
 
 pub mod icons;
 pub mod model;
+pub mod poster;
 pub mod render;
 pub mod svg;

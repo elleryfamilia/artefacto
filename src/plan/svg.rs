@@ -422,7 +422,7 @@ fn edge_path(from: (i64, i64), to: (i64, i64), style: &GraphStyle) -> String {
 /// get truncated with `…` (a single word longer than a whole line is clipped
 /// the same way). Counted in chars (not bytes) so multibyte titles never
 /// split mid-codepoint.
-fn wrap_title(s: &str, max_chars: usize) -> Vec<String> {
+pub(crate) fn wrap_title(s: &str, max_chars: usize) -> Vec<String> {
     let words: Vec<&str> = s.split_whitespace().collect();
     let mut lines: Vec<String> = Vec::new();
     let mut i = 0;
@@ -467,7 +467,7 @@ fn wrap_title(s: &str, max_chars: usize) -> Vec<String> {
 
 /// Escape the five XML-special characters. `&` first so entity references
 /// introduced by the other replacements aren't themselves escaped.
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

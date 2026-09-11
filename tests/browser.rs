@@ -2949,3 +2949,125 @@ fn an_answer_can_be_edited_and_removed() {
     let doc = s.server().last_event_of_type("review.submitted")["data"]["feedback"].clone();
     assert_eq!(doc["answers"].as_array().unwrap().len(), 0, "{doc}");
 }
+
+// ---------------------------------------------------------------------------
+// The artifact index at `/` (spec 4.4), in a real browser.
+// ---------------------------------------------------------------------------
+
+/// Where this suite leaves its screenshots, for a person to look at.
+fn screenshot_path(name: &str) -> std::path::PathBuf {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/screenshots");
+    std::fs::create_dir_all(&dir).expect("screenshots dir");
+    dir.join(format!("{name}.png"))
+}
+
+#[test]
+fn the_index_page_lists_artifacts_and_removes_a_row_in_a_real_browser() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let repo = Repo::new();
+    let server = InProcess::start_in(&repo);
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plan");
+
+    // A static render under its own id, then two pushed plans, so the index
+    // has a row that is not live and `open` lands on the index.
+    let static_plan = repo.path().join("static.json");
+    let text = std::fs::read_to_string(fixtures.join("minimal.json")).unwrap();
+    std::fs::write(
+        &static_plan,
+        text.replace("\"id\": \"demo\"", "\"id\": \"static-demo\"")
+            .replace("Demo plan", "A static render"),
+    )
+    .unwrap();
+    let out = repo.run(&[
+        "plan",
+        "render",
+        static_plan.to_str().unwrap(),
+        "--out",
+        "static.html",
+        "--no-open",
+    ]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    for (fixture, name) in [("kitchen-sink.json", "a.json"), ("minimal.json", "b.json")] {
+        let plan = repo.path().join(name);
+        std::fs::copy(fixtures.join(fixture), &plan).unwrap();
+        let out = repo.run(&[
+            "plan",
+            "push",
+            plan.to_str().unwrap(),
+            "--json",
+            "--no-open",
+        ]);
+        assert_eq!(out.code, 0, "{}", out.stderr);
+    }
+    let opened = repo.json(&["open", "--json"]);
+    assert_eq!(opened["index"], true, "{opened}");
+
+    let mut page = browser.new_page();
+    page.navigate(opened["url"].as_str().unwrap());
+    assert_eq!(
+        page.text("location.pathname"),
+        "/",
+        "the link lands on the index"
+    );
+    assert_eq!(page.eval("document.querySelectorAll('.ix-row').length"), 3);
+    assert_eq!(
+        page.eval("document.querySelectorAll('.ix-row.is-live').length"),
+        2,
+        "the two pushed plans are live"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.ix-remove').length"),
+        1,
+        "only the static render can be removed"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.ix-poster svg').length"),
+        3,
+        "a poster per row"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ix-count').textContent"),
+        "3 artifacts"
+    );
+    assert!(page.errors().is_empty(), "{:?}", page.errors());
+    page.screenshot(&screenshot_path("index"));
+
+    // Remove the static row from the page.
+    page.click(".ix-remove");
+    page.wait_until(
+        "document.querySelectorAll('.ix-row').length === 2",
+        "the removed row is gone from the page",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ix-count').textContent"),
+        "2 artifacts"
+    );
+    let listed = repo.json(&["list", "--json"]);
+    assert_eq!(
+        listed["artifacts"].as_array().unwrap().len(),
+        2,
+        "and from the registry: {listed}"
+    );
+    assert!(static_plan.exists(), "the user's file is untouched");
+    page.screenshot(&screenshot_path("index-after-remove"));
+
+    // A live row leads to its page, and the page leads back.
+    // Each navigation waits for the element the next step needs, not for
+    // the path alone: the path changes when the navigation commits, before
+    // the new document has finished parsing.
+    page.click(".ix-row.is-live .ix-title a");
+    page.wait_until(
+        "location.pathname.startsWith('/a/plan:') && !!document.querySelector('.pv-topbar-link')",
+        "the plan page, with its link to the index",
+    );
+    page.screenshot(&screenshot_path("plan-page-with-index-link"));
+    page.click(".pv-topbar-link");
+    page.wait_until(
+        "location.pathname === '/' && document.querySelectorAll('.ix-row').length === 2",
+        "back at the index, with its two rows",
+    );
+    assert!(page.errors().is_empty(), "{:?}", page.errors());
+    drop(server);
+}

@@ -249,6 +249,7 @@ fn render(file: &Path, out: Option<&Path>, no_open: bool, json: bool) -> Result<
         );
     }
 
+    let index = index_render(&checked.plan, file, &target);
     if json {
         let doc = serde_json::json!({
             "ok": true,
@@ -259,6 +260,7 @@ fn render(file: &Path, out: Option<&Path>, no_open: bool, json: bool) -> Result<
             "phases": checked.plan.phases.len(),
             "tasks": task_count(&checked.plan),
             "warnings": checked.warnings,
+            "index": index,
         });
         println!("{}", serde_json::to_string(&doc)?);
     } else {
@@ -266,12 +268,53 @@ fn render(file: &Path, out: Option<&Path>, no_open: bool, json: bool) -> Result<
         for w in &checked.warnings {
             eprintln!("  warning[{}] {}: {}", w.code, w.path, w.message);
         }
+        if index["recorded"] != true {
+            eprintln!(
+                "  note: not added to the artifact index: {}",
+                index["reason"].as_str().unwrap_or_default()
+            );
+        }
     }
 
     if should_open(no_open, json) {
         crate::paths::open_browser(&crate::paths::file_url(&target));
     }
     Ok(())
+}
+
+/// Record a static render in the artifact index (spec 4.4), with its poster.
+///
+/// Best effort, reported rather than fatal: the page has already been
+/// written, and a registry problem — no repository to key the index by, a
+/// file from a newer artefacto — is something to say beside the render,
+/// never a reason to fail it. The result names the poster when the row was
+/// written, so nothing is advertised that is not there.
+fn index_render(plan: &model::Plan, source: &Path, out: &Path) -> serde_json::Value {
+    let recorded = (|| -> Result<std::path::PathBuf> {
+        let cwd = std::env::current_dir()?;
+        let root = crate::server::state_dir::repo_root(&cwd)?;
+        let dir = crate::server::state_dir::state_dir(&root);
+        let source = std::fs::canonicalize(source)
+            .unwrap_or_else(|_| crate::paths::resolve_relative(&cwd, source));
+        let id = crate::server::push::artifact_id(plan);
+        let (source, out) = (source.display().to_string(), out.display().to_string());
+        let outcome = crate::index::record_with(&dir, &id, |previous| {
+            let (entry, poster) = crate::index::render_row(plan, source, out, previous);
+            (entry, Some(poster))
+        })?;
+        match outcome {
+            crate::index::Outcome::Recorded => Ok(crate::index::poster_path(&dir, &id)),
+            crate::index::Outcome::ReadOnlyNewer => anyhow::bail!(
+                "index.json was written by a newer artefacto; update artefacto to record into it"
+            ),
+        }
+    })();
+    match recorded {
+        Ok(poster) => {
+            serde_json::json!({ "recorded": true, "poster": poster.display().to_string() })
+        }
+        Err(e) => serde_json::json!({ "recorded": false, "reason": format!("{e:#}") }),
+    }
 }
 
 fn status(file: &Path, out: Option<&Path>, json: bool) -> Result<()> {

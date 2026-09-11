@@ -270,9 +270,11 @@ artefacto reply  --session TOKEN (--thread ID | [--artifact ID]) [--nudge] (<tex
 artefacto resolve <thread> --session TOKEN (--changed | --declined) [--note TEXT] [--artifact ID]
 
 artefacto status [--json]
+artefacto list   [--json]
 artefacto open   [--artifact ID] [--no-open] [--json]
 artefacto serve  [--port N] [--idle 15m] [--away 5m] [--no-open] [--foreground]
 artefacto stop
+artefacto clean  [--json]
 artefacto skill  (--print | --install DIR)
 ```
 
@@ -289,8 +291,10 @@ artefacto skill  (--print | --install DIR)
 | `reply` | a message in a thread (`--thread`) or on the page (`--artifact`, omitted when the server has one artifact); `--nudge` posts a banner instead and logs nothing |
 | `resolve` | marks a thread `changed` or `declined`, with a note the reviewer reads in it |
 | `status` | the review as an agent needs it to rejoin; never the token |
-| `open` | a fresh one-time link to the page; starts the server if none is running and the log holds an artifact |
+| `list` | every artifact for this repository, newest first, from the index; needs no server |
+| `open` | a fresh one-time link to the page; with several artifacts and no `--artifact`, to the index; starts the server if none is running and the log holds an artifact (after a `clean` that removed every review, it exits 2 until something is pushed again; `list` still shows the rows) |
 | `serve`, `stop` | the daemon by hand; `push` and `open` start it for you |
+| `clean` | drops sent reviews from the log, keeps open ones, rotates the session secret (open pages need `open` again), keeps the index; stops the server first |
 | `skill` | this package, as a JSON manifest (`--print`) or written under a directory (`--install`) |
 
 Names and tokens: `--agent` is the lease name (default `agent`; not empty,

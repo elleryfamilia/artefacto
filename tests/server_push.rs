@@ -353,7 +353,7 @@ fn a_pushed_revision_reaches_an_open_page_as_one_frame() {
         ],
     );
 
-    let frame = page.next_frame();
+    let frame = page.next_logged_frame();
     let events = frame["events"].as_array().expect("events");
     assert_eq!(events.len(), 2, "one frame, not two: {frame}");
     assert_eq!(events[0]["type"], "revision.published");
@@ -455,7 +455,7 @@ fn a_push_frame_carries_the_rendered_body_to_pages_and_nothing_to_agents() {
     );
     assert_eq!(v["revision"], 2);
 
-    let frame = page.next_frame();
+    let frame = page.next_logged_frame();
     assert_eq!(frame["events"][0]["type"], "revision.published");
     assert_eq!(frame["events"][1]["type"], "thread.resolved");
     let html = frame["html"]

@@ -136,7 +136,11 @@ fn a_malformed_line_in_the_middle_is_a_hard_error() {
 }
 
 #[test]
-fn a_sequence_gap_is_a_hard_error() {
+fn a_sequence_gap_is_history_and_a_number_that_does_not_go_up_is_corruption() {
+    // `clean` takes a finished review's events out of the log and leaves
+    // the rest at their numbers (spec 4.2: "it never renumbers"), so a gap
+    // is what a cleaned log looks like. A number at or below the one before
+    // it can only be corruption.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("events.ndjson");
     let line = |seq: u64| {
@@ -147,9 +151,13 @@ fn a_sequence_gap_is_a_hard_error() {
     };
     std::fs::create_dir_all(dir.path()).unwrap();
     std::fs::write(&path, format!("{}{}", line(1), line(3))).unwrap();
+    let log = EventLog::open(dir.path()).expect("a gap is not an error");
+    assert_eq!(log.last_seq(), 3, "the highest number, not the count");
+    drop(log);
 
-    let err = EventLog::open(dir.path()).expect_err("a gap means an event went missing");
-    assert!(format!("{err:#}").contains("expected seq 2"));
+    std::fs::write(&path, format!("{}{}{}", line(1), line(3), line(2))).unwrap();
+    let err = EventLog::open(dir.path()).expect_err("going backwards is corruption");
+    assert!(format!("{err:#}").contains("not above seq 3"), "{err:#}");
 }
 
 #[test]

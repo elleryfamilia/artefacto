@@ -23,8 +23,12 @@ pub fn serve(args: &ServeArgs) -> Result<()> {
 
     // One winner. Two concurrent `serve` calls would otherwise both find no
     // server and both start a daemon.
-    let Some(_lock) = StartupLock::acquire(&dir) else {
-        return wait_for_peer(&dir);
+    let _lock = match StartupLock::acquire(&dir) {
+        Some(lock) => lock,
+        None => match wait_for_lock_or_peer(&dir)? {
+            Startup::Peer => return Ok(()),
+            Startup::Lock(lock) => lock,
+        },
     };
     if state_dir::read_server_file(&dir).is_some() {
         return Ok(());
@@ -122,17 +126,29 @@ fn bind_preferring(preferred: Option<u16>) -> Result<TcpListener> {
     TcpListener::bind(("127.0.0.1", 0)).context("binding 127.0.0.1")
 }
 
-/// Another `serve` holds the startup lock. Wait briefly for its server rather
-/// than racing it or reporting a spurious failure.
-fn wait_for_peer(dir: &Path) -> Result<()> {
+enum Startup {
+    /// Another process brought a server up while this one waited.
+    Peer,
+    /// The lock came free with no server recorded: this process starts one.
+    Lock(StartupLock),
+}
+
+/// Someone else holds the startup lock: another `serve`, or a `clean`
+/// rewriting the log. Wait briefly for either outcome — a server appears,
+/// or the lock comes free — rather than racing, and rather than waiting
+/// only for a server that a `clean` will never start.
+fn wait_for_lock_or_peer(dir: &Path) -> Result<Startup> {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         if state_dir::read_server_file(dir).is_some() {
-            return Ok(());
+            return Ok(Startup::Peer);
+        }
+        if let Some(lock) = StartupLock::acquire(dir) {
+            return Ok(Startup::Lock(lock));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    bail!("another `artefacto serve` is starting but did not come up within 10s")
+    bail!("another artefacto holds the startup lock and did not release it within 10s")
 }
 
 pub fn stop() -> Result<()> {
@@ -289,7 +305,7 @@ fn request(server: &ServerFile, route: &str) -> Result<String> {
     Ok(raw.rsplit("\r\n\r\n").next().unwrap_or("").to_string())
 }
 
-fn current_state_dir() -> Result<std::path::PathBuf> {
+pub(crate) fn current_state_dir() -> Result<std::path::PathBuf> {
     let root = state_dir::repo_root(&std::env::current_dir()?)?;
     Ok(state_dir::state_dir(&root))
 }

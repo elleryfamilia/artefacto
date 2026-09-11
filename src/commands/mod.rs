@@ -1,6 +1,8 @@
 //! Command implementations.
 
 pub mod agent;
+pub mod clean;
+pub mod list;
 pub mod plan;
 pub mod serve;
 pub mod skill;
@@ -44,6 +46,7 @@ pub fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Serve(args) => serve::serve(args),
         Command::Stop => serve::stop(),
         Command::Status { json } => serve::status(*json),
+        Command::List { json } => list::list(*json),
         Command::Open(args) => serve::open(args),
         Command::Await(args) => agent::await_cmd(args),
         Command::Events(args) => agent::events(args),
@@ -51,5 +54,6 @@ pub fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Reply(args) => agent::reply(args),
         Command::Resolve(args) => agent::resolve(args),
         Command::Skill(args) => skill::run(args),
+        Command::Clean { json } => clean::clean(*json),
     }
 }
