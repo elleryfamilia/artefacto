@@ -486,3 +486,21 @@ fn hello_says_no_agent_when_there_is_none() {
     assert!(hello["presence"].is_null());
     assert!(hello["page"].is_u64());
 }
+
+#[test]
+fn a_stop_tells_every_page_and_then_hangs_up() {
+    // The page reconnects with backoff. If the stop only announced itself
+    // and left the socket open until the process died, a page would not
+    // start reconnecting until then; an in-process restart would never
+    // close it at all.
+    let s = InProcess::start();
+    let mut page = s.connect_page();
+    page.hello();
+    s.shared.request_stop();
+    let frame = page.next_frame();
+    assert_eq!(frame["events"][0]["type"], "server.stopping");
+    assert!(
+        page.closed_within(std::time::Duration::from_secs(5)),
+        "the server closes the socket after the stopping frame"
+    );
+}

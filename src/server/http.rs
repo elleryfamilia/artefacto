@@ -177,6 +177,11 @@ impl Shared {
             batch: None,
         };
         crate::server::socket::broadcast(self, &crate::server::event::Frame::of(vec![event]));
+        // Then hang up on every page, so it starts reconnecting now rather
+        // than when the process finally dies underneath it. The frame is
+        // already queued on each socket's channel; dropping the senders
+        // lets each writer deliver it and then see the channel close.
+        crate::server::socket::close_all(self);
     }
 }
 

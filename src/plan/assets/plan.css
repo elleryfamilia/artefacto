@@ -1878,12 +1878,270 @@ pre code { font-size: 1em; }
    affordances and the shell so the paper copy is just the plan.
    --------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+   The served page
+   ---------------------------------------------------------------------------
+   Everything below exists only when the page came from the server: the
+   presence pill, threads under their elements, the composers that replace
+   the static comment box, the notices, the recovery panel, and the chat.
+   The same voices as the rest of the page: serif for what people wrote,
+   mono for what the page says about it.
+   --------------------------------------------------------------------------- */
+
+.pv-presence {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  margin-right: 0.875rem;
+  font-family: var(--font-mono);
+  font-size: 0.688rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pv-presence::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--rule);
+  transition: background var(--t-mid) var(--ease);
+}
+
+.pv-presence[data-mode="live"] { color: var(--ok); }
+.pv-presence[data-mode="live"]::before { background: var(--ok); }
+.pv-presence[data-mode="waiting"] { color: var(--warn); }
+.pv-presence[data-mode="waiting"]::before { background: var(--warn); }
+.pv-presence[data-mode="off"] { color: var(--accent); }
+.pv-presence[data-mode="off"]::before { background: var(--accent); }
+
+.pv-notices { display: flex; flex-direction: column; gap: 0.5rem; padding: 0 var(--gutter); }
+.pv-notices:empty { display: none; }
+
+.pv-notice {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin: 0.75rem 0 0;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: var(--surface);
+  font-family: var(--font-serif);
+  font-size: 0.9375rem;
+  line-height: 1.45;
+  color: var(--ink);
+  animation: pv-rise var(--t-mid) var(--ease) both;
+}
+
+.pv-notice[data-kind="revision"] { border-left-color: var(--ok); }
+.pv-notice[data-kind="nudge"] { border-left-color: var(--warn); }
+.pv-notice[data-kind="stopping"],
+.pv-notice[data-kind="gone"],
+.pv-notice[data-kind="lost"] { border-left-color: var(--accent); }
+.pv-notice-text { flex: 1 1 auto; }
+.pv-notice-text code { font-family: var(--font-mono); font-size: 0.85em; }
+
+.pv-recovery {
+  margin: 1rem var(--gutter) 0;
+  padding: 0.875rem 1rem;
+  border: 1px dashed var(--warn-rule);
+  border-radius: 4px;
+  background: var(--accent-wash);
+}
+
+.pv-recovery-title {
+  margin: 0 0 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warn);
+}
+
+.pv-recovery-lead { margin: 0 0 0.5rem; font-size: 0.9375rem; color: var(--muted); }
+
+.pv-orphan-draft {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--rule-soft);
+}
+
+.pv-orphan-draft-what { font-family: var(--font-mono); font-size: 0.688rem; color: var(--muted); }
+.pv-orphan-draft .thread-text { flex: 1 1 100%; margin: 0; }
+
+.pv-threads { display: flex; flex-direction: column; gap: 0.625rem; }
+.pv-threads:empty { display: none; }
+.pv-threads:not(:empty) { margin-top: 0.75rem; }
+
+.thread {
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem 0.625rem;
+  background: var(--page);
+  max-width: 70ch;
+  animation: pv-rise var(--t-mid) var(--ease) both;
+}
+
+.thread[data-status="open"] { border-left-color: var(--accent); }
+.thread[data-status="changed"] { border-left-color: var(--ok); }
+.thread[data-status="declined"] { border-left-color: var(--muted); }
+.thread[data-status="unanchored"] { border-left-color: var(--warn); }
+
+.thread-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: 0.688rem;
+  color: var(--muted);
+}
+
+.thread-id { font-weight: 500; color: var(--ink); }
+.thread-status.pv-chip { font-size: 0.625rem; }
+.thread-status.pv-chip-open { color: var(--accent); border-color: var(--accent); }
+.thread-status.pv-chip-changed { color: var(--ok); border-color: var(--ok); }
+.thread-status.pv-chip-declined { color: var(--muted); border-color: var(--rule); }
+.thread-status.pv-chip-unanchored { color: var(--warn); border-color: var(--warn-rule); }
+.thread-blocking { color: var(--warn); font-weight: 500; }
+.thread-blocking[hidden] { display: none; }
+.thread-target { color: var(--warn); }
+
+.thread-msgs { display: flex; flex-direction: column; gap: 0.375rem; margin: 0.5rem 0 0; }
+
+.thread-msg { display: grid; grid-template-columns: 3.25rem 1fr; gap: 0.5rem; align-items: baseline; }
+.thread-actor {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.thread-msg[data-actor="agent"] .thread-actor { color: var(--ok); }
+.thread-text {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.thread-actions { display: flex; gap: 0.875rem; margin-top: 0.5rem; }
+.thread-actions .pv-textbtn[hidden] { display: none; }
+
+.composer-label {
+  font-family: var(--font-mono);
+  font-size: 0.688rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.composer-send,
+.composer-cancel { /* styled by .comment-box-actions button */ }
+.composer-send:disabled { opacity: 0.5; cursor: default; }
+
+.pv-error {
+  font-family: var(--font-mono);
+  font-size: 0.688rem;
+  color: var(--accent);
+}
+
+.pv-answer {
+  margin-top: 0.625rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--ok);
+  background: var(--surface);
+  max-width: 70ch;
+}
+.pv-answer[hidden] { display: none; }
+.pv-answer-label {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ok);
+}
+.pv-answer-text { margin: 0.25rem 0 0; font-family: var(--font-serif); white-space: pre-wrap; }
+
+.feedback-bar.is-served .feedback-bar-banner { flex: 1 1 10rem; }
+.feedback-bar-sent { color: var(--ok); font-weight: 500; }
+.feedback-bar-sent:empty { display: none; }
+
+.feedback-bar-approve {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+}
+.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
+
+.feedback-bar-send {
+  flex: none;
+  border: 1px solid var(--ok);
+  background: var(--ok);
+  color: var(--page);
+  border-radius: 4px;
+  padding: 0.5rem 0.9375rem;
+  font-family: var(--font-mono);
+  font-size: 0.781rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: opacity var(--t-fast) var(--ease), filter var(--t-fast) var(--ease);
+}
+.feedback-bar-send:hover:not(:disabled) { filter: brightness(1.08); }
+.feedback-bar-send:disabled { opacity: 0.4; cursor: default; }
+
+.pv-chat {
+  position: fixed;
+  left: 50%;
+  bottom: 5.5rem;
+  transform: translateX(-50%);
+  z-index: 39;
+  width: min(1180px - 2 * 3.75rem, calc(100vw - 2.5rem));
+  max-height: 60vh;
+  overflow: auto;
+  padding: 0.875rem 1.125rem;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  box-shadow: var(--shadow-float);
+}
+.pv-chat[hidden] { display: none; }
+.pv-chat-head { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.pv-chat-title { font-family: var(--font-mono); font-size: 0.75rem; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; }
+.pv-chat-hint { font-family: var(--font-mono); font-size: 0.688rem; color: var(--muted); }
+.pv-chat-log { display: flex; flex-direction: column; gap: 0.375rem; margin-bottom: 0.5rem; }
+.pv-chat-log[hidden] { display: none; }
+.pv-chat-msg { display: grid; grid-template-columns: 3.25rem 1fr; gap: 0.5rem; align-items: baseline; }
+.pv-chat-msg[data-actor="agent"] .thread-actor { color: var(--ok); }
+.pv-chat .composer { margin-top: 0; }
+
 @media print {
   body { background: #fff; padding: 0; }
   .pv-sheet { box-shadow: none; max-width: none; }
   .pv-topbar { position: static; }
   .pv-theme,
   .feedback-bar,
+  .pv-chat,
+  .pv-presence,
+  .thread-actions,
+  .composer,
   .comment-btn,
   .reviewed-toggle,
   .pv-rule-actions,

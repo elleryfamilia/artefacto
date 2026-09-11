@@ -126,6 +126,12 @@ pub fn broadcast_except(shared: &Shared, frame: &Frame, skip: u64) {
     }
 }
 
+/// Drop every page's sender. Each writer thread delivers what is already
+/// queued, sees the channel close, and closes its socket. Used by the stop.
+pub fn close_all(shared: &Shared) {
+    shared.sockets.pages.lock().unwrap().clear();
+}
+
 pub fn handle_upgrade(shared: &Arc<Shared>, request: Request) {
     if !cookie_ok(&request, shared) {
         let _ = request.respond(error_response(401, "unauthorized", "no session cookie"));

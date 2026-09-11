@@ -1,7 +1,23 @@
 /* artefacto plan viewer — progressive enhancement over server-rendered HTML.
-   Pure core first (no DOM), DOM layer second, #selftest harness last. */
+   Pure core first (no DOM), then the DOM layer, then the served-page
+   session, then the #selftest harness.
+
+   Two modes share this one file, chosen at mount by whether the page was
+   served: a body carrying `data-artefacto-artifact` came from the server
+   and treats its event log as the only store; a body without it is a
+   static export and keeps drafts in localStorage with the clipboard flow. */
 (function () {
   "use strict";
+
+  /* ---- pure core ---------------------------------------------------- */
+
+  /* Events the server announces to open pages without writing them down:
+     presence, nudges, and the stop. They carry `seq = last_seq` -- the seq
+     of whatever was logged last -- because they have no seq of their own.
+     So a page must never drop a frame by seq alone; see `applyFrame`. */
+  const ANNOUNCED = {
+    "agent.attached": true, "agent.detached": true, "nudge": true, "server.stopping": true,
+  };
 
   const core = {
     parseIsland(text) { return JSON.parse(text); },
@@ -12,18 +28,23 @@
     makeComment(ref, quote, text, blocking) {
       return { ref: ref, quote: quote || null, text: text, blocking: !!blocking };
     },
-    buildFeedback(plan, fingerprint, comments) {
+    /* The static export's document. `approve` is the toggle spec 4.3 gives
+       the clipboard button: an explicit approval, else the old rule -- any
+       blocking comment makes it request_changes, otherwise comment. */
+    buildFeedback(plan, fingerprint, comments, approve) {
       const doc = {
         format: "artefacto.feedback/1",
         plan_id: plan.meta.id,
         plan_hash: fingerprint,
-        verdict: comments.some(c => c.blocking) ? "request_changes" : "comment",
+        verdict: approve ? "approve"
+          : (comments.some(c => c.blocking) ? "request_changes" : "comment"),
         comments: comments.map((c, i) => ({
           id: "c-" + (i + 1),
           ref: c.ref, quote: c.quote, text: c.text, blocking: !!c.blocking,
         })),
       };
       const lines = ["## Plan feedback — " + plan.meta.id, ""];
+      if (approve) lines.push("**Approved.**", "");
       for (const c of doc.comments) {
         lines.push("### " + c.ref + (c.blocking ? " — BLOCKS APPROVAL" : ""));
         /* Blockquote every line of free-form comment text so a "```" line
@@ -49,6 +70,211 @@
         + "```json\n" + json + "\n```\n";
       return { json: json, markdown: markdown, combined: combined };
     },
+
+    /* Every element a thread may anchor to, computed from the RAW plan a
+       revision event carries -- the same set the server's fold uses to
+       decide which threads lost their element, so the page and the server
+       agree about what is unanchored without the server having to say. */
+    planRefs(plan) {
+      const refs = new Set();
+      if (!plan || typeof plan !== "object") return refs;
+      if (plan.meta && plan.meta.id) refs.add("meta:" + plan.meta.id);
+      for (const q of plan.open_questions || []) if (q && q.id) refs.add("question:" + q.id);
+      for (const r of plan.risks || []) if (r && r.id) refs.add("risk:" + r.id);
+      for (const ph of plan.phases || []) {
+        if (!ph) continue;
+        if (ph.id) refs.add("phase:" + ph.id);
+        for (const t of ph.tasks || []) if (t && t.id) refs.add("task:" + t.id);
+      }
+      return refs;
+    },
+    /* An open thread whose element is gone becomes unanchored; an
+       unanchored one whose element came back is open again. Resolved
+       threads are left alone: the agent already answered them. */
+    reanchor(threads, refs) {
+      for (const t of threads) {
+        const anchored = refs.has(t.target);
+        if (!anchored && t.status === "open") t.status = "unanchored";
+        else if (anchored && t.status === "unanchored") t.status = "open";
+      }
+    },
+
+    emptyState(artifact) {
+      return {
+        artifact: artifact, revision: 0, planHash: "", plan: null, threads: [],
+        answers: {}, reviewed: [], chat: [], submitted: false, presence: null, lastSeq: 0,
+      };
+    },
+    /* What `GET /a/<artifact>/state` returns, as page state. */
+    fromSnapshot(s) {
+      return {
+        artifact: s.artifact, revision: s.revision || 0, planHash: s.plan_hash || "",
+        plan: s.plan || null,
+        threads: (s.threads || []).map(function (t) {
+          return {
+            id: t.id, target: t.target, quote: t.quote || "", blocking: !!t.blocking,
+            status: t.status || "open",
+            messages: (t.messages || []).map(function (m) {
+              return { actor: m.actor, text: m.text, ts: m.ts };
+            }),
+          };
+        }),
+        answers: Object.assign({}, s.answers || {}),
+        reviewed: (s.reviewed || []).slice(),
+        chat: (s.chat || []).slice(),
+        submitted: !!s.submitted,
+        presence: s.presence || null,
+        lastSeq: s.last_seq || 0,
+      };
+    },
+
+    /* One event into the state: the server's fold, in this language. Returns
+       whether anything changed. Every case is safe to run twice, because a
+       page can be handed an event it already has (its own command's result,
+       then the same event in a snapshot). */
+    applyEvent(state, e) {
+      const d = e.data || {};
+      const find = function (id) { return state.threads.find(function (t) { return t.id === id; }); };
+      const message = function () { return { actor: e.actor || "reviewer", text: d.text || "", ts: e.ts || "" }; };
+      switch (e.type) {
+        case "revision.published": {
+          state.revision = e.revision > 0 ? e.revision : state.revision + 1;
+          if (d.plan) state.plan = d.plan;
+          if (d.plan_hash) state.planHash = d.plan_hash;
+          /* A new revision reopens the review. */
+          state.submitted = false;
+          core.reanchor(state.threads, core.planRefs(state.plan));
+          return true;
+        }
+        case "thread.opened": {
+          if (!d.thread || find(d.thread)) return false;
+          state.threads.push({
+            id: d.thread, target: d.ref || "", quote: d.quote || "", blocking: !!d.blocking,
+            status: "open", messages: [message()],
+          });
+          return true;
+        }
+        case "thread.replied": {
+          const t = find(d.thread);
+          if (!t) return false;
+          t.messages.push(message());
+          return true;
+        }
+        case "thread.edited": {
+          const t = find(d.thread);
+          if (!t || !t.messages.length) return false;
+          t.messages[0].text = d.text || "";
+          return true;
+        }
+        case "thread.deleted": {
+          const before = state.threads.length;
+          state.threads = state.threads.filter(function (t) { return t.id !== d.thread; });
+          return state.threads.length !== before;
+        }
+        case "thread.resolved": {
+          const t = find(d.thread);
+          if (!t || (d.status !== "changed" && d.status !== "declined")) return false;
+          t.status = d.status;
+          if (d.note) t.messages.push({ actor: "agent", text: d.note, ts: e.ts || "" });
+          return true;
+        }
+        case "question.answered": {
+          if (!d.question) return false;
+          state.answers[d.question] = d.text || "";
+          return true;
+        }
+        case "element.reviewed": {
+          const on = d.on !== false;
+          const i = state.reviewed.indexOf(d.ref);
+          if (on && i < 0) state.reviewed.push(d.ref);
+          else if (!on && i >= 0) state.reviewed.splice(i, 1);
+          else return false;
+          return true;
+        }
+        case "chat.sent": {
+          if (d.thread) {
+            const t = find(d.thread);
+            if (!t) return false;
+            t.messages.push(message());
+          } else {
+            state.chat.push(message());
+          }
+          return true;
+        }
+        case "review.submitted":
+          state.submitted = true;
+          return true;
+        case "agent.attached":
+          state.presence = { agent: d.agent || "", mode: d.mode || "waiting" };
+          return true;
+        case "agent.detached":
+          state.presence = null;
+          return true;
+        default:
+          return false;
+      }
+    },
+
+    /* A frame into the state, in order. `cursor`, when given, is the
+       `last_seq` of the snapshot the state was just rebuilt from: a LOGGED
+       event at or below it is already inside that snapshot and is skipped.
+       An announced event never is. Its seq is borrowed from the log's last
+       record, so by seq alone it would look old, and it lives in no
+       snapshot -- dropping it is how a page stops hearing that the agent
+       left. Returns the events that were applied. */
+    applyFrame(state, frame, cursor) {
+      const applied = [];
+      for (const e of frame.events || []) {
+        if (cursor != null && !ANNOUNCED[e.type] && e.seq <= cursor) continue;
+        core.applyEvent(state, e);
+        applied.push(e);
+      }
+      if (frame.seq > state.lastSeq) state.lastSeq = frame.seq;
+      return applied;
+    },
+    isAnnounced(type) { return !!ANNOUNCED[type]; },
+
+    /* The event a command becomes once the server accepts it. A page that
+       posted a command is skipped by the broadcast -- it would otherwise
+       count its own change twice -- so it builds the event from the reply,
+       with the id the server assigned, and applies it through the same
+       fold as everything else. */
+    localEvent(cmd, reply, ts) {
+      const base = {
+        format: "artefacto.event/1", seq: reply.seq || 0, ts: ts, artifact: "",
+        revision: cmd.opened_revision || cmd.base_revision || 0, actor: "reviewer",
+      };
+      switch (cmd.cmd) {
+        case "thread.open":
+          return Object.assign(base, { type: "thread.opened", data: {
+            thread: reply.assigned, ref: cmd.ref, text: cmd.text,
+            blocking: !!cmd.blocking, quote: cmd.quote || "",
+          } });
+        case "thread.reply":
+          return Object.assign(base, { type: "thread.replied", data: { thread: cmd.thread, text: cmd.text } });
+        case "thread.edit":
+          return Object.assign(base, { type: "thread.edited", data: { thread: cmd.thread, text: cmd.text } });
+        case "thread.delete":
+          return Object.assign(base, { type: "thread.deleted", data: { thread: cmd.thread } });
+        case "question.answer":
+          return Object.assign(base, { type: "question.answered", data: { question: cmd.question, text: cmd.text } });
+        case "element.reviewed":
+          return Object.assign(base, { type: "element.reviewed", data: { ref: cmd.ref, on: !!cmd.on } });
+        case "chat.send":
+          return Object.assign(base, { type: "chat.sent", data: { text: cmd.text, thread: cmd.thread || null } });
+        case "review.submit":
+          return Object.assign(base, { type: "review.submitted", data: { verdict: cmd.verdict } });
+        default:
+          return null;
+      }
+    },
+
+    threadsOn(state, ref) {
+      return state.threads.filter(function (t) { return t.target === ref && t.status !== "unanchored"; });
+    },
+    unanchored(state) {
+      return state.threads.filter(function (t) { return t.status === "unanchored"; });
+    },
   };
   window.artefactoPlan = core;
 
@@ -67,13 +293,65 @@
         }
       ));
     }
-    /* Build the real page first. The harness used to run INSTEAD of init(),
+    /* Build the real page first. The harness used to run INSTEAD of mount(),
        which kept it honest about the pure core but blind to everything the
        page actually mounts -- the theme toggle, the comment editors, the
-       reviewed toggles. Running init() here means a throw during mount is a
+       reviewed toggles. Running mount() here means a throw during mount is a
        reported failure rather than a silent one, and lets the checks below
        measure the live DOM. Everything after this point may assume it ran. */
-    check("page initialises", function () { init(); });
+    check("page initialises", function () { mount(document.body); });
+    check("plan refs match the server's fold", function () {
+      const refs = core.planRefs({
+        meta: { id: "p" },
+        open_questions: [{ id: "q1" }], risks: [{ id: "r1" }],
+        phases: [{ id: "ph", tasks: [{ id: "t1" }, { id: "t2" }] }],
+      });
+      ["meta:p", "question:q1", "risk:r1", "phase:ph", "task:t1", "task:t2"].forEach(function (r) {
+        if (!refs.has(r)) throw new Error("missing " + r);
+      });
+      if (refs.size !== 6) throw new Error("extra refs: " + refs.size);
+    });
+    check("a thread loses and regains its anchor", function () {
+      const threads = [
+        { id: "c-1", target: "task:t1", status: "open" },
+        { id: "c-2", target: "task:gone", status: "open" },
+        { id: "c-3", target: "task:t1", status: "changed" },
+        { id: "c-4", target: "task:t1", status: "unanchored" },
+      ];
+      core.reanchor(threads, new Set(["task:t1"]));
+      if (threads[0].status !== "open") throw new Error("anchored stays open");
+      if (threads[1].status !== "unanchored") throw new Error("a gone element unanchors");
+      if (threads[2].status !== "changed") throw new Error("resolved threads are left alone");
+      if (threads[3].status !== "open") throw new Error("an element that came back re-anchors");
+    });
+    check("catching up skips logged events but never announced ones", function () {
+      const state = core.emptyState("plan:x");
+      state.threads.push({ id: "c-1", target: "task:t1", quote: "", blocking: false, status: "open", messages: [] });
+      const frame = { format: "artefacto.frame/1", seq: 9, events: [
+        { type: "thread.replied", seq: 5, actor: "reviewer", data: { thread: "c-1", text: "old" } },
+        { type: "agent.attached", seq: 9, actor: "agent", data: { agent: "claude", mode: "live" } },
+        { type: "thread.replied", seq: 10, actor: "agent", data: { thread: "c-1", text: "new" } },
+      ] };
+      const applied = core.applyFrame(state, frame, 9);
+      if (applied.length !== 2) throw new Error("applied " + applied.length);
+      if (state.threads[0].messages.length !== 1 || state.threads[0].messages[0].text !== "new") {
+        throw new Error("the logged event at or below the cursor was not skipped, or the newer one was");
+      }
+      if (!state.presence || state.presence.mode !== "live") throw new Error("the announced event was dropped");
+      if (core.applyFrame(state, frame, null).length !== 3) throw new Error("with no cursor everything applies");
+    });
+    check("a command's reply becomes the same event the server folds", function () {
+      const state = core.emptyState("plan:x");
+      const ev = core.localEvent(
+        { cmd: "thread.open", ref: "task:t1", text: "why", blocking: true, opened_revision: 2 },
+        { ok: true, assigned: "c-7", seq: 12 }, "2026-01-01T00:00:00Z");
+      core.applyEvent(state, ev);
+      if (state.threads[0].id !== "c-7") throw new Error("the id is the server's");
+      if (state.threads[0].messages[0].actor !== "reviewer") throw new Error("actor");
+      if (!core.applyEvent(state, { type: "thread.resolved", data: { thread: "c-7", status: "declined", note: "no" } })) throw new Error("resolve");
+      if (state.threads[0].status !== "declined" || state.threads[0].messages[1].actor !== "agent") throw new Error("note becomes an agent message");
+      if (core.applyEvent(state, ev)) throw new Error("opening the same thread twice is a no-op");
+    });
     check("island parses", function () {
       const plan = core.parseIsland(document.getElementById("plan-data").textContent);
       if (!plan.meta || !plan.meta.id) throw new Error("no meta.id");
@@ -310,7 +588,8 @@
       setPhaseOpen(phase, false, false);
       box.hidden = true;
     });
-    if (location.protocol !== "file:" || window.parent !== window) {
+    if ((location.protocol !== "file:" || window.parent !== window)
+        && !document.body.hasAttribute("data-artefacto-artifact")) {
       /* Non-plain-file contexts only — a real http(s) serving, or the CI
          harness that frames this page in a sandboxed iframe to give it the
          same opaque origin the studio's sandbox-CSP header does. Prove the
@@ -474,9 +753,10 @@
     return mq && mq.matches ? "dark" : "light";
   }
 
-  function mountThemeToggle() {
-    const host = document.querySelector(".pv-topbar-right");
-    if (!host) return;
+  let themeWired = false;
+  function mountThemeToggle(root) {
+    const host = root.querySelector(".pv-topbar-right");
+    if (!host || host.querySelector(".pv-theme")) return;
     const group = document.createElement("div");
     group.className = "pv-theme";
     group.setAttribute("role", "group");
@@ -497,7 +777,8 @@
        highlight stay truthful, and so the change reads as deliberate rather
        than as the page flickering. */
     const mq = darkMedia();
-    if (mq && mq.addEventListener) {
+    if (mq && mq.addEventListener && !themeWired) {
+      themeWired = true;
       mq.addEventListener("change", function () {
         if (document.documentElement.getAttribute("data-theme")) return;
         const root = document.documentElement;
@@ -518,8 +799,8 @@
 
      Both are decoration over information the page already carries, so a
      browser without IntersectionObserver simply gets neither. */
-  function mountScrollCues() {
-    const bar = document.querySelector(".pv-topbar");
+  function mountScrollCues(root) {
+    const bar = root.querySelector(".pv-topbar");
     if (!bar || !("IntersectionObserver" in window)) return;
 
     /* A zero-height probe above the topbar: once it scrolls out of view the
@@ -528,11 +809,13 @@
     probe.setAttribute("aria-hidden", "true");
     probe.style.cssText = "position:absolute;top:0;height:1px;width:1px;";
     bar.parentNode.insertBefore(probe, bar);
-    new IntersectionObserver(function (entries) {
+    const stuck = new IntersectionObserver(function (entries) {
       bar.classList.toggle("is-stuck", !entries[0].isIntersecting);
-    }).observe(probe);
+    });
+    stuck.observe(probe);
+    mounted.observers.push(stuck);
 
-    const phases = document.querySelectorAll("details.phase");
+    const phases = root.querySelectorAll("details.phase");
     if (!phases.length) return;
     /* Fire when a phase crosses the upper third of the viewport: the row
        highlights for the phase a reader is reading, not the one that
@@ -552,6 +835,7 @@
       { rootMargin: "-10% 0px -70% 0px" }
     );
     phases.forEach(function (p) { spy.observe(p); });
+    mounted.observers.push(spy);
   }
 
   /* ---- disclosure ----------------------------------------------------
@@ -893,17 +1177,15 @@
     ta.select();
   }
 
-  function init() {
-    /* Chrome first, and outside the island guard: the theme toggle and the
-       scroll cues are properties of the page, not of the plan data, so a
-       document whose island failed to parse still gets a usable shell. */
-    mountThemeToggle();
-    mountScrollCues();
 
-    const islandEl = document.getElementById("plan-data");
-    if (!islandEl) return;
-    const plan = core.parseIsland(islandEl.textContent);
-    const fingerprint = document.body.getAttribute("data-plan-fingerprint") || "";
+  /* ---- static export ------------------------------------------------
+
+     The serverless page: drafts and reviewed marks in localStorage under
+     keys that embed the plan hash, and one clipboard action that copies
+     the feedback document for paste-back. Unchanged in behaviour from the
+     page before the server existed, apart from the Approve toggle. */
+  function mountStatic(root, plan) {
+    const fingerprint = root.getAttribute("data-plan-fingerprint") || "";
 
     let comments = loadDrafts(plan.meta.id, fingerprint);
     let restoredCount = comments.length;
@@ -943,26 +1225,37 @@
     reviewedCount.className = "feedback-bar-reviewed";
     bar.appendChild(reviewedCount);
 
+    /* Spec 4.3: the clipboard button gains the same Approve toggle the
+       served page's Send review has. */
+    const approveLabel = document.createElement("label");
+    approveLabel.className = "feedback-bar-approve";
+    const approveBox = document.createElement("input");
+    approveBox.type = "checkbox";
+    approveLabel.appendChild(approveBox);
+    approveLabel.appendChild(document.createTextNode("Approve"));
+    bar.appendChild(approveLabel);
+
     const copyBtn = document.createElement("button");
     copyBtn.type = "button";
     copyBtn.className = "feedback-bar-copy";
     copyBtn.textContent = "Copy feedback";
     bar.appendChild(copyBtn);
 
-    document.body.appendChild(bar);
+    root.appendChild(bar);
 
     function renderCount() {
       count.textContent = comments.length + (comments.length === 1 ? " comment" : " comments");
       const blocking = comments.filter(function (c) { return c.blocking; }).length;
       blockingCount.textContent = blocking > 0 ? blocking + " blocking" : "";
-      /* Nothing to copy until something has been added. */
-      copyBtn.disabled = comments.length === 0;
-      copyBtn.title = comments.length === 0 ? "Add a comment or answer first" : "";
+      /* Nothing to copy until something has been added -- or approved. */
+      copyBtn.disabled = comments.length === 0 && !approveBox.checked;
+      copyBtn.title = copyBtn.disabled ? "Add a comment or answer first, or approve" : "";
     }
     renderCount();
+    approveBox.addEventListener("change", renderCount);
 
     copyBtn.addEventListener("click", function () {
-      const feedback = core.buildFeedback(plan, fingerprint, comments);
+      const feedback = core.buildFeedback(plan, fingerprint, comments, approveBox.checked);
       copyToClipboard(feedback.combined, function () {
         const original = "Copy feedback";
         copyBtn.textContent = "Copied ✓";
@@ -977,7 +1270,7 @@
     });
 
     /* ---- per-element comment buttons ---- */
-    const refEls = document.querySelectorAll("[data-plan-ref]");
+    const refEls = root.querySelectorAll("[data-plan-ref]");
     refEls.forEach(function (el) {
       const ref = el.getAttribute("data-plan-ref");
       /* Snapshot the quote before any UI (comment button/box) is appended
@@ -1096,81 +1389,7 @@
     });
 
     /* ---- expand/collapse all ---- */
-    const firstPhase = document.querySelector("details.phase");
-    if (firstPhase) {
-      function collapsibles() {
-        return document.querySelectorAll("details.phase");
-      }
-
-      /* A <summary>'s built-in default action is "toggle, instantly". Take
-         it over so a click gets the animation instead. Keyboard activation
-         (Enter or Space on the focused summary) dispatches a click of its
-         own, so it comes through the same handler and behaves the same. */
-      collapsibles().forEach(function (d) {
-        const summary = d.querySelector("summary");
-        if (!summary) return;
-        summary.addEventListener("click", function (e) {
-          if (e.defaultPrevented) return;
-          /* A link or a control inside the row owns its own click, and the
-             browser already does the right thing with one: the innermost
-             element with an activation behaviour wins, so a click on an <a>
-             in the phase description follows the link and does NOT toggle
-             the phase. Stay out of the way entirely. Cancelling here would
-             take the navigation with it -- a click event carries a single
-             cancelled flag for every activation behaviour on its path, so
-             there is no way to suppress the toggle and keep the link.
-             (`phase_summary_parts` keeps safe links in the teaser, and the
-             teaser is inside the <summary>.) */
-          if (e.target.closest && e.target.closest("a[href], button, input, select, textarea, label")) {
-            return;
-          }
-          e.preventDefault();
-          setPhaseOpen(d, phaseIsShut(d), true);
-        });
-      });
-
-      /* The markup ships an empty actions slot on the Phases section rule
-         (render.rs's `section_rule`), so these land on the divider rather
-         than floating above the list as a stray toolbar. */
-      const ctl = document.getElementById("phases-actions") || document.createElement("div");
-
-      const expandBtn = document.createElement("button");
-      expandBtn.type = "button";
-      expandBtn.className = "pv-textbtn";
-      expandBtn.textContent = "expand all";
-      expandBtn.addEventListener("click", function () {
-        collapsibles().forEach(function (d) { setPhaseOpen(d, true, true); });
-      });
-
-      const collapseBtn = document.createElement("button");
-      collapseBtn.type = "button";
-      collapseBtn.className = "pv-textbtn";
-      collapseBtn.textContent = "collapse all";
-      collapseBtn.addEventListener("click", function () {
-        collapsibles().forEach(function (d) { setPhaseOpen(d, false, true); });
-      });
-
-      ctl.appendChild(expandBtn);
-      ctl.appendChild(collapseBtn);
-      if (!ctl.isConnected) firstPhase.parentNode.insertBefore(ctl, firstPhase);
-
-      /* Printing (or a reader stepping through word-by-word with find-in-
-         page) needs every phase/graph visible -- expand everything just
-         before print, then restore whatever state the user had before. */
-      let preprintState = null;
-      window.addEventListener("beforeprint", function () {
-        /* `phaseIsShut`, not `.open`: a phase caught mid-close is still
-           technically open, and restoring it as open afterwards would leave
-           the reader with a phase they had just clicked shut. */
-        preprintState = Array.from(collapsibles()).map(function (d) { return !phaseIsShut(d); });
-        collapsibles().forEach(function (d) { setPhaseOpen(d, true, false); });
-      });
-      window.addEventListener("afterprint", function () {
-        if (!preprintState) return;
-        collapsibles().forEach(function (d, i) { setPhaseOpen(d, preprintState[i], false); });
-        preprintState = null;
-      });
-    }
+    mountDisclosure(root);
 
     /* ---- reviewed-state checkboxes ---- */
     const reviewed = new Set(loadReviewed(plan.meta.id, fingerprint));
@@ -1184,7 +1403,7 @@
        glance, but a phase isn't a task, so folding it into the same
        denominator would mix units and complicate the arithmetic — N stays
        exactly "how many tasks", full stop. */
-    const taskEls = document.querySelectorAll('.task[data-plan-ref^="task:"]');
+    const taskEls = root.querySelectorAll('.task[data-plan-ref^="task:"]');
 
     function renderReviewedCount() {
       let k = 0;
@@ -1238,7 +1457,7 @@
        .task-head) rather than inside the heading element itself: the row is
        already a baseline-aligned flex line built to carry the title plus its
        badges, so a control added to it lines up with them for free. */
-    document.querySelectorAll("details.phase").forEach(function (details) {
+    root.querySelectorAll("details.phase").forEach(function (details) {
       const ref = details.getAttribute("data-plan-ref");
       const line = details.querySelector("summary .phase-head-line");
       if (!ref || !line) return;
@@ -1255,12 +1474,1079 @@
     renderReviewedCount();
   }
 
+  /* ---- the served page ------------------------------------------------
+
+     One session per page load. It owns the socket, the state, and the
+     drafts; `mount(root)` may run any number of times against it, once per
+     body swap, and rebuilds the DOM from the state each time.
+
+     Three rules, each with a reason:
+
+       1. The server is the only store. Nothing here reads localStorage.
+       2. Every write is idempotent: a client-generated id per command, and
+          the server answers a repeat with what it did the first time.
+       3. The page applies its own writes from the reply, because the
+          broadcast skips the page that posted; everything else arrives as
+          frames, and both go through `core.applyEvent`. */
+
+  let session = null;
+
+  /* Small DOM builder. Text is always textContent: reviewer and agent
+     text is data, never markup (spec 8). */
+  function el(tag, attrs) {
+    const e = document.createElement(tag);
+    const a = attrs || {};
+    for (const k in a) {
+      const v = a[k];
+      if (v === null || v === undefined || v === false) continue;
+      if (k === "class") e.className = v;
+      else if (k === "text") e.textContent = v;
+      else if (k === "dataset") for (const dk in v) e.dataset[dk] = v[dk];
+      else if (k.indexOf("on") === 0 && typeof v === "function") e.addEventListener(k.slice(2), v);
+      else if (v === true) e.setAttribute(k, "");
+      else e.setAttribute(k, v);
+    }
+    for (let i = 2; i < arguments.length; i++) {
+      const c = arguments[i];
+      if (c === null || c === undefined) continue;
+      if (Array.isArray(c)) c.forEach(function (x) { if (x) e.appendChild(x); });
+      else e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+    }
+    return e;
+  }
+
+  function newId(prefix) {
+    let rand = "";
+    try {
+      const bytes = new Uint8Array(8);
+      window.crypto.getRandomValues(bytes);
+      rand = Array.from(bytes, function (b) { return ("0" + b.toString(16)).slice(-2); }).join("");
+    } catch (e) {
+      rand = Math.random().toString(16).slice(2) + Date.now().toString(16);
+    }
+    return prefix + "-" + rand;
+  }
+
+  function nowIso() { return new Date().toISOString(); }
+
+  function refKind(ref) { return String(ref).split(":")[0]; }
+
+  function findRef(root, ref) {
+    const els = root.querySelectorAll("[data-plan-ref]");
+    for (let i = 0; i < els.length; i++) {
+      if (els[i].getAttribute("data-plan-ref") === ref) return els[i];
+    }
+    return null;
+  }
+
+  /* Reconnect schedule. Eight tries over about half a minute, then the
+     page says so rather than spinning forever. */
+  const BACKOFF_MS = [500, 1000, 2000, 4000, 8000, 8000, 8000, 8000];
+  /* Spec 6.2: at most one activity ping per 30 seconds. */
+  const PING_EVERY_MS = 30000;
+
+  function createSession(artifact) {
+    const S = {
+      artifact: artifact,
+      state: core.emptyState(artifact),
+      root: null,
+      plan: null,
+      socket: null,
+      connected: false,
+      pageId: null,
+      syncing: false,
+      buffer: [],
+      attempts: 0,
+      reconnects: 0,
+      gone: false,
+      lost: false,
+      stopping: false,
+      approve: false,
+      lastPing: 0,
+      previousTitle: null,
+      composers: {},
+      timers: {},
+      applied: 0,
+      ui: {},
+    };
+    const base = location.pathname.replace(/\/$/, "");
+    S.cmdUrl = base + "/cmd";
+    S.stateUrl = base + "/state";
+    S.socketUrl = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
+
+    /* ---- drafts: sessionStorage, keyed by composer id ------------------
+
+       Every editable control is a composer with an id minted when it
+       opens. Its text is stored under that id together with what it
+       targets and the revision it opened against. Two composers on one
+       element stay apart because the id, not the ref, is the key. On
+       restore the command it sends carries the revision it was OPENED
+       against, so text written against revision 3 never arrives labelled
+       revision 4. */
+    const DRAFTS_KEY = "artefacto:drafts:" + artifact;
+    function loadDraftMap() {
+      try {
+        const raw = window.sessionStorage.getItem(DRAFTS_KEY);
+        const map = raw ? JSON.parse(raw) : {};
+        return map && typeof map === "object" ? map : {};
+      } catch (e) { return {}; }
+    }
+    function saveDraftMap(map) {
+      try { window.sessionStorage.setItem(DRAFTS_KEY, JSON.stringify(map)); } catch (e) { /* best effort */ }
+    }
+    function saveDraft(d) { const m = loadDraftMap(); m[d.id] = d; saveDraftMap(m); }
+    function dropDraft(id) { const m = loadDraftMap(); delete m[id]; saveDraftMap(m); }
+
+    /* ---- transport ------------------------------------------------- */
+
+    function post(cmd) {
+      const body = Object.assign({ page: S.pageId }, cmd);
+      function attempt(n) {
+        return fetch(S.cmdUrl, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }).then(function (r) {
+          if (r.status === 401 || r.status === 403) { sessionLost(); throw new Error("not signed in"); }
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        }).catch(function (e) {
+          if (n < 3 && !S.lost) {
+            return new Promise(function (resolve) { setTimeout(resolve, 250 * Math.pow(2, n)); })
+              .then(function () { return attempt(n + 1); });
+          }
+          throw e;
+        });
+      }
+      return attempt(0);
+    }
+
+    /* Send a command and fold its result in. A reply with `seq: 0` is the
+       server saying it already did this (a retried client_id); what it did
+       may or may not be in the state by now, so the page resyncs rather
+       than guess. */
+    function send(cmd) {
+      if (!cmd.client_id) cmd.client_id = newId("cid");
+      return post(cmd).then(function (reply) {
+        if (!reply || !reply.ok) throw new Error((reply && reply.error) || "refused");
+        if (reply.seq === 0) {
+          resync();
+        } else {
+          const ev = core.localEvent(cmd, reply, nowIso());
+          if (ev) { core.applyEvent(S.state, ev); S.applied++; }
+          renderAll();
+        }
+        return reply;
+      });
+    }
+
+    function ping() {
+      const now = Date.now();
+      if (now - S.lastPing < PING_EVERY_MS || S.lost) return;
+      S.lastPing = now;
+      post({ cmd: "ping" }).catch(function () { /* activity is best effort */ });
+    }
+
+    function connect() {
+      if (S.socket || S.lost) return;
+      let ws;
+      try { ws = new WebSocket(S.socketUrl); } catch (e) { scheduleReconnect(); return; }
+      S.socket = ws;
+      ws.onopen = function () {
+        S.connected = true;
+        S.attempts = 0;
+        S.gone = false;
+        S.stopping = false;
+        notice("gone", null);
+        notice("stopping", null);
+        S.syncing = true;
+        S.buffer = [];
+        renderPresence();
+        resync();
+      };
+      ws.onmessage = function (m) {
+        let frame;
+        try { frame = JSON.parse(m.data); } catch (e) { return; }
+        if (frame.format === "artefacto.hello/1") {
+          S.pageId = frame.page;
+          /* The lease holder at this moment: presence is announced on
+             change only, so a page that connects after the agent attached
+             would otherwise never be told. */
+          S.state.presence = frame.presence || null;
+          renderPresence();
+          return;
+        }
+        if (S.syncing) { S.buffer.push(frame); return; }
+        applyFrame(frame, null);
+      };
+      ws.onclose = function () {
+        if (S.socket !== ws) return;
+        S.socket = null;
+        S.connected = false;
+        S.syncing = false;
+        renderPresence();
+        if (!S.lost) scheduleReconnect();
+      };
+      ws.onerror = function () { /* close follows */ };
+    }
+
+    function scheduleReconnect() {
+      if (S.timers.reconnect || S.lost) return;
+      if (S.attempts >= BACKOFF_MS.length) {
+        S.gone = true;
+        notice("gone", S.stopping
+          ? "The server stopped. Run `artefacto serve`, then reload this page."
+          : "The server is not answering. If it moved to a new port, run `artefacto open` for a fresh link.",
+          { action: "Retry", onAction: function () { S.attempts = 0; S.gone = false; connect(); } });
+        renderPresence();
+        return;
+      }
+      const wait = BACKOFF_MS[S.attempts++];
+      S.reconnects++;
+      S.timers.reconnect = setTimeout(function () {
+        S.timers.reconnect = null;
+        connect();
+      }, wait);
+    }
+
+    function sessionLost() {
+      if (S.lost) return;
+      S.lost = true;
+      if (S.socket) { try { S.socket.close(); } catch (e) { /* ignore */ } }
+      notice("lost", "This page is no longer signed in. Run `artefacto open` for a fresh link; your drafts are kept.");
+      renderPresence();
+    }
+
+    /* Rebuild the state from the server, then apply whatever arrived while
+       that was in flight. The snapshot's `last_seq` is the cursor: logged
+       events at or below it are already inside the snapshot. */
+    function resync() {
+      S.syncing = true;
+      return fetch(S.stateUrl, { credentials: "same-origin" })
+        .then(function (r) {
+          if (r.status === 401 || r.status === 403) { sessionLost(); throw new Error("not signed in"); }
+          if (r.status === 404) {
+            notice("lost", "This artifact is no longer on the server.");
+            throw new Error("gone");
+          }
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
+        .then(function (snap) {
+          applySnapshot(snap);
+          drain(snap.last_seq || 0);
+        })
+        .catch(function () {
+          /* Best effort: fold in what arrived, skipping what the state
+             already has, and try again shortly. */
+          drain(S.state.lastSeq);
+          if (!S.lost && S.connected && !S.timers.resync) {
+            S.timers.resync = setTimeout(function () { S.timers.resync = null; resync(); }, 1500);
+          }
+        });
+    }
+
+    function drain(cursor) {
+      const frames = S.buffer;
+      S.buffer = [];
+      S.syncing = false;
+      frames.forEach(function (f) { applyFrame(f, cursor); });
+    }
+
+    function applySnapshot(snap) {
+      const fresh = core.fromSnapshot(snap);
+      /* The page id and the live socket are not in the snapshot. */
+      const previous = S.state;
+      S.state = fresh;
+      if (fresh.plan && fresh.plan.meta) S.previousTitle = previous.plan && previous.plan.meta
+        ? previous.plan.meta.title : fresh.plan.meta.title;
+      const fingerprint = document.body.getAttribute("data-plan-fingerprint") || "";
+      if (snap.html && snap.plan_hash && snap.plan_hash !== fingerprint) {
+        swapBody(snap.html, snap.revision);
+      } else {
+        renderAll();
+      }
+    }
+
+    /* A frame from the socket. `cursor` is set only while catching up. */
+    function applyFrame(frame, cursor) {
+      const before = { revision: S.state.revision, title: S.state.plan && S.state.plan.meta ? S.state.plan.meta.title : null };
+      const applied = core.applyFrame(S.state, frame, cursor);
+      S.applied += applied.length;
+      let swapped = false;
+      applied.forEach(function (e) {
+        switch (e.type) {
+          case "revision.published":
+            S.previousTitle = before.title;
+            if (frame.html && !swapped) {
+              swapped = true;
+              swapBody(frame.html, S.state.revision);
+            }
+            revisionNotice(e, applied);
+            break;
+          case "nudge":
+            notice("nudge", (e.data && e.data.text) || "The agent asked for your attention.", { dismiss: true, fresh: true });
+            break;
+          case "server.stopping":
+            S.stopping = true;
+            notice("stopping", "The server is stopping. This page will try to reconnect.");
+            break;
+          default:
+            break;
+        }
+      });
+      if (!swapped) renderAll();
+    }
+
+    /* ---- the body swap ----------------------------------------------
+
+       Spec 4.3: swap the body, mount again, then restore -- disclosure
+       state by element id, focus and caret, and the scroll position
+       anchored to an element rather than a pixel offset, because geometry
+       changes between revisions. Drafts are not touched: they live in
+       sessionStorage under their composer ids and are put back by mount. */
+    function captureView() {
+      const open = [];
+      document.querySelectorAll("details.phase").forEach(function (d) {
+        if (d.open && !d.classList.contains("is-closing")) open.push(d.getAttribute("data-plan-ref"));
+      });
+      let focus = null;
+      const active = document.activeElement;
+      if (active && (active.tagName === "TEXTAREA" || active.tagName === "INPUT")) {
+        const composer = active.closest("[data-composer]");
+        if (composer) {
+          focus = { composer: composer.getAttribute("data-composer"), start: active.selectionStart, end: active.selectionEnd };
+        }
+      }
+      const anchors = [];
+      const refs = document.querySelectorAll("[data-plan-ref]");
+      for (let i = 0; i < refs.length && anchors.length < 3; i++) {
+        const r = refs[i].getBoundingClientRect();
+        if (r.bottom > 0 && r.height > 0) anchors.push({ ref: refs[i].getAttribute("data-plan-ref"), top: r.top });
+      }
+      return { open: open, focus: focus, anchors: anchors, scrollY: window.scrollY };
+    }
+
+    function restoreView(view) {
+      document.querySelectorAll("details.phase").forEach(function (d) {
+        const ref = d.getAttribute("data-plan-ref");
+        setPhaseOpen(d, view.open.indexOf(ref) >= 0, false);
+      });
+      let placed = false;
+      for (let i = 0; i < view.anchors.length && !placed; i++) {
+        const target = findRef(document.body, view.anchors[i].ref);
+        if (!target) continue;
+        const now = target.getBoundingClientRect().top;
+        /* Instant, whatever plan.css says about smooth scrolling: this is
+           putting the reader back, not taking them somewhere. */
+        window.scrollBy({ top: now - view.anchors[i].top, left: 0, behavior: "instant" });
+        placed = true;
+      }
+      if (!placed) window.scrollTo({ top: view.scrollY, left: 0, behavior: "instant" });
+      if (view.focus) {
+        const box = document.querySelector('[data-composer="' + view.focus.composer + '"] textarea');
+        if (box) {
+          box.focus({ preventScroll: true });
+          try { box.setSelectionRange(view.focus.start, view.focus.end); } catch (e) { /* ignore */ }
+        }
+      }
+    }
+
+    function swapBody(html, revision) {
+      const view = captureView();
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const next = doc.body;
+      /* Only the data island travels; the page's own script is already
+         running and must not be handed a second copy. */
+      next.querySelectorAll("script").forEach(function (s) {
+        if (s.getAttribute("type") !== "application/json") s.remove();
+      });
+      const body = document.body;
+      Array.from(body.attributes).forEach(function (a) { body.removeAttribute(a.name); });
+      Array.from(next.attributes).forEach(function (a) { body.setAttribute(a.name, a.value); });
+      body.setAttribute("data-artefacto-artifact", S.artifact);
+      body.setAttribute("data-artefacto-revision", String(revision || S.state.revision));
+      const nodes = Array.from(next.childNodes).map(function (n) { return document.adoptNode(n); });
+      body.replaceChildren.apply(body, nodes);
+      mount(body);
+      restoreView(view);
+    }
+
+    /* ---- notices ---------------------------------------------------- */
+
+    function noticeHost() {
+      let host = document.querySelector(".pv-notices");
+      if (!host) {
+        host = el("div", { class: "pv-notices", role: "status", "aria-live": "polite" });
+        const sheet = document.querySelector(".pv-sheet");
+        const bar = document.querySelector(".pv-topbar");
+        if (bar && bar.parentNode) bar.parentNode.insertBefore(host, bar.nextSibling);
+        else if (sheet) sheet.insertBefore(host, sheet.firstChild);
+        else document.body.insertBefore(host, document.body.firstChild);
+      }
+      return host;
+    }
+
+    /* One notice per kind, replaced in place; `null` removes it. The text
+       survives a body swap because `mount` calls `renderNotices`. */
+    function notice(kind, text, opts) {
+      const o = opts || {};
+      if (text === null) delete S.ui["notice:" + kind];
+      else S.ui["notice:" + kind] = { text: text, dismiss: !!o.dismiss, action: o.action || null, onAction: o.onAction || null, title: o.title || null };
+      renderNotices();
+    }
+
+    function renderNotices() {
+      const host = noticeHost();
+      host.replaceChildren();
+      ["revision", "nudge", "stopping", "gone", "lost"].forEach(function (kind) {
+        const n = S.ui["notice:" + kind];
+        if (!n) return;
+        const node = el("div", { class: "pv-notice", dataset: { kind: kind }, title: n.title });
+        node.appendChild(el("span", { class: "pv-notice-text", text: n.text }));
+        if (n.action) node.appendChild(el("button", { type: "button", class: "pv-textbtn pv-notice-action", text: n.action, onclick: n.onAction }));
+        if (n.dismiss) node.appendChild(el("button", { type: "button", class: "pv-textbtn pv-notice-dismiss", text: "Dismiss", "aria-label": "Dismiss", onclick: function () { notice(kind, null); } }));
+        host.appendChild(node);
+      });
+    }
+
+    function revisionNotice(e, applied) {
+      const d = e.data || {};
+      const resolved = applied.filter(function (x) { return x.type === "thread.resolved"; });
+      const changed = resolved.filter(function (x) { return x.data && x.data.status === "changed"; }).length;
+      const declined = resolved.length - changed;
+      let text = "Revision " + S.state.revision + " pushed: " + (d.summary || "updated") + ".";
+      if (resolved.length) {
+        const parts = [];
+        if (changed) parts.push(changed + " addressed");
+        if (declined) parts.push(declined + " declined");
+        text += " " + parts.join(", ") + ".";
+      }
+      const orphaned = core.unanchored(S.state).length;
+      if (orphaned) text += " " + orphaned + (orphaned === 1 ? " thread lost its element." : " threads lost their elements.");
+      notice("revision", text, { dismiss: true, title: S.previousTitle ? "Previously: " + S.previousTitle : null });
+    }
+
+    /* ---- presence ----------------------------------------------------- */
+
+    function presenceLabel() {
+      if (S.lost) return { mode: "off", text: "signed out" };
+      if (S.gone) return { mode: "off", text: "server gone" };
+      if (!S.connected) return { mode: "off", text: "reconnecting" };
+      const p = S.state.presence;
+      if (!p) return { mode: "none", text: "no agent" };
+      return { mode: p.mode, text: "agent " + (p.mode === "live" ? "live" : "waiting"), agent: p.agent };
+    }
+
+    function renderPresence() {
+      const pill = document.querySelector(".pv-presence");
+      if (!pill) return;
+      const l = presenceLabel();
+      pill.textContent = l.text;
+      pill.setAttribute("data-mode", l.mode);
+      pill.title = l.agent ? l.agent + " holds the lease" : "";
+      const hint = document.querySelector(".pv-chat-hint");
+      if (hint) hint.textContent = S.state.presence
+        ? "The agent hears this at once."
+        : "No agent is attached. Your message will wait for one.";
+    }
+
+    function mountPresence(root) {
+      const host = root.querySelector(".pv-topbar-right");
+      if (!host || host.querySelector(".pv-presence")) return;
+      host.insertBefore(el("span", { class: "pv-presence", dataset: { mode: "none" }, text: "no agent" }), host.firstChild);
+    }
+
+    /* ---- threads ----------------------------------------------------- */
+
+    function actorLabel(actor) {
+      return actor === "agent" ? "agent" : actor === "server" ? "server" : "you";
+    }
+
+    function renderThread(node, t) {
+      node.setAttribute("data-status", t.status);
+      node.querySelector(".thread-status").textContent = t.status;
+      node.querySelector(".thread-status").className = "thread-status pv-chip pv-chip-" + t.status;
+      node.querySelector(".thread-blocking").hidden = !t.blocking;
+      const msgs = node.querySelector(".thread-msgs");
+      msgs.replaceChildren();
+      t.messages.forEach(function (m, i) {
+        msgs.appendChild(el("div", { class: "thread-msg", dataset: { actor: m.actor, index: String(i) }, title: m.ts },
+          el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
+          el("p", { class: "thread-text", text: m.text })));
+      });
+      const editBtn = node.querySelector(".thread-edit");
+      const delBtn = node.querySelector(".thread-delete");
+      const open = t.status === "open";
+      editBtn.hidden = !open;
+      delBtn.hidden = !open;
+    }
+
+    function threadNode(t) {
+      const node = el("div", { class: "thread", dataset: { thread: t.id } });
+      node.appendChild(el("div", { class: "thread-head" },
+        el("span", { class: "thread-id", text: t.id }),
+        el("span", { class: "thread-status pv-chip", text: t.status }),
+        el("span", { class: "thread-blocking", text: "blocks approval" })));
+      node.appendChild(el("div", { class: "thread-msgs" }));
+      const actions = el("div", { class: "thread-actions" });
+      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-reply", text: "Reply", onclick: function () {
+        openComposer({ kind: "reply", thread: t.id, ref: t.target });
+      } }));
+      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-ask", text: "Ask the agent", onclick: function () {
+        openComposer({ kind: "ask", thread: t.id, ref: t.target });
+      } }));
+      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-edit", text: "Edit", onclick: function () {
+        const current = S.state.threads.find(function (x) { return x.id === t.id; });
+        openComposer({ kind: "edit", thread: t.id, ref: t.target, text: current && current.messages[0] ? current.messages[0].text : "" });
+      } }));
+      let armed = null;
+      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-delete", text: "Delete", onclick: function (ev) {
+        const btn = ev.currentTarget;
+        if (armed) {
+          clearTimeout(armed);
+          armed = null;
+          btn.textContent = "Delete";
+          send({ cmd: "thread.delete", thread: t.id }).catch(function (e) { failed(btn, e); });
+          return;
+        }
+        btn.textContent = "Confirm delete";
+        armed = setTimeout(function () { armed = null; btn.textContent = "Delete"; }, 4000);
+      } }));
+      node.appendChild(actions);
+      node.appendChild(el("div", { class: "thread-composers" }));
+      return node;
+    }
+
+    /* Keyed: an existing thread element is updated in place so a composer
+       open inside it survives the render. */
+    function renderThreadsIn(host, threads) {
+      const keep = {};
+      threads.forEach(function (t) {
+        let node = host.querySelector('.thread[data-thread="' + t.id + '"]');
+        if (!node) { node = threadNode(t); host.appendChild(node); }
+        renderThread(node, t);
+        keep[t.id] = true;
+      });
+      Array.from(host.querySelectorAll(".thread")).forEach(function (node) {
+        if (!keep[node.getAttribute("data-thread")]) node.remove();
+      });
+    }
+
+    function renderThreads() {
+      const root = S.root;
+      if (!root) return;
+      root.querySelectorAll(".pv-threads").forEach(function (host) {
+        const ref = host.getAttribute("data-threads-for");
+        renderThreadsIn(host, core.threadsOn(S.state, ref));
+      });
+    }
+
+    /* ---- answers and reviewed marks ------------------------------------- */
+
+    function renderAnswers() {
+      const root = S.root;
+      if (!root) return;
+      root.querySelectorAll(".pv-answer").forEach(function (box) {
+        const q = box.getAttribute("data-answer-for");
+        const text = S.state.answers[q];
+        box.hidden = !text;
+        box.querySelector(".pv-answer-text").textContent = text || "";
+      });
+    }
+
+    function renderReviewed() {
+      const root = S.root;
+      if (!root) return;
+      root.querySelectorAll(".reviewed-toggle").forEach(function (label) {
+        const ref = label.getAttribute("data-reviewed-for");
+        const box = label.querySelector("input");
+        const on = S.state.reviewed.indexOf(ref) >= 0;
+        box.checked = on;
+        label.querySelector(".reviewed-toggle-text").textContent = on ? "Reviewed" : "Mark reviewed";
+        const container = label.closest("[data-plan-ref]");
+        if (container) container.classList.toggle("is-reviewed", on);
+      });
+    }
+
+    /* ---- the bar and the chat ---------------------------------------- */
+
+    function renderBar() {
+      const bar = document.querySelector(".feedback-bar");
+      if (!bar) return;
+      const threads = S.state.threads.filter(function (t) { return t.status !== "unanchored"; });
+      const open = threads.filter(function (t) { return t.status === "open"; });
+      const blocking = open.filter(function (t) { return t.blocking; }).length;
+      bar.querySelector(".feedback-bar-banner").textContent = "live review · rev " + S.state.revision;
+      bar.querySelector(".feedback-bar-blocking").textContent = blocking ? blocking + " blocking" : "";
+      bar.querySelector(".feedback-bar-count").textContent = threads.length + (threads.length === 1 ? " thread" : " threads");
+      const taskEls = S.root ? S.root.querySelectorAll('.task[data-plan-ref^="task:"]') : [];
+      let k = 0;
+      taskEls.forEach(function (t) { if (S.state.reviewed.indexOf(t.getAttribute("data-plan-ref")) >= 0) k++; });
+      bar.querySelector(".feedback-bar-reviewed").textContent = k + "/" + taskEls.length + " reviewed";
+      bar.querySelector(".feedback-bar-approve input").checked = S.approve;
+      bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent · rev " + S.state.revision : "";
+      const send = bar.querySelector(".feedback-bar-send");
+      send.disabled = S.lost;
+      send.textContent = S.approve ? "Send approval" : "Send review";
+    }
+
+    function renderChat() {
+      const log = document.querySelector(".pv-chat-log");
+      if (!log) return;
+      log.replaceChildren();
+      S.state.chat.forEach(function (m) {
+        log.appendChild(el("div", { class: "pv-chat-msg", dataset: { actor: m.actor }, title: m.ts },
+          el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
+          el("p", { class: "thread-text", text: m.text })));
+      });
+      log.hidden = S.state.chat.length === 0;
+    }
+
+    function mountBar(root) {
+      if (root.querySelector(".feedback-bar")) return;
+      const bar = el("div", { class: "feedback-bar is-served" });
+      bar.appendChild(el("span", { class: "feedback-bar-banner" }));
+      bar.appendChild(el("span", { class: "feedback-bar-blocking" }));
+      bar.appendChild(el("span", { class: "feedback-bar-count" }));
+      bar.appendChild(el("span", { class: "feedback-bar-reviewed" }));
+      bar.appendChild(el("span", { class: "feedback-bar-sent" }));
+      bar.appendChild(el("button", { type: "button", class: "pv-textbtn feedback-bar-chat", text: "Ask the agent", onclick: function () {
+        const panel = document.querySelector(".pv-chat");
+        panel.hidden = !panel.hidden;
+        if (!panel.hidden) openComposer({ kind: "chat" });
+      } }));
+      const approve = el("input", { type: "checkbox" });
+      approve.addEventListener("change", function () { S.approve = approve.checked; renderBar(); });
+      bar.appendChild(el("label", { class: "feedback-bar-approve" }, approve, el("span", { text: "Approve" })));
+      const sendBtn = el("button", { type: "button", class: "feedback-bar-send", text: "Send review", onclick: function () {
+        sendBtn.disabled = true;
+        send({ cmd: "review.submit", verdict: S.approve ? "approve" : "comment", base_revision: S.state.revision })
+          .then(function () { sendBtn.disabled = false; })
+          .catch(function (e) { sendBtn.disabled = false; failed(sendBtn, e); });
+      } });
+      bar.appendChild(sendBtn);
+      root.appendChild(bar);
+
+      const chat = el("div", { class: "pv-chat", hidden: true });
+      chat.appendChild(el("div", { class: "pv-chat-head" },
+        el("span", { class: "pv-chat-title", text: "Ask the agent about the plan" }),
+        el("span", { class: "pv-chat-hint" })));
+      chat.appendChild(el("div", { class: "pv-chat-log" }));
+      chat.appendChild(el("div", { class: "pv-chat-composers" }));
+      root.appendChild(chat);
+    }
+
+    /* ---- the recovery panel -------------------------------------------
+
+       Spec 4.3: a thread whose element is gone, and a draft whose target
+       is gone, are listed at the top -- never silently dropped. */
+    function renderRecovery() {
+      let panel = document.querySelector(".pv-recovery");
+      const orphans = core.unanchored(S.state);
+      const drafts = orphanedDrafts();
+      if (!orphans.length && !drafts.length) { if (panel) panel.remove(); return; }
+      if (!panel) {
+        panel = el("section", { class: "pv-recovery" });
+        const host = noticeHost();
+        host.parentNode.insertBefore(panel, host.nextSibling);
+      }
+      panel.replaceChildren();
+      panel.appendChild(el("h2", { class: "pv-recovery-title", text: "Needs attention" }));
+      const threadsHost = el("div", { class: "pv-threads pv-threads-orphaned", dataset: { threadsFor: "" } });
+      if (orphans.length) {
+        panel.appendChild(el("p", { class: "pv-recovery-lead", text: orphans.length === 1
+          ? "This thread's element is no longer in the plan."
+          : "These threads' elements are no longer in the plan." }));
+        panel.appendChild(threadsHost);
+        renderThreadsIn(threadsHost, orphans);
+        threadsHost.querySelectorAll(".thread").forEach(function (node) {
+          const t = orphans.find(function (x) { return x.id === node.getAttribute("data-thread"); });
+          node.querySelector(".thread-head").appendChild(el("span", { class: "thread-target", text: "was on " + t.target }));
+          node.querySelector(".thread-delete").hidden = false;
+        });
+      }
+      drafts.forEach(function (d) {
+        const row = el("div", { class: "pv-orphan-draft", dataset: { composer: d.id } });
+        row.appendChild(el("span", { class: "pv-orphan-draft-what", text: draftLabel(d) + " — its element is gone" }));
+        row.appendChild(el("p", { class: "thread-text", text: d.text }));
+        row.appendChild(el("button", { type: "button", class: "pv-textbtn", text: "Discard", onclick: function () {
+          dropDraft(d.id);
+          renderRecovery();
+        } }));
+        panel.appendChild(row);
+      });
+    }
+
+    function draftLabel(d) {
+      switch (d.kind) {
+        case "comment": return "Comment on " + d.ref;
+        case "answer": return "Answer to " + d.ref;
+        case "reply": return "Reply on " + d.thread;
+        case "ask": return "Question on " + d.thread;
+        case "edit": return "Edit of " + d.thread;
+        default: return "Message to the agent";
+      }
+    }
+
+    /* A draft whose target no longer exists on the page. */
+    function orphanedDrafts() {
+      const map = loadDraftMap();
+      const out = [];
+      for (const id in map) {
+        const d = map[id];
+        if (!draftTarget(d)) out.push(d);
+      }
+      return out;
+    }
+
+    /* Where a draft's composer belongs now, or null. */
+    function draftTarget(d) {
+      if (!S.root) return null;
+      if (d.kind === "chat") return document.querySelector(".pv-chat-composers");
+      if (d.kind === "comment" || d.kind === "answer") {
+        const target = findRef(S.root, d.ref);
+        return target ? target.querySelector(".pv-composers") : null;
+      }
+      const t = S.state.threads.find(function (x) { return x.id === d.thread; });
+      if (!t || t.status === "unanchored") return null;
+      const node = S.root.querySelector('.thread[data-thread="' + d.thread + '"] .thread-composers');
+      return node || null;
+    }
+
+    /* ---- composers --------------------------------------------------- */
+
+    function failed(anchor, e) {
+      const host = anchor.closest(".composer, .feedback-bar, .thread") || anchor.parentNode;
+      let line = host.querySelector(".pv-error");
+      if (!line) { line = el("span", { class: "pv-error", role: "alert" }); host.appendChild(line); }
+      line.textContent = "Not sent: " + (e && e.message ? e.message : String(e));
+    }
+
+    function openComposer(spec) {
+      const d = {
+        id: spec.id || newId("composer"),
+        kind: spec.kind,
+        ref: spec.ref || null,
+        thread: spec.thread || null,
+        question: spec.kind === "answer" ? spec.ref.slice("question:".length) : null,
+        revision: spec.revision || S.state.revision,
+        text: spec.text || "",
+        blocking: !!spec.blocking,
+      };
+      const host = draftTarget(d);
+      if (!host) return null;
+      const existing = host.querySelector('[data-composer="' + d.id + '"]');
+      if (existing) { existing.querySelector("textarea").focus(); return existing; }
+      /* One composer of a kind per target at a time, keyed by id: a second
+         click focuses the open one rather than opening a twin. */
+      const twin = Array.from(host.querySelectorAll(".composer")).find(function (c) {
+        return c.getAttribute("data-kind") === d.kind;
+      });
+      if (twin && !spec.id) { twin.querySelector("textarea").focus(); return twin; }
+      saveDraft(d);
+
+      const box = el("div", { class: "composer comment-box", dataset: { composer: d.id, kind: d.kind, revision: String(d.revision) } });
+      const label = { comment: "Comment", answer: "Answer", reply: "Reply", ask: "Ask the agent", edit: "Edit", chat: "Message" }[d.kind];
+      box.appendChild(el("span", { class: "composer-label", text: label }));
+      const ta = el("textarea", { rows: "3", placeholder: d.kind === "answer" ? "Answer…" : d.kind === "ask" || d.kind === "chat" ? "Ask the agent…" : "Write…" });
+      ta.value = d.text;
+      ta.addEventListener("input", function () { d.text = ta.value; saveDraft(d); });
+      box.appendChild(ta);
+      let blockingBox = null;
+      if (d.kind === "comment") {
+        blockingBox = el("input", { type: "checkbox" });
+        blockingBox.checked = d.blocking;
+        blockingBox.addEventListener("change", function () { d.blocking = blockingBox.checked; saveDraft(d); });
+        box.appendChild(el("label", { class: "comment-box-blocking" }, blockingBox, warningIcon(), "Blocks approval"));
+      }
+      const actions = el("div", { class: "comment-box-actions" });
+      const sendBtn = el("button", { type: "button", class: "composer-send", text: d.kind === "comment" ? "Add" : "Send" });
+      const cancelBtn = el("button", { type: "button", class: "composer-cancel", text: "Cancel" });
+      actions.appendChild(sendBtn);
+      actions.appendChild(cancelBtn);
+      box.appendChild(actions);
+      cancelBtn.addEventListener("click", function () { dropDraft(d.id); box.remove(); renderRecovery(); });
+      sendBtn.addEventListener("click", function () {
+        const text = ta.value.trim();
+        if (!text) return;
+        const cmd = commandFor(d, text);
+        if (!cmd) return;
+        sendBtn.disabled = true;
+        send(cmd).then(function () {
+          dropDraft(d.id);
+          box.remove();
+          renderRecovery();
+        }).catch(function (e) {
+          sendBtn.disabled = false;
+          failed(sendBtn, e);
+        });
+      });
+      ta.addEventListener("keydown", function (ev) {
+        if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") { ev.preventDefault(); sendBtn.click(); }
+      });
+      host.appendChild(box);
+      if (!spec.silent) ta.focus({ preventScroll: true });
+      return box;
+    }
+
+    /* The command a draft sends. `opened_revision` is the revision the
+       composer OPENED against, whatever the page shows now. */
+    function commandFor(d, text) {
+      switch (d.kind) {
+        case "comment": {
+          const target = findRef(S.root, d.ref);
+          return { cmd: "thread.open", ref: d.ref, text: text, blocking: !!d.blocking,
+            quote: target ? elementQuote(target) : "", opened_revision: d.revision };
+        }
+        case "answer": return { cmd: "question.answer", question: d.question, text: text, opened_revision: d.revision };
+        case "reply": return { cmd: "thread.reply", thread: d.thread, text: text, opened_revision: d.revision };
+        case "ask": return { cmd: "chat.send", thread: d.thread, text: text, opened_revision: d.revision };
+        case "edit": return { cmd: "thread.edit", thread: d.thread, text: text, opened_revision: d.revision };
+        case "chat": return { cmd: "chat.send", text: text, opened_revision: d.revision };
+        default: return null;
+      }
+    }
+
+    /* Put every stored draft back where it belongs. Runs after threads are
+       rendered, because a reply composer lives inside its thread. */
+    function restoreDrafts() {
+      const map = loadDraftMap();
+      for (const id in map) {
+        const d = map[id];
+        if (!draftTarget(d)) continue;
+        openComposer({ id: d.id, kind: d.kind, ref: d.ref, thread: d.thread, revision: d.revision, text: d.text, blocking: d.blocking, silent: true });
+      }
+    }
+
+    /* ---- per-element controls ---------------------------------------- */
+
+    function mountElements(root) {
+      root.querySelectorAll("[data-plan-ref]").forEach(function (target) {
+        const ref = target.getAttribute("data-plan-ref");
+        const kind = refKind(ref);
+        const isQuestion = kind === "question";
+        const slots = commentSlots(target);
+        const btn = el("button", { type: "button", class: "comment-btn", title: isQuestion ? "Answer" : "Comment",
+          "aria-label": isQuestion ? "Answer this question" : "Add comment" });
+        btn.appendChild(commentIcon());
+        btn.appendChild(el("span", { class: "comment-btn-label", text: isQuestion ? "Answer" : "Comment" }));
+        btn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          if (target.tagName === "DETAILS" && phaseIsShut(target)) setPhaseOpen(target, true, true);
+          openComposer({ kind: isQuestion ? "answer" : "comment", ref: ref });
+        });
+        (slots.btn || target).appendChild(btn);
+        const boxHost = slots.box || target;
+        if (isQuestion) {
+          boxHost.appendChild(el("div", { class: "pv-answer", dataset: { answerFor: ref.slice("question:".length) }, hidden: true },
+            el("span", { class: "pv-answer-label", text: "Your answer" }),
+            el("p", { class: "pv-answer-text" })));
+        }
+        boxHost.appendChild(el("div", { class: "pv-threads", dataset: { threadsFor: ref } }));
+        boxHost.appendChild(el("div", { class: "pv-composers" }));
+      });
+
+      /* Reviewed marks on phase and task heads, as the static page has. */
+      function toggle(container, ref) {
+        const label = el("label", { class: "reviewed-toggle", dataset: { reviewedFor: ref } });
+        const box = el("input", { type: "checkbox", class: "reviewed-box" });
+        label.appendChild(box);
+        label.appendChild(el("span", { class: "reviewed-toggle-text", text: "Mark reviewed" }));
+        label.addEventListener("click", function (e) { e.stopPropagation(); });
+        box.addEventListener("change", function () {
+          const on = box.checked;
+          send({ cmd: "element.reviewed", ref: ref, on: on }).catch(function (e) {
+            box.checked = !on;
+            failed(label, e);
+          });
+        });
+        return label;
+      }
+      root.querySelectorAll("details.phase").forEach(function (details) {
+        const ref = details.getAttribute("data-plan-ref");
+        const line = details.querySelector("summary .phase-head-line");
+        if (ref && line) line.appendChild(toggle(details, ref));
+      });
+      root.querySelectorAll('.task[data-plan-ref^="task:"]').forEach(function (task) {
+        const ref = task.getAttribute("data-plan-ref");
+        const line = task.querySelector(".task-head") || task;
+        if (ref) line.appendChild(toggle(task, ref));
+      });
+    }
+
+    function renderAll() {
+      renderPresence();
+      renderThreads();
+      renderAnswers();
+      renderReviewed();
+      renderBar();
+      renderChat();
+      renderNotices();
+      renderRecovery();
+    }
+
+    S.mount = function (root, plan) {
+      S.root = root;
+      S.plan = plan;
+      mountPresence(root);
+      mountElements(root);
+      mountBar(root);
+      noticeHost();
+      renderAll();
+      restoreDrafts();
+      renderRecovery();
+      if (!S.socket && !S.lost) connect();
+      S.lastPing = Date.now();
+    };
+
+    S.activity = ping;
+
+    /* For the browser tests: what the page believes, as data. */
+    S.debug = function () {
+      return {
+        connected: S.connected, page: S.pageId, syncing: S.syncing, gone: S.gone, lost: S.lost,
+        reconnects: S.reconnects, applied: S.applied, revision: S.state.revision,
+        planHash: S.state.planHash, lastSeq: S.state.lastSeq, presence: S.state.presence,
+        submitted: S.state.submitted, chat: S.state.chat.length,
+        threads: S.state.threads.map(function (t) {
+          return { id: t.id, target: t.target, status: t.status, blocking: t.blocking,
+            messages: t.messages.map(function (m) { return m.actor + ": " + m.text; }) };
+        }),
+        answers: Object.assign({}, S.state.answers),
+        reviewed: S.state.reviewed.slice(),
+        drafts: loadDraftMap(),
+        notices: Object.keys(S.ui).filter(function (k) { return k.indexOf("notice:") === 0; }).map(function (k) { return k.slice(7); }),
+      };
+    };
+    S.applyFrame = function (frame) { applyFrame(frame, null); };
+    S.resync = resync;
+    return S;
+  }
+
+  core.debug = function () { return session ? session.debug() : null; };
+
+  /* Activity, once per document. Spec 6.2: scroll, keys, pointer, and
+     visibility, throttled to one ping per 30 seconds -- so a reader who
+     reads for twenty minutes is not idle. */
+  let activityWired = false;
+  function wireActivity() {
+    if (activityWired) return;
+    activityWired = true;
+    const mark = function () { if (session) session.activity(); };
+    document.addEventListener("scroll", mark, { passive: true });
+    document.addEventListener("keydown", mark);
+    document.addEventListener("pointermove", mark, { passive: true });
+    document.addEventListener("pointerdown", mark, { passive: true });
+    document.addEventListener("visibilitychange", function () { if (!document.hidden) mark(); });
+  }
+
+  /* ---- mount and run ----------------------------------------------
+
+     `mount(root)` builds every control from the markup under `root` and
+     may run again against a swapped-in body. Observers from the previous
+     mount are disconnected first. Global listeners -- print, the OS theme,
+     activity -- are wired once and read the live document. */
+
+  let mounted = { observers: [] };
+
+  /* Expand every phase for print, then restore what the reader had.
+     Once per document; the handlers read the DOM as it is when they run. */
+  let printWired = false;
+  function wirePrint() {
+    if (printWired) return;
+    printWired = true;
+    let preprintState = null;
+    const collapsibles = function () { return document.querySelectorAll("details.phase"); };
+    window.addEventListener("beforeprint", function () {
+      /* `phaseIsShut`, not `.open`: a phase caught mid-close is still
+         technically open, and restoring it as open afterwards would leave
+         the reader with a phase they had just clicked shut. */
+      preprintState = Array.from(collapsibles()).map(function (d) { return !phaseIsShut(d); });
+      collapsibles().forEach(function (d) { setPhaseOpen(d, true, false); });
+    });
+    window.addEventListener("afterprint", function () {
+      if (!preprintState) return;
+      collapsibles().forEach(function (d, i) { setPhaseOpen(d, preprintState[i], false); });
+      preprintState = null;
+    });
+  }
+
+  /* The summary click takeover and the expand/collapse controls are the
+     same in both modes. */
+  function mountDisclosure(root) {
+    const firstPhase = root.querySelector("details.phase");
+    if (!firstPhase) return;
+    const collapsibles = function () { return root.querySelectorAll("details.phase"); };
+    collapsibles().forEach(function (d) {
+      const summary = d.querySelector("summary");
+      if (!summary) return;
+      summary.addEventListener("click", function (e) {
+        if (e.defaultPrevented) return;
+        if (e.target.closest && e.target.closest("a[href], button, input, select, textarea, label")) {
+          return;
+        }
+        e.preventDefault();
+        setPhaseOpen(d, phaseIsShut(d), true);
+      });
+    });
+    const ctl = root.querySelector("#phases-actions") || document.createElement("div");
+    if (ctl.querySelector(".pv-textbtn")) return;
+    const expandBtn = document.createElement("button");
+    expandBtn.type = "button";
+    expandBtn.className = "pv-textbtn";
+    expandBtn.textContent = "expand all";
+    expandBtn.addEventListener("click", function () {
+      collapsibles().forEach(function (d) { setPhaseOpen(d, true, true); });
+    });
+    const collapseBtn = document.createElement("button");
+    collapseBtn.type = "button";
+    collapseBtn.className = "pv-textbtn";
+    collapseBtn.textContent = "collapse all";
+    collapseBtn.addEventListener("click", function () {
+      collapsibles().forEach(function (d) { setPhaseOpen(d, false, true); });
+    });
+    ctl.appendChild(expandBtn);
+    ctl.appendChild(collapseBtn);
+    if (!ctl.isConnected) firstPhase.parentNode.insertBefore(ctl, firstPhase);
+    wirePrint();
+  }
+
+  function mount(root) {
+    mounted.observers.forEach(function (o) { o.disconnect(); });
+    mounted = { observers: [] };
+    /* Chrome first, and outside the island guard: the theme toggle and the
+       scroll cues are properties of the page, not of the plan data, so a
+       document whose island failed to parse still gets a usable shell. */
+    mountThemeToggle(root);
+    mountScrollCues(root);
+
+    const islandEl = root.querySelector("#plan-data");
+    if (!islandEl) return;
+    let plan;
+    try { plan = core.parseIsland(islandEl.textContent); } catch (e) { return; }
+
+    const served = root.getAttribute("data-artefacto-artifact") || (session && session.artifact);
+    if (served) {
+      if (!session) session = createSession(served);
+      root.setAttribute("data-artefacto-artifact", served);
+      mountDisclosure(root);
+      wireActivity();
+      session.mount(root, plan);
+    } else {
+      mountStatic(root, plan);
+    }
+  }
+  core.mount = mount;
+
   function run() {
     /* The window.name trigger exists for the CI harness, which embeds this
        page via a sandboxed iframe's srcdoc (an about:srcdoc document has no
        URL fragment to carry #selftest). Inert otherwise: the selftest only
        appends a result marker. */
-    if (location.hash === "#selftest" || window.name === "artefacto-selftest") selftest(); else init();
+    if (location.hash === "#selftest" || window.name === "artefacto-selftest") selftest();
+    else mount(document.body);
   }
   if (document.readyState !== "loading") {
     run();

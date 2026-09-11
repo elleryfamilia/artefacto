@@ -223,6 +223,13 @@ impl Page {
         page.call("Runtime.enable", serde_json::json!({}));
         page.call("Log.enable", serde_json::json!({}));
         page.call("Page.enable", serde_json::json!({}));
+        // A headless page has no window focus, so `element.focus()` would
+        // not make it the active element and every caret assertion would
+        // be about the harness rather than the page.
+        page.call(
+            "Emulation.setFocusEmulationEnabled",
+            serde_json::json!({ "enabled": true }),
+        );
         page
     }
 
@@ -357,8 +364,11 @@ impl Page {
                 return v;
             }
             if Instant::now() > deadline {
+                let state = self.eval(
+                    "window.artefactoPlan && window.artefactoPlan.debug ? JSON.stringify(window.artefactoPlan.debug()) : null",
+                );
                 panic!(
-                    "timed out waiting for {what} ({expression})\nconsole:\n{}",
+                    "timed out waiting for {what} ({expression})\npage state: {state}\nconsole:\n{}",
                     self.console.join("\n")
                 );
             }

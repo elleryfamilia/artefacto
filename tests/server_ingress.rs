@@ -411,3 +411,27 @@ fn an_agents_traffic_is_not_the_reviewers_activity() {
         "the agent's request must not reset the reviewer's clock"
     );
 }
+
+#[test]
+fn a_thread_may_anchor_to_a_question_or_a_risk() {
+    // The renderer marks the plan summary, every open question and risk with
+    // `data-plan-ref`, and the page offers a comment button on each; an
+    // anchor set of phases and tasks alone refused all of them.
+    let s = InProcess::start();
+    s.seed_artifact_with(serde_json::json!({
+        "format": "artefacto.plan/1",
+        "meta": { "id": "demo", "title": "Demo" },
+        "open_questions": [{ "id": "q-ttl", "question_md": "How long?" }],
+        "risks": [{ "id": "r-lock", "title": "Locking", "severity": "high" }],
+        "phases": [{ "id": "p-one", "title": "One", "tasks": [{ "id": "t-a", "title": "A" }] }]
+    }));
+    let cookie = s.session_cookie("plan:demo");
+    for (n, target) in ["question:q-ttl", "risk:r-lock", "meta:demo"]
+        .iter()
+        .enumerate()
+    {
+        let r = open_thread(&s, &cookie, &format!("cid-{n}"), target);
+        assert_eq!(r["ok"], true, "{target}: {}", r["error"]);
+    }
+    assert_eq!(s.thread_count(), 3);
+}

@@ -841,3 +841,42 @@ impl FakePage {
         frame
     }
 }
+
+impl InProcess {
+    /// Seed `plan:demo` with a plan of the caller's shape.
+    pub fn seed_artifact_with(&self, plan: serde_json::Value) -> String {
+        use artefacto::server::event::Actor;
+        use artefacto::server::http::Committer;
+        let c = Committer::open(&self.shared);
+        c.append(
+            "plan:demo",
+            1,
+            Actor::Agent,
+            "revision.published",
+            serde_json::json!({
+                "plan": plan,
+                "plan_hash": "sha256:seeded",
+                "source_path": "/tmp/demo.json",
+                "summary": "first"
+            }),
+        )
+        .expect("seed");
+        "plan:demo".to_string()
+    }
+}
+
+impl FakePage {
+    /// True when the server closes the socket within `d`.
+    pub fn closed_within(&mut self, d: std::time::Duration) -> bool {
+        self.set_deadline(Some(d));
+        loop {
+            match self.ws.read() {
+                Ok(tungstenite::Message::Close(_)) => return true,
+                Ok(_) => continue,
+                Err(tungstenite::Error::ConnectionClosed) => return true,
+                Err(tungstenite::Error::AlreadyClosed) => return true,
+                Err(_) => return false,
+            }
+        }
+    }
+}

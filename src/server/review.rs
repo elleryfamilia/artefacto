@@ -156,11 +156,29 @@ impl Review {
     }
 }
 
-/// Every element a thread may anchor to in this plan: `phase:<id>` and
-/// `task:<id>`. Used to decide, after a push, which threads have lost their
-/// target.
+/// Every element a thread may anchor to in this plan, as the renderer marks
+/// them with `data-plan-ref`: the plan itself (`meta:<id>`), each open
+/// question and risk, and each phase and task. Used to decide, after a push,
+/// which threads have lost their target, and by ingress to refuse a thread on
+/// an element that does not exist. The page computes the same set from the
+/// raw plan a revision event carries.
 pub fn plan_refs(plan: &serde_json::Value) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
+    if let Some(id) = plan.pointer("/meta/id").and_then(|i| i.as_str()) {
+        out.insert(format!("meta:{id}"));
+    }
+    for (key, prefix) in [("open_questions", "question"), ("risks", "risk")] {
+        for item in plan
+            .get(key)
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                out.insert(format!("{prefix}:{id}"));
+            }
+        }
+    }
     let Some(phases) = plan.get("phases").and_then(|p| p.as_array()) else {
         return out;
     };
@@ -185,19 +203,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plan_refs_finds_phases_and_tasks() {
+    fn plan_refs_finds_every_element_the_renderer_marks() {
         let plan = serde_json::json!({
+            "meta": { "id": "demo" },
+            "open_questions": [{ "id": "q-ttl" }],
+            "risks": [{ "id": "r-lock" }],
             "phases": [
                 { "id": "p-one", "tasks": [{ "id": "t-a" }, { "id": "t-b" }] },
                 { "id": "p-two", "tasks": [] }
             ]
         });
         let refs = plan_refs(&plan);
-        assert!(refs.contains("phase:p-one"));
-        assert!(refs.contains("phase:p-two"));
-        assert!(refs.contains("task:t-a"));
-        assert!(refs.contains("task:t-b"));
-        assert_eq!(refs.len(), 4);
+        for r in [
+            "meta:demo",
+            "question:q-ttl",
+            "risk:r-lock",
+            "phase:p-one",
+            "phase:p-two",
+            "task:t-a",
+            "task:t-b",
+        ] {
+            assert!(
+                refs.contains(r),
+                "{r}: the page puts a comment button on it"
+            );
+        }
+        assert_eq!(refs.len(), 7);
     }
 
     #[test]
