@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 
 pub const EVENT_FORMAT: &str = "artefacto.event/1";
 pub const FRAME_FORMAT: &str = "artefacto.frame/1";
+/// The first line `events` prints: the session token and where the agent
+/// stands. NDJSON has no envelope to carry them in, and spec 5 says `events`
+/// returns the token "in its result as session".
+pub const SESSION_FORMAT: &str = "artefacto.session/1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

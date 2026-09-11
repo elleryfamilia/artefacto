@@ -32,6 +32,7 @@
 
 use crate::server::event::{Actor, Event, Frame};
 use crate::server::http::{Committer, Shared};
+use crate::server::lease;
 use crate::server::review::Review;
 use std::sync::Arc;
 use std::time::Duration;
@@ -87,9 +88,21 @@ enum Fire {
     Back,
 }
 
-/// Run the nudge timers. Called from the accept loop's idle branch, four times
-/// a second, so no extra thread exists just to watch a clock.
+/// A page just connected. It is a reviewer being here, and it is activity:
+/// without the second, a page opened against a server older than the idle
+/// window would be nudged for idleness on the next tick.
+pub fn page_arrived(shared: &Shared, now_ms: i64) {
+    let mut core = shared.core.lock().unwrap();
+    core.page_seen = true;
+    core.page_gone_since_ms = None;
+    core.last_reviewer_activity_ms = now_ms;
+    core.idle_fired = false;
+}
+
+/// Run presence and the nudge timers. Called from the accept loop about four
+/// times a second, so no extra thread exists just to watch a clock.
 pub fn tick(shared: &Arc<Shared>, now_ms: i64) {
+    sync_presence(shared);
     let pages = crate::server::socket::page_count(shared);
     let fire = {
         let mut core = shared.core.lock().unwrap();
@@ -207,22 +220,42 @@ pub fn announce(shared: &Shared, artifact: &str, kind: &str, data: serde_json::V
 }
 
 /// Spec 6.3: `agent.attached` / `agent.detached`, with mode `live` or
-/// `waiting`. The page's pill reads these; deriving them from the lease is
-/// what keeps it from flickering between an agent's poll cycles.
-pub fn agent_attached(shared: &Shared, name: &str, mode: crate::server::review::Mode) {
-    announce(
-        shared,
-        "",
-        "agent.attached",
-        serde_json::json!({ "agent": name, "mode": mode }),
-    );
-}
-
-pub fn agent_detached(shared: &Shared, name: &str) {
-    announce(
-        shared,
-        "",
-        "agent.detached",
-        serde_json::json!({ "agent": name }),
-    );
+/// `waiting`.
+///
+/// Presence is a **view over the lease**, announced when it changes and never
+/// logged. Deriving it here on every tick, rather than announcing from
+/// `acquire` and `release`, means every way a lease can end — a takeover, a
+/// release, the TTL running out, a `--follow` process dying — reaches the
+/// page the same way and within a quarter of a second. An earlier version
+/// announced from `acquire` and `release` only, and a running server never
+/// said `agent.detached` at all: nothing calls `release` in production, and
+/// expiry happens by the lease simply no longer being current.
+///
+/// It is also why a poll every 90 seconds does not repaint the pill: the view
+/// did not change, so nothing is said. Spec 4.2: "the pill changes only when
+/// the lease changes hands or expires."
+fn sync_presence(shared: &Arc<Shared>) {
+    let now = lease::current(shared).map(|h| (h.agent, h.mode));
+    let previous = {
+        let mut core = shared.core.lock().unwrap();
+        if core.presence == now {
+            return;
+        }
+        std::mem::replace(&mut core.presence, now.clone())
+    };
+    match (previous, now) {
+        (_, Some((name, mode))) => announce(
+            shared,
+            "",
+            "agent.attached",
+            serde_json::json!({ "agent": name, "mode": mode }),
+        ),
+        (Some((name, _)), None) => announce(
+            shared,
+            "",
+            "agent.detached",
+            serde_json::json!({ "agent": name }),
+        ),
+        (None, None) => {}
+    }
 }

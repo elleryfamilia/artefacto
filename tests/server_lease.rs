@@ -294,28 +294,62 @@ fn an_expired_lease_lets_another_agent_in_without_a_takeover() {
 }
 
 #[test]
-fn the_holder_may_revive_its_own_expired_lease() {
-    // The TTL exists to let another agent in, not to punish the holder. While
-    // nobody else has taken it, the token is still the current one.
+fn an_expired_lease_is_released_and_its_token_is_dead() {
+    // Spec 4.2: "an expired lease ... is released by the server". Released
+    // means `status`, the page's pill, and a write with the token all agree
+    // that there is no agent. An earlier version let the holder revive an
+    // expired lease by presenting its token, which left `status` saying no
+    // agent while `reply` with the old token still worked.
     let s = InProcess::start();
     let first = take(&s, "claude");
     s.age_lease(lease::TTL + Duration::from_secs(1));
-    assert!(
-        lease::current(&s.shared).is_none(),
-        "expired: another agent may now walk in"
-    );
 
-    let same = lease::acquire(
+    assert!(lease::current(&s.shared).is_none());
+    assert!(matches!(
+        lease::validate(&s.shared, &first.token),
+        Err(LeaseError::Superseded)
+    ));
+    assert!(matches!(
+        lease::acquire(
+            &s.shared,
+            Claim::waiting("claude").with_token(Some(&first.token))
+        ),
+        Err(LeaseError::Superseded)
+    ));
+
+    // The way back in is a claim under the same name: a fresh token, and the
+    // same cursor, because cursors are keyed by name.
+    let again = lease::acquire(&s.shared, Claim::waiting("claude")).expect("the name is free");
+    assert_ne!(again.token, first.token);
+    assert_eq!(again.generation, 2);
+}
+
+#[test]
+fn a_waiting_claim_does_not_demote_a_live_lease() {
+    // A `push` or an `await` from the same agent while its `events --follow`
+    // is running is a poll beside the follow, not a change of transport.
+    // Recording it as `waiting` dropped the pid that releases the lease when
+    // the follow dies, and flipped the pill twice per push as the follow's
+    // next poll flipped it back.
+    let s = InProcess::start();
+    let me = std::process::id();
+    let live = lease::acquire(&s.shared, Claim::live("claude", me)).unwrap();
+
+    let polled = lease::acquire(
         &s.shared,
-        Claim::waiting("claude").with_token(Some(&first.token)),
+        Claim::waiting("claude").with_token(Some(&live.token)),
     )
-    .expect("nobody took it, so the holder's own token still names the lease");
-    assert_eq!(same.generation, first.generation);
-    assert_eq!(same.token, first.token);
-    assert!(
-        lease::current(&s.shared).is_some(),
-        "and the TTL is refreshed"
+    .unwrap();
+    assert_eq!(polled.mode, Mode::Live);
+    assert_eq!(polled.pid, Some(me));
+    let rejoined = lease::acquire(&s.shared, Claim::waiting("claude")).unwrap();
+    assert_eq!(rejoined.mode, Mode::Live, "the same without a token");
+    assert_eq!(
+        s.events_of_type("lease.taken").len(),
+        1,
+        "nothing changed, so nothing was written"
     );
+    assert_eq!(lease::current(&s.shared).unwrap().mode, Mode::Live);
 }
 
 #[test]

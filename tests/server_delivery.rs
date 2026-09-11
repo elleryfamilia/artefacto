@@ -158,19 +158,26 @@ fn the_cursor_survives_a_restart() {
 }
 
 #[test]
-fn a_backwards_ack_is_refused() {
+fn an_ack_behind_the_cursor_is_a_no_op() {
+    // At-least-once means acknowledgements get repeated: after a retry, after
+    // a replay with `--since`. A repeat that failed the call would turn the
+    // safe path into a failed tool call. `--since` is the way to ask for a
+    // replay; nothing moves the cursor back.
     let s = InProcess::start();
     s.seed_artifact();
     let claude = session(&s, "claude");
     s.log_reviewer("chat.sent");
     let top = s.last_seq();
     delivery::ack(&s.shared, &claude, top).unwrap();
+    let written = s.last_seq();
 
-    assert!(
-        delivery::ack(&s.shared, &claude, top - 1).is_err(),
-        "a cursor only moves forward; `--since` is the way to ask for a replay"
+    delivery::ack(&s.shared, &claude, top - 1).expect("behind the cursor is not an error");
+    assert_eq!(
+        s.cursor_of("claude"),
+        top,
+        "and it does not move the cursor back"
     );
-    assert_eq!(s.cursor_of("claude"), top);
+    assert_eq!(s.last_seq(), written, "nor write anything");
 }
 
 #[test]
@@ -218,102 +225,116 @@ fn an_ack_from_a_superseded_session_is_refused() {
 }
 
 // ---------------------------------------------------------------------------
-// The implicit acknowledgement. Codex finding #9.
+// The agent acknowledges; the server never guesses. Spec 16: at-least-once.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_next_call_acknowledges_the_frame_the_previous_one_returned() {
-    // Spec 5: "Calling `await` or `events` again acknowledges everything the
-    // previous call returned." The caller is a fresh process holding only its
-    // token, so the server has to be the one that remembers.
+fn a_call_that_names_the_previous_seq_acknowledges_it() {
     let s = InProcess::start();
     s.seed_artifact();
     let claude = session(&s, "claude");
     s.log_reviewer("thread.opened");
     s.log_reviewer("chat.sent");
 
-    let first = delivery::offer(&s.shared, &claude, None).unwrap();
+    let first = delivery::read(&s.shared, &claude, None, None).unwrap();
     let frame = first.frame.expect("a chat wakes the agent");
     assert_eq!(kinds(&frame), ["thread.opened", "chat.sent"]);
     assert_eq!(
         s.cursor_of("claude"),
         0,
-        "offering is not acknowledging: the agent has not acted on it yet"
+        "reading is not acknowledging: the agent has not acted on it yet"
     );
 
-    let second = delivery::offer(&s.shared, &claude, None).unwrap();
+    let second = delivery::read(&s.shared, &claude, Some(frame.seq), None).unwrap();
     assert!(
         second.frame.is_none(),
-        "the previous frame was acknowledged, and nothing new has happened"
+        "acknowledged, and nothing new has happened"
     );
     assert_eq!(s.cursor_of("claude"), frame.seq);
 }
 
 #[test]
-fn an_agent_that_dies_before_calling_again_sees_the_frame_a_second_time() {
+fn a_call_that_acknowledges_nothing_is_handed_the_same_frame_again() {
+    // Spec 16: at-least-once. An earlier version had the server acknowledge
+    // the previous frame on the session's next call, which is exactly the
+    // at-most-once that "silently drops a review when an agent crashes at the
+    // wrong moment": the agent that received this frame died before acting,
+    // came back with no memory, and the server acknowledged on its behalf.
     let s = InProcess::start();
     s.seed_artifact();
     let claude = session(&s, "claude");
     s.log_reviewer("chat.sent");
 
-    let first = delivery::offer(&s.shared, &claude, None)
+    let first = delivery::read(&s.shared, &claude, None, None)
         .unwrap()
         .frame
         .unwrap();
-    // The process dies here. The server restarts too, which is the harder case:
-    // it loses the offer, so the frame is simply delivered again.
-    let s = s.restart();
-    let again = delivery::offer(&s.shared, &claude, None)
+    // The process dies here, with the frame in hand and nothing done about it.
+    let again = delivery::read(&s.shared, &claude, None, None)
         .unwrap()
         .frame
         .expect("at-least-once");
     assert_eq!(first.seq, again.seq);
+    assert_eq!(s.cursor_of("claude"), 0);
 }
 
 #[test]
-fn an_offer_belongs_to_a_session_not_to_a_name() {
-    // If the mark were keyed by agent name, a takeover would acknowledge a
-    // frame the new agent never saw — losing it outright, which is worse than
-    // the duplicate at-least-once trades for.
+fn a_server_restart_changes_nothing_about_that() {
     let s = InProcess::start();
     s.seed_artifact();
     let claude = session(&s, "claude");
     s.log_reviewer("chat.sent");
-
-    let offered = delivery::offer(&s.shared, &claude, None)
+    let first = delivery::read(&s.shared, &claude, None, None)
         .unwrap()
         .frame
         .unwrap();
-    // claude dies without acknowledging. codex takes over and inherits the
-    // cursor, which is still behind that frame.
-    let codex = lease::acquire(&s.shared, Claim::waiting("codex").with_takeover(true)).unwrap();
 
-    let next = delivery::offer(&s.shared, &codex, None)
+    let s = s.restart();
+    let again = delivery::read(&s.shared, &claude, None, None)
         .unwrap()
         .frame
-        .expect("codex must receive what claude never acknowledged");
-    assert_eq!(next.seq, offered.seq);
+        .expect("the cursor is in the log, and it has not moved");
+    assert_eq!(first.seq, again.seq);
 }
 
 #[test]
-fn an_explicit_partial_ack_cancels_the_outstanding_offer() {
+fn a_takeover_inherits_the_cursor_and_the_unacknowledged_frame_with_it() {
+    let s = InProcess::start();
+    s.seed_artifact();
+    let claude = session(&s, "claude");
+    s.log_reviewer("chat.sent");
+    let unacked = delivery::read(&s.shared, &claude, None, None)
+        .unwrap()
+        .frame
+        .unwrap();
+    // claude dies without acknowledging. codex takes over.
+    let codex = lease::acquire(&s.shared, Claim::waiting("codex").with_takeover(true)).unwrap();
+
+    let next = delivery::read(&s.shared, &codex, None, None)
+        .unwrap()
+        .frame
+        .expect("codex must receive what claude never acknowledged");
+    assert_eq!(next.seq, unacked.seq);
+}
+
+#[test]
+fn a_partial_ack_brings_the_rest_of_the_frame_back() {
     // Spec 5: `ack --seq N` exists "when an agent wants to acknowledge only
-    // part of a frame". The rest must then come back, not be swallowed by the
-    // next call's implicit acknowledgement.
+    // part of a frame".
     let s = InProcess::start();
     s.seed_artifact();
     let claude = session(&s, "claude");
     let opened = s.log_reviewer("thread.opened");
     let chat = s.log_reviewer("chat.sent");
 
-    let frame = delivery::offer(&s.shared, &claude, None)
+    let frame = delivery::read(&s.shared, &claude, None, None)
         .unwrap()
         .frame
         .unwrap();
     assert_eq!(frame.seq, chat);
 
     delivery::ack(&s.shared, &claude, opened).unwrap();
-    let next = delivery::offer(&s.shared, &claude, None).unwrap();
+    let next = delivery::read(&s.shared, &claude, None, None).unwrap();
     assert_eq!(
         next.frame.map(|f| kinds(&f)),
         Some(vec!["chat.sent".to_string()]),
@@ -323,76 +344,92 @@ fn an_explicit_partial_ack_cancels_the_outstanding_offer() {
 }
 
 #[test]
-fn naming_a_cursor_replays_from_there_and_cancels_the_offer() {
+fn naming_a_cursor_replays_from_there_without_moving_anything() {
     let s = InProcess::start();
     s.seed_artifact();
     let claude = session(&s, "claude");
     s.log_reviewer("chat.sent");
-
-    let first = delivery::offer(&s.shared, &claude, None)
+    let first = delivery::read(&s.shared, &claude, None, None)
         .unwrap()
         .frame
         .unwrap();
-    // `events --since 0`: the agent is driving its own cursor.
-    let replay = delivery::offer(&s.shared, &claude, Some(0)).unwrap();
+    delivery::ack(&s.shared, &claude, first.seq).unwrap();
+
+    // `events --since 0`: a replay.
+    let replay = delivery::read(&s.shared, &claude, None, Some(0)).unwrap();
     assert_eq!(replay.since, 0);
     assert_eq!(replay.frame.unwrap().seq, first.seq);
     assert_eq!(
         s.cursor_of("claude"),
-        0,
-        "a call that names its own cursor takes over the bookkeeping, so it \
-         must not acknowledge the previous frame behind the agent's back"
+        first.seq,
+        "a replay reads; it acknowledges nothing and moves nothing"
     );
 }
 
 #[test]
-fn an_offer_that_returns_nothing_leaves_nothing_to_acknowledge() {
+fn acknowledging_a_replayed_frame_behind_the_cursor_is_a_no_op() {
+    // The ordinary sequel to a replay: the agent passes the replayed frame's
+    // seq back as `--ack`. That seq is behind the cursor, and refusing it
+    // would turn the documented restart path into a failed tool call.
     let s = InProcess::start();
     s.seed_artifact();
     let claude = session(&s, "claude");
+    let early = s.log_reviewer("chat.sent");
+    let late = s.log_reviewer("chat.sent");
+    delivery::ack(&s.shared, &claude, late).unwrap();
 
-    assert!(delivery::offer(&s.shared, &claude, None)
+    let replayed = delivery::read(&s.shared, &claude, None, Some(0))
         .unwrap()
         .frame
-        .is_none());
-    s.log_reviewer("chat.sent");
-    let frame = delivery::offer(&s.shared, &claude, None)
-        .unwrap()
-        .frame
-        .expect("an empty poll must not move the cursor past what follows it");
-    assert_eq!(kinds(&frame), ["chat.sent"]);
+        .unwrap();
+    assert_eq!(replayed.seq, early);
+    let after = delivery::read(&s.shared, &claude, Some(replayed.seq), None)
+        .expect("an ack behind the cursor is not an error");
+    assert!(after.frame.is_none());
+    assert_eq!(
+        s.cursor_of("claude"),
+        late,
+        "and it does not move the cursor back"
+    );
 }
 
 #[test]
-fn the_implicit_ack_and_the_next_frame_are_one_step() {
-    // Two agents cannot race here — one lease — but the server can be asked
-    // twice at once by a retrying CLI. The cursor must end up at exactly one
-    // of the two frames, never between them.
+fn the_timeout_tail_stops_before_the_first_active_event() {
+    // A timeout says "nothing actionable", and the agent acknowledges its
+    // seq. If the tail carried an active event — another artifact's chat
+    // under `--artifact`, or one that landed as the wait gave up — that event
+    // would be acknowledged without ever being delivered as what it is.
+    let s = InProcess::start();
+    s.seed_artifact();
+    let opened = s.log_reviewer("thread.opened");
+    s.log_reviewer("chat.sent");
+    s.log_reviewer("thread.opened");
+
+    let tail = delivery::passive_since(&s.shared, 0);
+    assert_eq!(tail.iter().map(|e| e.seq).collect::<Vec<_>>(), [opened]);
+}
+
+#[test]
+fn concurrent_reads_with_the_same_ack_leave_the_cursor_at_exactly_that_seq() {
+    // One lease, but a retrying CLI can ask twice at once. Eight identical
+    // acknowledgements are one cursor move and one log record.
     let s = InProcess::start();
     s.seed_artifact();
     let claude = session(&s, "claude");
-    s.log_reviewer("chat.sent");
+    let first = s.log_reviewer("chat.sent");
     s.log_reviewer("chat.sent");
 
-    let frames: Vec<_> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..8)
-            .map(|_| {
-                let shared = &s.shared;
-                let claude = &claude;
-                scope.spawn(move || delivery::offer(shared, claude, None).unwrap())
-            })
-            .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            let shared = &s.shared;
+            let claude = &claude;
+            scope.spawn(move || delivery::read(shared, claude, Some(first), None).unwrap());
+        }
     });
-
-    let cursor = s.cursor_of("claude");
-    assert!(
-        frames
-            .iter()
-            .filter_map(|o| o.frame.as_ref())
-            .any(|f| f.seq == cursor)
-            || cursor == 0,
-        "the cursor must name a frame that was actually offered, got {cursor}"
+    assert_eq!(s.cursor_of("claude"), first);
+    assert_eq!(
+        s.count_events("cursor.acked"),
+        1,
+        "eight identical acks write one record"
     );
-    assert!(cursor <= s.last_seq());
 }

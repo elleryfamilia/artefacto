@@ -44,36 +44,40 @@ use tiny_http::Request;
 /// matter for the log.
 const MAX_BODY: usize = 8 * 1024 * 1024;
 
-#[derive(Debug, Deserialize)]
-struct PushBody {
+#[derive(Debug, Default, Deserialize)]
+pub struct PushBody {
     /// The plan as JSON. Re-parsed and re-validated here.
-    plan: serde_json::Value,
+    pub plan: serde_json::Value,
     #[serde(default)]
-    source_path: String,
+    pub source_path: String,
     #[serde(default)]
-    base_revision: Option<u32>,
+    pub base_revision: Option<u32>,
     #[serde(default)]
-    force: bool,
+    pub force: bool,
     #[serde(default)]
-    resolutions: Vec<Resolution>,
+    pub resolutions: Vec<Resolution>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct Resolution {
-    thread: String,
-    status: String,
+pub struct Resolution {
+    pub thread: String,
+    pub status: String,
     #[serde(default)]
-    note: String,
+    pub note: String,
 }
 
 /// Why a push was refused, and which exit code the agent owes its caller.
-enum Refusal {
+#[derive(Debug)]
+pub enum Refusal {
     /// Exit 2. A usage error, even though the server is what noticed.
     MissingBaseRevision,
     /// Exit 7. Someone else moved first.
     Stale { seen: u32, current: u32 },
     /// Exit 2.
     Invalid(String),
+    /// Exit 6. The token stopped being the current one between the claim and
+    /// the append.
+    Lease(lease::LeaseError),
 }
 
 impl Refusal {
@@ -82,6 +86,8 @@ impl Refusal {
             Refusal::MissingBaseRevision => "base_revision_required",
             Refusal::Stale { .. } => "stale_base_revision",
             Refusal::Invalid(_) => "invalid_push",
+            Refusal::Lease(lease::LeaseError::Held { .. }) => "lease_held",
+            Refusal::Lease(lease::LeaseError::Superseded) => "lease_superseded",
         }
     }
 
@@ -95,6 +101,7 @@ impl Refusal {
                  re-read with `artefacto status --json` or pass --force"
             ),
             Refusal::Invalid(why) => why.clone(),
+            Refusal::Lease(e) => e.to_string(),
         }
     }
 }
@@ -136,7 +143,7 @@ pub fn handle_push(shared: &Arc<Shared>, mut request: Request, query: &Query) {
         }
     };
 
-    match commit(shared, &body) {
+    match commit(shared, &session, &body) {
         Ok(done) => {
             crate::server::socket::broadcast(shared, &done.frame);
             let mut result = done.result;
@@ -149,13 +156,27 @@ pub fn handle_push(shared: &Arc<Shared>, mut request: Request, query: &Query) {
     }
 }
 
-struct Published {
-    result: serde_json::Value,
-    frame: Frame,
+#[derive(Debug)]
+pub struct Published {
+    pub result: serde_json::Value,
+    pub frame: Frame,
 }
 
-/// Validate, check the base revision, append, and fold — all under one gate.
-fn commit(shared: &Arc<Shared>, body: &PushBody) -> Result<Published, Refusal> {
+/// Validate, check the token and the base revision, append, and fold — all
+/// under one gate.
+///
+/// The token is checked **inside** the gate, after the plan has been parsed
+/// and validated, because that is where the append happens. `handle_push`
+/// claims the lease first so a refusal is cheap and names the holder, but a
+/// `--takeover` can land while a whole plan is being validated, and spec 4.2
+/// is clear about what must happen then: "a token from a superseded
+/// generation is refused. Without this a stale agent that lost the lease
+/// could still write."
+pub fn commit(
+    shared: &Arc<Shared>,
+    session: &crate::server::review::LeaseRecord,
+    body: &PushBody,
+) -> Result<Published, Refusal> {
     let raw = serde_json::to_string(&body.plan)
         .map_err(|e| Refusal::Invalid(format!("the plan is not JSON: {e}")))?;
     let parsed = model::parse(&raw, false)
@@ -169,6 +190,7 @@ fn commit(shared: &Arc<Shared>, body: &PushBody) -> Result<Published, Refusal> {
     let plan_hash = model::plan_hash(&plan);
 
     let committer = Committer::open(shared);
+    lease::validate(shared, &session.token).map_err(Refusal::Lease)?;
 
     let (current, previous_plan, threads) =
         committer.with_review(|review| match review.artifacts.get(&artifact) {

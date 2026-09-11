@@ -1,4 +1,4 @@
-//! `await`, `events`, and `ack`: the three commands an agent runs.
+//! `await`, `events`, `ack`, `reply`, and `resolve`: the commands an agent runs.
 //!
 //! # Two transports, one contract
 //!
@@ -20,6 +20,22 @@
 //! immediately" — comes instead from `Mode::Live` recording the process's pid,
 //! which the server checks on every read of the lease.
 //!
+//! # The agent acknowledges; nothing else moves the cursor
+//!
+//! Spec 16: delivery is at-least-once. So `await --ack <seq>` passes the
+//! previous result's `seq` back once the agent has acted on it, and that is
+//! what moves the cursor. A call without `--ack` is handed the same frame
+//! again. In monitor mode the agent runs `ack --seq <seq>` after acting; the
+//! follow itself never acknowledges, and advances only its own read position.
+//!
+//! # Where the token comes from
+//!
+//! Spec 5: `await` and `events` "return it in their result as session". For
+//! `await` it is a field. `events` prints NDJSON, which has no envelope, so
+//! its first line is an `artefacto.session/1` record carrying the token and
+//! the cursor; the frames follow. Without that line a monitor-mode agent had
+//! no token to `reply` with.
+//!
 //! # Exit codes are the interface
 //!
 //! Spec 5: `await` "always exits 0 when the server answered", because agents
@@ -30,6 +46,7 @@
 use crate::cli::{AckArgs, AwaitArgs, EventsArgs, ReplyArgs, ResolveArgs};
 use crate::client::Client;
 use crate::commands::Exit;
+use crate::server::event::{FRAME_FORMAT, SESSION_FORMAT};
 use anyhow::Result;
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -47,6 +64,7 @@ pub fn await_cmd(args: &AwaitArgs) -> Result<()> {
     push_common(
         &mut query,
         args.since,
+        args.ack,
         &args.artifact,
         &args.session,
         args.takeover,
@@ -55,9 +73,30 @@ pub fn await_cmd(args: &AwaitArgs) -> Result<()> {
     // The absolute deadline the reconnect rule is measured against: the wait
     // the caller asked for, plus room for one reconnect to complete.
     let deadline = Instant::now() + args.timeout + SLACK;
-    let result = client.call_until("GET", "await", &query, deadline)?;
+    let result = match client.call_until("GET", "await", &query, deadline) {
+        Ok(result) => result,
+        Err(e) if e.downcast_ref::<Exit>().is_none() => unreachable_timeout(args, &e),
+        Err(e) => return Err(e),
+    };
     println!("{result}");
     Ok(())
+}
+
+/// Spec 5: `await` "retries against the same cursor until its absolute
+/// deadline, then returns `timeout`". A server that never came back is a
+/// timeout, not a failed tool call; the agent's next call finds no server and
+/// exits 4, which it can branch on. `seq` repeats what the agent last
+/// acknowledged, so passing it back is a no-op.
+fn unreachable_timeout(args: &AwaitArgs, error: &anyhow::Error) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "status": "timeout",
+        "seq": args.ack.unwrap_or(0),
+        "session": args.session,
+        "agent": args.agent,
+        "events": [],
+        "unreachable": format!("{error:#}"),
+    })
 }
 
 pub fn events(args: &EventsArgs) -> Result<()> {
@@ -69,44 +108,63 @@ pub fn events(args: &EventsArgs) -> Result<()> {
     push_common(
         &mut query,
         args.since,
+        args.ack,
         &args.artifact,
         &args.session,
         args.takeover,
     );
 
     let result = client.call("GET", "events", &query, Duration::from_secs(30))?;
-    let frames = result["frames"].as_array().cloned().unwrap_or_default();
-    for frame in frames {
+    println!("{}", session_line(&result));
+    for frame in result["frames"].as_array().cloned().unwrap_or_default() {
         println!("{frame}");
     }
     Ok(())
+}
+
+fn session_line(result: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "format": SESSION_FORMAT,
+        "session": result["session"],
+        "agent": result["agent"],
+        "seq": result["seq"],
+    })
 }
 
 /// Stay attached: one NDJSON frame per line, flushed, until the server stops.
 fn follow(client: &Client, args: &EventsArgs) -> Result<()> {
     let mut session = args.session.clone();
     let mut takeover = args.takeover;
+    let mut ack = args.ack;
+    // The follow's own read position. It advances as frames are printed and
+    // never touches the persisted cursor: that moves only when the agent runs
+    // `ack --seq`, after acting. A follow that restarts therefore replays what
+    // was printed but never acknowledged — at-least-once, as spec 16 requires
+    // — and a monitor that never acknowledges pays only in replay.
     let mut since = args.since;
+    let mut announced = false;
     let pid = std::process::id().to_string();
+    // The first poll returns at once. It exists to take the lease and hand the
+    // token over — a monitoring agent needs it to `reply` — and a first poll
+    // that waited its full minute would hold that token back for as long.
+    let mut timeout = Duration::ZERO;
 
     loop {
         let mut query = vec![
             ("agent", args.agent.clone()),
-            ("timeout_ms", FOLLOW_POLL.as_millis().to_string()),
+            ("timeout_ms", timeout.as_millis().to_string()),
             // Spec 4.2: a `--follow` agent is a durable process, so its pid is
             // recorded and a dead one releases the lease at once.
             ("mode", "live".to_string()),
             ("pid", pid.clone()),
         ];
-        push_common(&mut query, since, &args.artifact, &session, takeover);
-        // The cursor is the server's from here on: `--since` applies to the
-        // first poll only, or every poll would replay from the same place.
-        since = None;
-        // And the lease is ours from here on, so a later poll must not try to
-        // take it from whoever we handed it to.
+        push_common(&mut query, since, ack, &args.artifact, &session, takeover);
+        // `--ack` and `--takeover` apply to the first poll only.
+        ack = None;
         takeover = false;
 
-        let deadline = Instant::now() + FOLLOW_POLL + SLACK;
+        let deadline = Instant::now() + timeout + SLACK;
+        timeout = FOLLOW_POLL;
         let result = match client.call_until("GET", "await", &query, deadline) {
             Ok(result) => result,
             // The server went away without saying so. For a command whose job
@@ -115,12 +173,22 @@ fn follow(client: &Client, args: &EventsArgs) -> Result<()> {
             Err(e) => return Err(e),
         };
         session = result["session"].as_str().map(str::to_string);
+        if !announced {
+            println!("{}", session_line(&result));
+            std::io::stdout().flush()?;
+            announced = true;
+        }
 
         let status = result["status"].as_str().unwrap_or("timeout");
         let events = result["events"].as_array().cloned().unwrap_or_default();
-        if !events.is_empty() {
+        // Digest, spec 6.4: "a passive event does not by itself cause a
+        // frame". A timeout carries whatever passive events accumulated, and
+        // waking a monitoring agent for them costs a model turn that buys
+        // nothing. They are not printed, and the read position stays put, so
+        // they ride along in the next frame that does wake it.
+        if status != "timeout" && !events.is_empty() {
             let frame = serde_json::json!({
-                "format": crate::server::event::FRAME_FORMAT,
+                "format": FRAME_FORMAT,
                 "seq": result["seq"],
                 "events": events,
             });
@@ -128,6 +196,7 @@ fn follow(client: &Client, args: &EventsArgs) -> Result<()> {
             // A monitoring agent reads this pipe as it is written, so a frame
             // that sits in a buffer is a frame that has not arrived.
             std::io::stdout().flush()?;
+            since = result["seq"].as_u64();
         }
         if status == "stopped" {
             return Ok(());
@@ -154,12 +223,16 @@ pub fn ack_cmd(args: &AckArgs) -> Result<()> {
 fn push_common(
     query: &mut Vec<(&'static str, String)>,
     since: Option<u64>,
+    ack: Option<u64>,
     artifact: &Option<String>,
     session: &Option<String>,
     takeover: bool,
 ) {
     if let Some(since) = since {
         query.push(("since", since.to_string()));
+    }
+    if let Some(ack) = ack {
+        query.push(("ack", ack.to_string()));
     }
     if let Some(artifact) = artifact {
         query.push(("artifact", artifact.clone()));

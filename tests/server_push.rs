@@ -373,3 +373,37 @@ fn push_starts_a_server_when_none_is_running() {
     let v: serde_json::Value = serde_json::from_str(&out.stdout).expect("json");
     assert_eq!(v["revision"], 1);
 }
+
+#[test]
+fn a_token_superseded_during_validation_is_refused_inside_the_gate() {
+    // `handle_push` claims the lease, then parses and validates a whole plan
+    // with no lock held, then appends. A `--takeover` that lands in that
+    // window has to be caught at the append, or a stale agent publishes. Spec
+    // 4.2: "a token from a superseded generation is refused. Without this a
+    // stale agent that lost the lease could still write." `reply` and
+    // `resolve` did this from the start; push, the biggest mutation, did not.
+    use artefacto::server::lease::{self, Claim};
+    use artefacto::server::push::{self, PushBody};
+
+    let server = InProcess::start();
+    let claude = lease::acquire(&server.shared, Claim::waiting("claude")).unwrap();
+    lease::acquire(&server.shared, Claim::waiting("codex").with_takeover(true)).unwrap();
+    let plan: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("minimal.json")).unwrap()).unwrap();
+    let before = server.last_seq();
+
+    let refused = push::commit(
+        &server.shared,
+        &claude,
+        &PushBody {
+            plan,
+            ..Default::default()
+        },
+    )
+    .expect_err("a superseded token must not publish");
+    assert!(
+        matches!(refused, push::Refusal::Lease(lease::LeaseError::Superseded)),
+        "{refused:?}"
+    );
+    assert_eq!(server.last_seq(), before, "and nothing was appended");
+}

@@ -105,6 +105,11 @@ fn revision(review: &mut Review, event: &Event) {
     entry.plan_hash = str_field(event, "plan_hash");
     entry.source_path = str_field(event, "source_path");
     entry.plan = plan;
+    // A new revision reopens the review. Spec 7 rule 4 has the agent push the
+    // next revision after a submit "and keep the monitor armed for the next
+    // round"; a review that stayed submitted would never be away again and
+    // would name no artifact for its timer events.
+    entry.submitted = false;
 
     // Re-anchoring is a fold concern, not a push concern: a push is the only
     // thing that can change which elements exist, and every thread has to be

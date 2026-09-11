@@ -359,8 +359,8 @@ artefacto plan push   <file> [--session TOKEN] [--agent NAME] [--takeover]
                              [--resolutions FILE] [--json]
 artefacto plan schema
 
-artefacto await  [--timeout 90s] [--since SEQ] [--artifact ID] [--agent NAME] [--takeover]
-artefacto events [--since SEQ] [--follow] [--agent NAME] [--takeover]
+artefacto await  [--timeout 90s] [--ack SEQ] [--since SEQ] [--artifact ID] [--agent NAME] [--takeover]
+artefacto events [--ack SEQ] [--since SEQ] [--follow] [--agent NAME] [--takeover]
 artefacto ack    --seq N --session TOKEN
 artefacto reply  --session TOKEN (--thread ID | --artifact ID) [--nudge] (<text> | --stdin)
 artefacto resolve <thread-id> --session TOKEN (--changed | --declined) [--note TEXT]
@@ -434,16 +434,27 @@ Behaviour that matters:
   per lease name in the log. `events` and `await` default `--since` to that
   cursor, so an agent that restarts with no memory of where it was resumes
   exactly where it left off. A result's `seq` is the highest event in it.
-  Calling `await` or `events` again acknowledges everything the previous call
-  returned; `artefacto ack --seq N` does it explicitly when an agent wants to
-  acknowledge only part of a frame. An agent that dies between receiving a
-  frame and acting on it therefore sees that frame again rather than losing
-  it, so every handler must be safe to run twice: replying to the same chat
-  event twice is the failure mode this trades for, and the skill tells the
-  agent to check the thread before replying.
-- `events` prints frames as NDJSON. Without `--follow` it prints the backlog
-  and exits. With it, it stays attached, holds the lease, flushes every line,
-  and exits when the server stops.
+  **The agent acknowledges; the server never guesses.** A call that passes
+  `--ack SEQ` — the `seq` of the previous result — acknowledges everything up
+  to it, once the agent has acted; `artefacto ack --seq N` does the same on
+  its own, and is what a monitor-mode agent uses. Nothing else moves the
+  cursor: a call that acknowledges nothing is handed the same frame again. An
+  earlier draft had the next call acknowledge the previous frame by itself,
+  which is at-most-once — an agent that receives a frame and restarts before
+  acting loses it — and section 16 forbids exactly that. An agent that dies
+  between receiving a frame and acting on it therefore sees that frame again
+  rather than losing it, so every handler must be safe to run twice: replying
+  to the same chat event twice is the failure mode this trades for, and the
+  skill tells the agent to check the thread before replying. Acknowledging is
+  idempotent: an `--ack` at or behind the cursor is a no-op, never an error.
+- `events` prints frames as NDJSON. Its first line is an `artefacto.session/1`
+  record carrying the session token and the cursor, because NDJSON has no
+  envelope to put them in and a monitor-mode agent needs the token to `reply`.
+  Without `--follow` it prints the backlog and exits. With it, it stays
+  attached, holds the lease, flushes every line, and exits when the server
+  stops. It acknowledges nothing on its own and advances only its own read
+  position; the agent runs `ack --seq N` after acting on a frame, so a follow
+  that restarts replays what was printed but never acknowledged.
 - `reply` needs either a thread or an artifact. When the server has exactly one
   artifact, `--artifact` may be omitted for page-level chat. `--nudge` posts
   the `nudge` banner of section 6.3 instead of a message; it reaches open pages
@@ -599,7 +610,9 @@ For agents with a monitor (Claude Code):
 3. On `chat.sent`: check the thread for an existing agent reply first, because
    a frame can be redelivered after a crash. If there is none, answer with
    `artefacto reply`, in the thread it came from. If the answer changes the
-   plan, push a new revision as well.
+   plan, push a new revision as well. Then `artefacto ack --seq <seq>` with
+   the frame's `seq`: nothing else moves the cursor, and a frame that is never
+   acknowledged comes back.
 4. On `review.submitted`: address every thread by its ref, resolve each one as
    changed or declined with a note, push the next revision with the same ids
    and `--resolutions`, and keep the monitor armed for the next round. A push
@@ -612,7 +625,10 @@ For agents with a monitor (Claude Code):
 
 For agents that run commands to completion: run `artefacto await` in a loop.
 Act on `status` exactly as the rules above act on the matching event, then
-call `await` again. On `timeout`, call it again with no other action.
+call `await` again with `--ack <seq>` from the result just handled. On
+`timeout`, call it again with `--ack <seq>` and no other action. A call
+without `--ack` is handed the same frame again, which is what makes a crash
+between the two calls safe.
 
 Every handler must be safe to run twice, because delivery is at-least-once.
 

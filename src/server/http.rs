@@ -66,9 +66,10 @@ pub struct Core {
     /// It is not folded from the log on purpose: liveness is about this
     /// process, so a replayed lease starts its TTL fresh.
     pub lease_seen_ms: i64,
-    /// The frame last handed to a session, waiting for that session's next
-    /// call to acknowledge it. See `delivery::offer`.
-    pub last_offer: Option<crate::server::delivery::Offer>,
+    /// The presence last announced to pages: the holder's name and mode, or
+    /// `None`. `presence::tick` compares the live lease to this and announces
+    /// the difference. Never folded; it describes what pages have been told.
+    pub presence: Option<(String, crate::server::review::Mode)>,
 }
 
 pub struct Shared {
@@ -121,7 +122,7 @@ impl Shared {
                 page_gone_since_ms: None,
                 page_seen: false,
                 lease_seen_ms: 0,
-                last_offer: None,
+                presence: None,
             }),
             sockets: Default::default(),
             page_cookie: derive_credential(&secret, "page-cookie"),
@@ -183,9 +184,18 @@ impl Shared {
 /// thread. A fixed worker pool would let N concurrent polls starve every other
 /// route.
 pub fn run(shared: Arc<Shared>, server: Arc<tiny_http::Server>, idle: Duration) {
+    let mut last_tick = Instant::now();
     loop {
         if shared.stopping() {
             break;
+        }
+        // Presence and the nudge timers run from here, about four times a
+        // second, whether or not requests are arriving. An earlier version
+        // ticked only when `recv_timeout` came back empty, which a steady
+        // stream of requests could starve for as long as it lasted.
+        if last_tick.elapsed() >= TICK_EVERY {
+            crate::server::presence::tick(&shared, shared.now_ms());
+            last_tick = Instant::now();
         }
         match server.recv_timeout(Duration::from_millis(250)) {
             Ok(Some(request)) => {
@@ -199,9 +209,6 @@ pub fn run(shared: Arc<Shared>, server: Arc<tiny_http::Server>, idle: Duration) 
             // `Server::unblock` also produces this, which is why the stopping
             // flag is checked at the top rather than trusting the timeout.
             Ok(None) => {
-                // The nudge timers live here rather than on a thread of their
-                // own: this branch runs four times a second already.
-                crate::server::presence::tick(&shared, shared.now_ms());
                 if should_self_exit(&shared, idle) {
                     break;
                 }
@@ -211,6 +218,9 @@ pub fn run(shared: Arc<Shared>, server: Arc<tiny_http::Server>, idle: Duration) 
     }
     drain(&shared);
 }
+
+/// How often presence and the nudge timers are run.
+const TICK_EVERY: Duration = Duration::from_millis(200);
 
 /// Give requests already in progress a moment to answer.
 ///

@@ -240,10 +240,21 @@ fn incomplete_batch_start(events: &[Event], starts: &[usize]) -> Result<Option<u
     let Some(mark) = last.batch.as_ref() else {
         return Ok(None);
     };
-    if mark.is_last() {
-        return Ok(None);
-    }
-    let first = events.len() - 1 - mark.index as usize;
+    // The group's first member. A mark that points before the start of the
+    // log is corruption, and corruption is a hard error here — never a panic,
+    // and never a silent guess. This is checked whether or not the mark says
+    // the group is complete: a final record claiming to be the last of three
+    // with no first two behind it is just as wrong as one claiming to be the
+    // first of three with nothing after it.
+    let first = (events.len() - 1)
+        .checked_sub(mark.index as usize)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "the log's final record says it is member {} of commit {}, but the log is not that long",
+                mark.index,
+                mark.id
+            )
+        })?;
     for (offset, event) in events[first..].iter().enumerate() {
         let belongs = event
             .batch
@@ -255,6 +266,9 @@ fn incomplete_batch_start(events: &[Event], starts: &[usize]) -> Result<Option<u
                 mark.id
             );
         }
+    }
+    if mark.is_last() {
+        return Ok(None);
     }
     debug_assert!(first < starts.len());
     Ok(Some(first))

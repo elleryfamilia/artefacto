@@ -14,6 +14,12 @@
 //! wakes every 50 ms and reads an in-memory slice of the log; a condition
 //! variable would be tighter, and would be worth it only if a profile said so.
 //!
+//! # The agent acknowledges; the server does not guess
+//!
+//! Every call may carry `ack=<seq>`, the `seq` of the previous result. That is
+//! the only thing that moves the cursor here. A call without it is handed the
+//! same frame again, which is what at-least-once means. See `delivery`.
+//!
 //! # Where the lease fits
 //!
 //! Every call claims or refreshes the lease first, so a refusal is the first
@@ -23,7 +29,7 @@
 //! and hands over its own pid, so killing it releases the lease at once.
 
 use crate::server::delivery;
-use crate::server::event::{await_status, Frame};
+use crate::server::event::{await_status, Event, Frame};
 use crate::server::http::{error_response, json_response, Query, Shared};
 use crate::server::lease::{self, Claim, LeaseError};
 use crate::server::review::LeaseRecord;
@@ -39,7 +45,7 @@ const MAX_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// How often a waiting call looks at the log.
 const TICK: Duration = Duration::from_millis(50);
 /// Frames one `events` backlog response will carry. The rest arrive on the
-/// next call, from the cursor this one acknowledged.
+/// next call.
 const MAX_BACKLOG_FRAMES: usize = 256;
 
 /// `GET /cli/await`. Long-polls for one frame.
@@ -48,9 +54,13 @@ pub fn handle_await(shared: &Arc<Shared>, request: Request, query: &Query) {
         Ok(session) => session,
         Err(e) => return refuse(request, e),
     };
-    let since = query.get("since").and_then(|s| s.parse::<u64>().ok());
     let artifact = query.get("artifact").filter(|a| !a.is_empty()).cloned();
-    let cursor = match delivery::settle(shared, &session, since) {
+    let cursor = match delivery::settle(
+        shared,
+        &session,
+        seq_of(query, "ack"),
+        seq_of(query, "since"),
+    ) {
         Ok(cursor) => cursor,
         Err(e) => return fail(request, &e),
     };
@@ -58,27 +68,22 @@ pub fn handle_await(shared: &Arc<Shared>, request: Request, query: &Query) {
 
     loop {
         if let Some(frame) = delivery::frame_since_for(shared, cursor, artifact.as_deref()) {
-            delivery::hand_out(shared, &session, frame.seq);
-            let status = await_status(&frame.events.last().expect("a frame has events").r#type)
-                .expect("a frame always ends at an active event");
-            let _ = request.respond(json_response(
-                200,
-                &result(status, &session, frame.seq, &frame.events).to_string(),
-            ));
-            return;
+            return answer(request, &session, &frame);
         }
-        // Spec 5: `stopped` carries "the same partial frame". The shutdown
-        // event itself is appended before the flag is set, so the branch above
-        // usually answers first; this one catches a wait that began after it.
         let stopping = shared.stopping();
         if stopping || Instant::now() >= deadline {
-            let tail = delivery::passive_since(shared, cursor);
-            // Spec 6.4: a passive event cannot be "delivered once by a poll and
-            // again by the next wake-up", so a timeout that carries them is
-            // acknowledged like any other frame.
-            if let Some(last) = tail.last() {
-                delivery::hand_out(shared, &session, last.seq);
+            // One last look before giving up. An active event that landed
+            // between the check above and here is this call's frame; swept
+            // into a timeout instead, it would be acknowledged as "nothing
+            // actionable" and never delivered as what it is.
+            if let Some(frame) = delivery::frame_since_for(shared, cursor, artifact.as_deref()) {
+                return answer(request, &session, &frame);
             }
+            // Spec 5: `timeout` and `stopped` carry "whatever passive events
+            // accumulated" — and only those. The tail stops before the first
+            // active event of any artifact, so acknowledging it can never skip
+            // one.
+            let tail = delivery::passive_since(shared, cursor);
             let seq = tail.last().map(|e| e.seq).unwrap_or(cursor);
             let status = if stopping { "stopped" } else { "timeout" };
             let _ = request.respond(json_response(
@@ -91,6 +96,15 @@ pub fn handle_await(shared: &Arc<Shared>, request: Request, query: &Query) {
     }
 }
 
+fn answer(request: Request, session: &LeaseRecord, frame: &Frame) {
+    let status = await_status(&frame.events.last().expect("a frame has events").r#type)
+        .expect("a frame always ends at an active event");
+    let _ = request.respond(json_response(
+        200,
+        &result(status, session, frame.seq, &frame.events).to_string(),
+    ));
+}
+
 /// `GET /cli/events`. The backlog, as frames, without waiting.
 ///
 /// `events --follow` is not this route: it is a loop of `await` calls, which
@@ -101,9 +115,13 @@ pub fn handle_events(shared: &Arc<Shared>, request: Request, query: &Query) {
         Ok(session) => session,
         Err(e) => return refuse(request, e),
     };
-    let since = query.get("since").and_then(|s| s.parse::<u64>().ok());
     let artifact = query.get("artifact").filter(|a| !a.is_empty()).cloned();
-    let mut cursor = match delivery::settle(shared, &session, since) {
+    let mut cursor = match delivery::settle(
+        shared,
+        &session,
+        seq_of(query, "ack"),
+        seq_of(query, "since"),
+    ) {
         Ok(cursor) => cursor,
         Err(e) => return fail(request, &e),
     };
@@ -116,12 +134,10 @@ pub fn handle_events(shared: &Arc<Shared>, request: Request, query: &Query) {
         cursor = frame.seq;
         frames.push(frame);
     }
-    if let Some(last) = frames.last() {
-        delivery::hand_out(shared, &session, last.seq);
-    }
     let body = serde_json::json!({
         "ok": true,
         "session": session.token,
+        "agent": session.name,
         "seq": cursor,
         "frames": frames,
     });
@@ -138,7 +154,7 @@ pub fn handle_ack(shared: &Arc<Shared>, request: Request, query: &Query) {
         ));
         return;
     };
-    let Some(seq) = query.get("seq").and_then(|s| s.parse::<u64>().ok()) else {
+    let Some(seq) = seq_of(query, "seq") else {
         let _ = request.respond(error_response(400, "usage", "ack needs a numeric --seq"));
         return;
     };
@@ -160,12 +176,7 @@ pub fn handle_ack(shared: &Arc<Shared>, request: Request, query: &Query) {
 }
 
 /// Spec 5: the result carries `status`, `seq`, `events`, and `session`.
-fn result(
-    status: &str,
-    session: &LeaseRecord,
-    seq: u64,
-    events: &[crate::server::event::Event],
-) -> serde_json::Value {
+fn result(status: &str, session: &LeaseRecord, seq: u64, events: &[Event]) -> serde_json::Value {
     serde_json::json!({
         "ok": true,
         "status": status,
@@ -214,6 +225,10 @@ fn refuse(request: Request, error: LeaseError) {
 
 fn fail(request: Request, error: &anyhow::Error) {
     let _ = request.respond(error_response(400, "refused", &format!("{error:#}")));
+}
+
+fn seq_of(query: &Query, key: &str) -> Option<u64> {
+    query.get(key).and_then(|s| s.parse::<u64>().ok())
 }
 
 fn timeout_of(query: &Query) -> Duration {

@@ -132,9 +132,17 @@ fn the_whole_loop_runs_once_through() {
         }),
     );
 
-    let submitted = l
-        .repo
-        .run(&["await", "--timeout", "5s", "--session", &l.session]);
+    // The agent has acted on the chat frame, so it acknowledges it here. A
+    // call without `--ack` would be handed the chat again: at-least-once.
+    let submitted = l.repo.run(&[
+        "await",
+        "--timeout",
+        "5s",
+        "--session",
+        &l.session,
+        "--ack",
+        &heard["seq"].to_string(),
+    ]);
     let submitted: serde_json::Value =
         serde_json::from_str(submitted.success().stdout.trim()).unwrap();
     assert_eq!(submitted["status"], "submitted");
@@ -303,6 +311,49 @@ fn presence_is_announced_and_never_logged() {
         server.count_events("lease.taken"),
         1,
         "the lease itself is state and is logged"
+    );
+}
+
+#[test]
+fn an_expired_lease_announces_detached() {
+    // Spec 4.2: "the pill changes only when the lease changes hands or
+    // expires" — so expiry has to reach the page. Nothing calls `release` for
+    // an expiry; presence is derived from the lease on every tick, which is
+    // what makes this true. An earlier version announced only from `acquire`
+    // and `release`, and a running server never said `agent.detached` at all.
+    let server = InProcess::start();
+    server.seed_artifact();
+    let mut page = server.connect_page();
+    page.hello();
+    artefacto::server::lease::acquire(
+        &server.shared,
+        artefacto::server::lease::Claim::waiting("claude"),
+    )
+    .unwrap();
+    assert_eq!(page.next_frame()["events"][0]["type"], "agent.attached");
+
+    server.age_lease(artefacto::server::lease::TTL + Duration::from_secs(1));
+    let gone = page.next_frame();
+    assert_eq!(gone["events"][0]["type"], "agent.detached");
+    assert_eq!(gone["events"][0]["data"]["agent"], "claude");
+}
+
+#[test]
+fn a_page_that_connects_is_not_nudged_for_idleness_at_once() {
+    // Spec 6.2 measures idleness from the reviewer's activity. A reviewer who
+    // just arrived is not idle, however long the server sat unattended before
+    // that; an earlier version started the activity clock at server start and
+    // nudged a page opened against an old server on its first tick.
+    let server = nudged(Some(Duration::from_secs(900)), None);
+    server.mark_reviewer_activity_at(-2_000_000);
+    let _page = server.connect_page();
+    support::wait_for(|| server.page_count() == 1, "the page should attach");
+
+    presence::tick(&server.shared, server.shared.now_ms() + 1_000);
+    assert_eq!(
+        server.count_events("reviewer.idle"),
+        0,
+        "connecting is activity"
     );
 }
 

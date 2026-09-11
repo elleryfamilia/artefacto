@@ -313,3 +313,58 @@ fn a_commit_interrupted_at_its_first_record_leaves_nothing_of_it() {
     let log = EventLog::open(dir.path()).unwrap();
     assert_eq!(log.last_seq(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// A corrupt batch mark is a hard error, never a panic and never a guess.
+// ---------------------------------------------------------------------------
+
+fn raw_record(seq: u64, batch: serde_json::Value) -> String {
+    serde_json::json!({
+        "format": "artefacto.event/1", "seq": seq, "ts": "2026-09-10T00:00:00Z",
+        "artifact": "plan:x", "revision": 1, "actor": "reviewer",
+        "type": "thread.opened", "data": {}, "batch": batch,
+    })
+    .to_string()
+}
+
+#[test]
+fn a_batch_mark_pointing_before_the_log_is_a_hard_error_not_a_panic() {
+    // A lone record claiming to be member 1 of 3. Rule 1 says corruption is
+    // refused; an earlier version subtracted its way below zero here and
+    // panicked on every start.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("events.ndjson"),
+        format!(
+            "{}\n",
+            raw_record(
+                1,
+                serde_json::json!({ "id": "abc", "index": 1, "count": 3 })
+            )
+        ),
+    )
+    .unwrap();
+    let err = EventLog::open(dir.path()).expect_err("corruption is refused");
+    assert!(err.to_string().contains("commit abc"), "{err:#}");
+}
+
+#[test]
+fn a_batch_missing_its_earlier_members_is_a_hard_error_even_when_marked_last() {
+    // A lone record claiming to be the last of two. Complete by its own
+    // account, and still missing a member; an earlier version accepted it
+    // because it only checked groups that said they were unfinished.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("events.ndjson"),
+        format!(
+            "{}\n",
+            raw_record(
+                1,
+                serde_json::json!({ "id": "abc", "index": 1, "count": 2 })
+            )
+        ),
+    )
+    .unwrap();
+    let err = EventLog::open(dir.path()).expect_err("a group with a hole is corruption");
+    assert!(err.to_string().contains("commit abc"), "{err:#}");
+}

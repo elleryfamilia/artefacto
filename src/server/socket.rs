@@ -156,21 +156,19 @@ pub fn handle_upgrade(shared: &Arc<Shared>, request: Request) {
     let mut ws = WebSocket::from_raw_socket(Sock(stream), Role::Server, None);
     let id = shared.sockets.next_id.fetch_add(1, Ordering::SeqCst);
     let (tx, rx) = mpsc::sync_channel::<String>(OUTBOUND_QUEUE);
+    // A reviewer has been here, and is doing something. The away timer reads
+    // the first; the idle timer reads the second, and without it a page opened
+    // against a server older than the idle window would be nudged at once.
+    // Marked **before** the page is counted, so a tick between the two cannot
+    // see a page with no activity behind it. `core` is released before
+    // `sockets` is taken; the lock order forbids holding both.
+    crate::server::presence::page_arrived(shared, shared.now_ms());
     shared
         .sockets
         .pages
         .lock()
         .unwrap()
         .push(PageHandle { id, tx });
-    {
-        // A reviewer has been here. The away timer reads this: without it, a
-        // server nobody ever opened would report the reviewer as away five
-        // minutes after it started. `sockets` is released before `core` is
-        // taken; the lock order forbids holding both.
-        let mut core = shared.core.lock().unwrap();
-        core.page_seen = true;
-        core.page_gone_since_ms = None;
-    }
 
     // Always the first frame. The page needs its own id so it can put it in
     // the commands it POSTs; `broadcast_except` then skips it, and it does not

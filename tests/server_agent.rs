@@ -134,13 +134,10 @@ fn await_returns_back_when_the_reviewer_reconnects() {
 }
 
 #[test]
-fn await_wakes_only_for_the_artifact_it_was_given() {
+fn await_wakes_only_for_the_artifact_it_was_given_and_loses_nothing() {
     let (repo, server) = attached();
-    server.log_event(
-        artefacto::server::event::Actor::Reviewer,
-        "chat.sent",
-        serde_json::json!({}),
-    );
+    server.log_reviewer("thread.opened");
+    server.log_reviewer("chat.sent"); // on plan:demo
 
     let r = json_of(
         repo.run(&["await", "--timeout", "1s", "--artifact", "plan:other"])
@@ -150,16 +147,39 @@ fn await_wakes_only_for_the_artifact_it_was_given() {
         r["status"], "timeout",
         "an event for another artifact must not wake this wait"
     );
+    let kinds: Vec<&str> = r["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["type"].as_str().unwrap())
+        .collect();
     assert_eq!(
-        r["events"].as_array().unwrap().len(),
-        1,
-        "but it still rides along, because the cursor this result acknowledges \
-         would otherwise move past an event nobody received"
+        kinds,
+        ["thread.opened"],
+        "the timeout's tail stops before the other artifact's chat: an earlier \
+         version let it ride along, and acknowledging that result skipped a \
+         chat nobody was ever woken for"
     );
+
+    // Acknowledge the timeout, and the chat is still there for a call that
+    // wakes for it.
+    let r = json_of(
+        repo.run(&[
+            "await",
+            "--timeout",
+            "1s",
+            "--session",
+            r["session"].as_str().unwrap(),
+            "--ack",
+            &r["seq"].to_string(),
+        ])
+        .success(),
+    );
+    assert_eq!(r["status"], "chat");
 }
 
 #[test]
-fn calling_await_again_acknowledges_the_previous_frame() {
+fn calling_await_again_with_ack_acknowledges_the_previous_frame() {
     let (repo, server) = attached();
     server.log_reviewer("chat.sent");
     let first = json_of(repo.run(&["await", "--timeout", "5s"]).success());
@@ -171,6 +191,8 @@ fn calling_await_again_acknowledges_the_previous_frame() {
             "5s",
             "--session",
             first["session"].as_str().unwrap(),
+            "--ack",
+            &first["seq"].to_string(),
         ])
         .success(),
     );
@@ -181,6 +203,87 @@ fn calling_await_again_acknowledges_the_previous_frame() {
         "the first frame was acknowledged, so only the new event is left"
     );
     assert!(second["seq"].as_u64().unwrap() > first["seq"].as_u64().unwrap());
+}
+
+#[test]
+fn calling_await_again_without_ack_hands_back_the_same_frame() {
+    // Spec 16: at-least-once, and "handlers must be safe to run twice". An
+    // agent that received the first frame and then restarted before acting
+    // on it calls again with nothing to acknowledge, and sees it again.
+    let (repo, server) = attached();
+    server.log_reviewer("chat.sent");
+    let first = json_of(repo.run(&["await", "--timeout", "5s"]).success());
+    let second = json_of(
+        repo.run(&[
+            "await",
+            "--timeout",
+            "1s",
+            "--session",
+            first["session"].as_str().unwrap(),
+        ])
+        .success(),
+    );
+    assert_eq!(second["status"], "chat");
+    assert_eq!(second["seq"], first["seq"]);
+    assert_eq!(server.cursor_of("agent"), 0, "nothing moved the cursor");
+}
+
+#[test]
+fn a_replay_followed_by_a_plain_call_does_not_fail() {
+    // Spec 6.5 names `events --since SEQ` as the restart path. An earlier
+    // version left a replayed frame as the session's outstanding offer and
+    // then refused to acknowledge it on the next call — "does not move back"
+    // — which was exit 2, a failed tool call, for doing the documented thing.
+    let (repo, server) = attached();
+    let early = server.log_reviewer("chat.sent");
+    let late = server.log_reviewer("chat.sent");
+    let first = json_of(repo.run(&["await", "--timeout", "5s"]).success());
+    let session = first["session"].as_str().unwrap().to_string();
+    assert_eq!(first["seq"], early);
+    repo.run(&[
+        "await",
+        "--timeout",
+        "5s",
+        "--session",
+        &session,
+        "--ack",
+        &early.to_string(),
+    ])
+    .success();
+    repo.run(&[
+        "await",
+        "--timeout",
+        "1s",
+        "--session",
+        &session,
+        "--ack",
+        &late.to_string(),
+    ])
+    .success();
+    assert_eq!(server.cursor_of("agent"), late);
+
+    let out = repo.run(&["events", "--since", "0", "--session", &session]);
+    out.success();
+    let lines: Vec<&str> = out.stdout.lines().filter(|l| !l.is_empty()).collect();
+    let replayed: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(replayed["seq"], early);
+
+    let after = repo.run(&[
+        "await",
+        "--timeout",
+        "1s",
+        "--session",
+        &session,
+        "--ack",
+        &early.to_string(),
+    ]);
+    assert_eq!(after.code, 0, "{}", after.stderr);
+    assert_eq!(json_of(&after)["status"], "timeout");
+    assert_eq!(
+        server.cursor_of("agent"),
+        late,
+        "and the cursor did not move back"
+    );
 }
 
 #[test]
@@ -324,12 +427,24 @@ fn events_prints_the_backlog_as_ndjson_and_exits() {
     let out = repo.run(&["events", "--since", "0"]);
     out.success();
     let lines: Vec<&str> = out.stdout.lines().filter(|l| !l.is_empty()).collect();
-    assert_eq!(lines.len(), 2, "one frame per active event: {:?}", lines);
-    for line in &lines {
+    assert_eq!(
+        lines.len(),
+        3,
+        "the session line, then one frame per active event: {:?}",
+        lines
+    );
+    let head: serde_json::Value = serde_json::from_str(lines[0]).expect("json");
+    assert_eq!(head["format"], "artefacto.session/1");
+    assert!(
+        head["session"].as_str().is_some_and(|t| !t.is_empty()),
+        "spec 5: events returns the token in its result; without it a monitor-mode \
+         agent has nothing to reply with"
+    );
+    for line in &lines[1..] {
         let v: serde_json::Value = serde_json::from_str(line).expect("one JSON frame per line");
         assert_eq!(v["format"], "artefacto.frame/1");
     }
-    let last: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+    let last: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
     assert_eq!(
         last["events"].as_array().unwrap().len(),
         2,
@@ -346,6 +461,16 @@ fn events_follow_streams_frames_and_holds_a_live_lease() {
         || server.lease_mode().as_deref() == Some("live"),
         "--follow should take a live lease",
     );
+    let hello = follow.next_frame();
+    assert_eq!(
+        hello["format"], "artefacto.session/1",
+        "the token comes first"
+    );
+    let token = hello["session"]
+        .as_str()
+        .expect("a monitor-mode agent needs a token to reply with")
+        .to_string();
+
     server.log_reviewer("chat.sent");
     let frame = follow.next_frame();
     assert_eq!(frame["format"], "artefacto.frame/1");
@@ -353,6 +478,10 @@ fn events_follow_streams_frames_and_holds_a_live_lease() {
         frame["events"].as_array().unwrap().last().unwrap()["type"],
         "chat.sent"
     );
+    // And that token works for a write. Spec 7 rule 3 has the monitor agent
+    // answer chat; an earlier version gave it no token to do so with.
+    repo.run(&["reply", "--session", &token, "reading it now"])
+        .success();
 
     server.log_reviewer("thread.opened");
     server.log_reviewer("review.submitted");
@@ -360,7 +489,13 @@ fn events_follow_streams_frames_and_holds_a_live_lease() {
     assert_eq!(
         second["events"].as_array().unwrap().len(),
         2,
-        "the next frame starts after the one already acknowledged"
+        "the next frame starts after the one already printed — the follow's \
+         own read position, not the cursor"
+    );
+    assert_eq!(
+        server.cursor_of("claude"),
+        0,
+        "a follow acknowledges nothing on its own; the agent runs `ack` after acting"
     );
 
     follow.kill();

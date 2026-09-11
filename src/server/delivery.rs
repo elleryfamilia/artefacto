@@ -16,28 +16,34 @@
 //! - `actor == Agent` keeps the agent from hearing itself. Spec 7 has it
 //!   scanning frames for chat it must answer, not for its own output.
 //!
-//! # The offer, and why the server has to remember it
+//! # The agent says what it has dealt with. The server never guesses.
 //!
-//! Spec 5: "Calling `await` or `events` again acknowledges everything the
-//! previous call returned." The thing calling again is a **fresh CLI process
-//! that knows only its session token** — it cannot tell the server which frame
-//! to acknowledge, because it was not there when the frame was handed out. So
-//! the server records what it last offered, against the token it offered it
-//! to, and settles it on the next call. See [`offer`].
+//! Spec 16 fixes the contract: delivery is **at-least-once**, and "the
+//! alternative, at-most-once, silently drops a review when an agent crashes at
+//! the wrong moment". So the cursor moves only when the agent acknowledges —
+//! by passing the previous result's `seq` back as `--ack` on its next call, or
+//! by running `ack --seq N`. A call that acknowledges nothing is handed the
+//! same frame again.
 //!
-//! The mark is keyed by **token**, not by agent name. Keyed by name, a
-//! takeover would acknowledge a frame the new agent never saw, losing it
-//! outright — which is worse than the duplicate that at-least-once trades for.
+//! An earlier version of this file had the server remember what it last
+//! handed out and acknowledge it on the session's next call. That reads as
+//! convenient and is at-most-once: an agent that receives a frame and then
+//! restarts before acting on it calls again with no memory, the server
+//! acknowledges the frame on its behalf, and the review it carried is gone.
+//! Spec 5's "calling `await` or `events` again acknowledges everything the
+//! previous call returned" describes that convenience; spec 16 forbids its
+//! consequence, and 16 wins.
 //!
-//! It lives in memory and not in the log, so a server restart drops it and the
-//! frame is delivered a second time. That is the documented bargain: spec 5
-//! says an agent "sees that frame again rather than losing it, so every
-//! handler must be safe to run twice".
+//! # Acknowledging is idempotent
+//!
+//! An `--ack` at or behind the cursor is a no-op, not an error. At-least-once
+//! means acknowledgements get repeated — after a retry, after a replay with
+//! `--since` — and a repeat that failed the call would turn the safe path
+//! into a failed tool call.
 //!
 //! # Locks
 //!
-//! [`offer`] and [`ack`] hold a `Committer` across their whole body, so the
-//! implicit acknowledgement and the frame that follows it cannot be split.
+//! [`settle`] and [`ack`] hold a `Committer` across their whole body.
 //! `frame_since` takes `log` only. Nothing here holds two guards at once.
 
 use crate::server::event::{is_active, Actor, Event, Frame};
@@ -46,20 +52,12 @@ use crate::server::lease;
 use crate::server::review::LeaseRecord;
 use anyhow::{bail, Result};
 
-/// The last frame handed to one session, waiting to be acknowledged by that
-/// session's next call.
-#[derive(Debug, Clone)]
-pub struct Offer {
-    pub token: String,
-    pub seq: u64,
-}
-
-/// What one delivery attempt produced.
+/// What one read produced.
 #[derive(Debug)]
-pub struct Offered {
+pub struct Read {
     /// The frame to hand back, or `None` when nothing active is waiting.
     pub frame: Option<Frame>,
-    /// The cursor it was computed from. `events` and `await` echo this so a
+    /// The cursor it was read from. `events` and `await` echo this so a
     /// caller can see where it stood.
     pub since: u64,
 }
@@ -106,11 +104,19 @@ pub fn frame_since_for(shared: &Shared, cursor: u64, artifact: Option<&str>) -> 
 /// The events a `timeout` carries: spec 5's table says the frame then "holds
 /// whatever passive events accumulated".
 ///
-/// They are acknowledged along with it, because spec 6.4 requires that a
-/// passive event cannot be "delivered once by a poll and again by the next
-/// wake-up".
+/// **Passive only, and it stops at the first active event of any artifact.**
+/// A timeout says "nothing actionable"; the agent acknowledges its seq and
+/// does nothing else. An active event that rode along in it — another
+/// artifact's chat under `--artifact`, or one that landed after the wait
+/// decided to give up — would be acknowledged without ever being delivered as
+/// what it is. So the tail ends where the first active event begins, and that
+/// event is a later call's frame.
 pub fn passive_since(shared: &Shared, cursor: u64) -> Vec<Event> {
-    pending_since(shared, cursor)
+    let mut pending = pending_since(shared, cursor);
+    if let Some(stop) = pending.iter().position(|e| is_active(&e.r#type)) {
+        pending.truncate(stop);
+    }
+    pending
 }
 
 fn pending_since(shared: &Shared, cursor: u64) -> Vec<Event> {
@@ -122,84 +128,61 @@ fn pending_since(shared: &Shared, cursor: u64) -> Vec<Event> {
         .collect()
 }
 
-/// Settle the previous frame for this session, then compute the next one.
+/// Acknowledge what the agent names, then read the next frame.
 ///
 /// The caller has already taken or refreshed the lease with this token, so the
 /// session is known good here; `events` and `await` do that first and exit 6
 /// before they ever reach this.
 ///
-/// `since` is the caller's own cursor, from `--since`. Naming one means the
-/// agent is driving its own bookkeeping, so the outstanding offer is dropped
-/// rather than acknowledged: `events --since 0` must not quietly acknowledge
-/// the frame it is replaying past.
-pub fn offer(shared: &Shared, session: &LeaseRecord, since: Option<u64>) -> Result<Offered> {
-    let cursor = settle(shared, session, since)?;
-    let frame = frame_since(shared, cursor);
-    if let Some(f) = &frame {
-        hand_out(shared, session, f.seq);
-    }
-    Ok(Offered {
-        frame,
+/// `ack` is the `seq` of the previous result, if the agent has dealt with it.
+/// `since` is a replay cursor from `--since`; it changes where this read
+/// starts and nothing else.
+pub fn read(
+    shared: &Shared,
+    session: &LeaseRecord,
+    ack: Option<u64>,
+    since: Option<u64>,
+) -> Result<Read> {
+    let cursor = settle(shared, session, ack, since)?;
+    Ok(Read {
+        frame: frame_since(shared, cursor),
         since: cursor,
     })
 }
 
-/// Acknowledge whatever the previous call to this session returned, and hand
-/// back the cursor the next read starts from.
+/// Acknowledge what the agent names, and hand back the cursor the next read
+/// starts from.
 ///
-/// Split out of [`offer`] because a long poll settles once and then waits: the
+/// Split out of [`read`] because a long poll settles once and then waits: the
 /// acknowledgement belongs to the call that is arriving, not to each of the
 /// hundred times it checks the log while it waits.
-pub fn settle(shared: &Shared, session: &LeaseRecord, since: Option<u64>) -> Result<u64> {
-    // One gate across settle-then-read, so a retrying CLI cannot have the
-    // cursor land between two frames.
+pub fn settle(
+    shared: &Shared,
+    session: &LeaseRecord,
+    ack: Option<u64>,
+    since: Option<u64>,
+) -> Result<u64> {
+    // One gate across acknowledge-then-read, so a retrying CLI cannot have
+    // the cursor land between two frames.
     let committer = Committer::open(shared);
-    // Any call from this session invalidates whatever was outstanding, whether
-    // or not it is about to be acknowledged.
-    let outstanding = take_offer(shared, &session.token);
-    match since {
-        Some(named) => Ok(named),
-        None => {
-            if let Some(seq) = outstanding {
-                ack_under(shared, &committer, &session.name, seq)?;
-            }
-            Ok(committer.with_review(|r| r.cursors.get(&session.name).copied().unwrap_or(0)))
-        }
+    if let Some(seq) = ack {
+        ack_under(shared, &committer, &session.name, seq)?;
     }
-}
-
-/// Remember that everything up to `seq` was handed to this session, so its
-/// next call acknowledges it.
-pub fn hand_out(shared: &Shared, session: &LeaseRecord, seq: u64) {
-    shared.core.lock().unwrap().last_offer = Some(Offer {
-        token: session.token.clone(),
-        seq,
-    });
+    Ok(since.unwrap_or_else(|| {
+        committer.with_review(|r| r.cursors.get(&session.name).copied().unwrap_or(0))
+    }))
 }
 
 /// Acknowledge explicitly, as `artefacto ack --seq N --session TOKEN` does.
-///
 /// Spec 5 offers this "when an agent wants to acknowledge only part of a
-/// frame", so it also cancels the outstanding offer: the rest of that frame
-/// has to come back rather than be swallowed by the next call's implicit
-/// acknowledgement.
+/// frame"; the rest of that frame comes back on the next read.
 pub fn ack(shared: &Shared, session: &LeaseRecord, seq: u64) -> Result<()> {
     // Spec 4.2: every agent mutation carries the token, and a superseded one
     // is refused. Validating inside the gate means a takeover cannot land
     // between the check and the append.
     let committer = Committer::open(shared);
     lease::validate(shared, &session.token)?;
-    take_offer(shared, &session.token);
     ack_under(shared, &committer, &session.name, seq)
-}
-
-/// Take and clear whatever this session had outstanding.
-fn take_offer(shared: &Shared, token: &str) -> Option<u64> {
-    let mut core = shared.core.lock().unwrap();
-    core.last_offer
-        .take()
-        .filter(|o| o.token == token)
-        .map(|o| o.seq)
 }
 
 /// The cursor move itself. Persisted as a log record because spec 4.2 folds
@@ -207,12 +190,11 @@ fn take_offer(shared: &Shared, token: &str) -> Option<u64> {
 /// what keeps that record out of the stream it describes.
 fn ack_under(shared: &Shared, committer: &Committer, name: &str, seq: u64) -> Result<()> {
     let current = committer.with_review(|r| r.cursors.get(name).copied().unwrap_or(0));
-    if seq < current {
-        bail!("the cursor for {name} is at {current}; it does not move back to {seq}");
-    }
-    if seq == current {
-        // An idempotent ack writes nothing. Otherwise the log grows by one
-        // record per poll cycle, forever, for an agent with nothing to do.
+    if seq <= current {
+        // Already there, or behind it. Idempotent, and it writes nothing:
+        // otherwise the log grows by one record per poll cycle, forever, for
+        // an agent with nothing to do. Behind the cursor is the ordinary
+        // result of `--since` replaying a frame the agent then acknowledges.
         return Ok(());
     }
     let last = { shared.log.lock().unwrap().last_seq() };

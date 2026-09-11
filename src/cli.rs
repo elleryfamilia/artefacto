@@ -118,6 +118,11 @@ pub struct AwaitArgs {
     /// Start from this sequence number instead of the lease's own cursor.
     #[arg(long)]
     pub since: Option<u64>,
+    /// The `seq` of the previous result, once you have acted on it. This is
+    /// what moves the cursor: a call without it is handed the same frame
+    /// again, so a crash between receiving and acting loses nothing.
+    #[arg(long)]
+    pub ack: Option<u64>,
     /// Wake only for this artifact.
     #[arg(long)]
     pub artifact: Option<String>,
@@ -140,6 +145,9 @@ pub struct EventsArgs {
     pub follow: bool,
     #[arg(long)]
     pub since: Option<u64>,
+    /// The `seq` of the previous result, once you have acted on it.
+    #[arg(long)]
+    pub ack: Option<u64>,
     #[arg(long)]
     pub artifact: Option<String>,
     #[arg(long, default_value = "agent")]

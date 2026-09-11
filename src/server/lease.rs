@@ -44,12 +44,16 @@
 //! after an `await` in a different shell. It rejoins and gets the same token.
 //! A different name is refused, and the refusal says who holds it.
 //!
-//! # What the TTL is for
+//! # Expiry is a release
 //!
-//! It lets **another** agent in. It is not a punishment for the holder: while
-//! nobody else has taken the lease, an agent presenting its own token revives
-//! it, expired or not. Once another agent has taken it, the generation has
-//! moved and the old token is dead for good.
+//! Spec 4.2: "an expired lease, or one whose recorded pid is dead, is released
+//! by the server." Released means the token is dead: `status` says no agent,
+//! the page's pill says no agent, and a write with that token is refused. An
+//! earlier version let the holder revive an expired lease by presenting its
+//! token, which was friendlier and made those three disagree with each other.
+//! A holder that comes back after five quiet minutes claims again under its
+//! own name and gets a fresh token; its cursor is keyed by name, so it loses
+//! nothing but the string.
 
 use crate::server::event::Actor;
 use crate::server::http::{constant_time_eq, Committer, Core, Shared};
@@ -244,7 +248,6 @@ pub fn acquire(shared: &Shared, claim: Claim) -> Result<LeaseRecord, LeaseError>
         decide_locked(&core, now, &claim)?
     };
 
-    let announce = !matches!(decision, Decision::Refresh(_));
     let record = match decision {
         Decision::Refresh(record) => record,
         Decision::Relog(record) => {
@@ -273,12 +276,9 @@ pub fn acquire(shared: &Shared, claim: Claim) -> Result<LeaseRecord, LeaseError>
     };
 
     shared.core.lock().unwrap().lease_seen_ms = now;
-    // Spec 6.3's `agent.attached`, for the page's presence pill. Announced
-    // rather than logged, and only when the lease actually changed, so a poll
-    // every 90 seconds does not repaint the pill.
-    if announce {
-        crate::server::presence::agent_attached(shared, &record.name, record.mode);
-    }
+    // Presence is not announced from here. `presence::tick` derives it from
+    // the lease on every tick, so a takeover, a release, an expiry and a dead
+    // `--follow` all reach the page the same way.
     Ok(record)
 }
 
@@ -290,9 +290,9 @@ fn decide_locked(core: &Core, now_ms: i64, claim: &Claim) -> Result<Decision, Le
     };
 
     if let Some(token) = claim.presenting {
-        // The holder calling again. The TTL is not consulted: it exists to let
-        // another agent in, and none has.
-        let Some(record) = recorded_locked(core).filter(|r| holds(r, token)) else {
+        // The holder calling again. Expired means released (module docs), so
+        // the token has to name a lease that is still live.
+        let Some(record) = blocking_locked(core, now_ms).filter(|r| holds(r, token)) else {
             return Err(LeaseError::Superseded);
         };
         return Ok(rejoin(record, claim.mode, pid));
@@ -329,7 +329,17 @@ fn decide_locked(core: &Core, now_ms: i64, claim: &Claim) -> Result<Decision, Le
 
 /// Keep the lease as it stands, re-recording it only when the transport
 /// changed — which the presence pill reads, so it is state and is logged.
+///
+/// A `Waiting` claim never demotes a `Live` lease. A `push` or an `await` from
+/// the same agent while its `events --follow` is running is a poll beside the
+/// follow, not a change of transport; recording it as `waiting` would drop the
+/// pid that releases the lease when the follow dies, and flip the pill twice
+/// per push as the follow's next poll flipped it back.
 fn rejoin(record: &LeaseRecord, mode: Mode, pid: Option<u32>) -> Decision {
+    let (mode, pid) = match (record.mode, mode) {
+        (Mode::Live, Mode::Waiting) => (Mode::Live, record.pid),
+        _ => (mode, pid),
+    };
     if record.mode == mode && record.pid == pid {
         Decision::Refresh(record.clone())
     } else {
@@ -421,7 +431,7 @@ fn log_or_refuse<T>(result: anyhow::Result<T>) -> Result<(), LeaseError> {
 pub fn validate(shared: &Shared, token: &str) -> Result<LeaseRecord, LeaseError> {
     let now = shared.now_ms();
     let mut core = shared.core.lock().unwrap();
-    let record = recorded_locked(&core)
+    let record = blocking_locked(&core, now)
         .filter(|r| holds(r, token))
         .cloned()
         .ok_or(LeaseError::Superseded)?;
@@ -459,8 +469,6 @@ pub fn release(shared: &Shared, token: &str) {
         "lease.released",
         serde_json::json!({ "agent": record.name, "generation": record.generation }),
     ));
-    drop(committer);
-    crate::server::presence::agent_detached(shared, &record.name);
 }
 
 #[cfg(test)]

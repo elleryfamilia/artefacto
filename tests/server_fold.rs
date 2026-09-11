@@ -369,3 +369,23 @@ fn sequence_numbers_are_unique_under_concurrency() {
     assert_eq!(unique.len(), 96, "no sequence number handed out twice");
     assert_eq!(*unique.iter().next_back().unwrap(), 96, "and no gaps");
 }
+
+#[test]
+fn a_new_revision_reopens_a_submitted_review() {
+    // Spec 7 rule 4: after a submit the agent pushes the next revision "and
+    // keeps the monitor armed for the next round". A review that stayed
+    // submitted would never be away again, and would name no artifact for its
+    // timer events.
+    let r = fold(&[
+        ev(1, Actor::Agent, "revision.published", plan_data()),
+        ev(
+            2,
+            Actor::Reviewer,
+            "review.submitted",
+            serde_json::json!({ "verdict": "approve", "base_revision": 1 }),
+        ),
+        ev(3, Actor::Agent, "revision.published", plan_data()),
+    ]);
+    assert!(!r.artifacts["plan:demo"].submitted);
+    assert_eq!(r.artifacts["plan:demo"].revision, 2);
+}
