@@ -21,7 +21,7 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-504 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+508 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
 clean. Sixty-two of the tests run the served pages in a headless Chromium;
 they skip with a printed line on a machine without one (see "Plan 3" below).
 
@@ -1023,11 +1023,14 @@ then the release configuration; then the prose; then a hand-drive.
   rewritten (checked before the rows are parsed, so a newer row shape
   cannot read as corruption); rows parse one at a time, and a row this
   binary cannot read costs that row's listing and nothing else, carried
-  through the next write as it was and counted in `list` and on the page;
-  a file that is not an index at all reads as empty, is said so by `list`
-  and the page rather than shown as "no artifacts yet", and is kept aside
-  as `index.json.corrupt` when the next write repairs it; a row whose
-  source file is gone is greyed and never pruned.
+  through the next write as it was and counted in `list` and on the page
+  (a readable row recorded under the same id replaces it, and `remove`
+  under that id forgets it, so one id is never two rows); a file that is
+  not an index at all reads as empty, is said so by `list` and the page
+  rather than shown as "no artifacts yet", and is kept aside as
+  `index.json.corrupt` (then `.corrupt.1`, `.corrupt.2`) when the next
+  write repairs it; a row whose source file is gone is greyed and never
+  pruned.
 - **The poster.** `plan::poster::poster_svg(plan, state)`: a 320 by 180
   card with a kind badge, the revision or "not pushed", the title on up to
   two lines, phase and task counts, a bar per phase sized by task count
@@ -1056,8 +1059,9 @@ then the release configuration; then the prose; then a hand-drive.
 - **`artefacto list [--json]`**: the registry newest first, id, kind,
   title, revision, age, thread counts, verdict, source path with
   `(missing)`, and the static render's path; `--json` adds the absolute
-  timestamps, `source_exists`, the poster path, and `readonly`. Needs no
-  server.
+  timestamps, `source_exists`, the poster path, `readonly`, `corrupt`, and
+  `unreadable_rows`. Needs no server. "No artifacts yet" is said only when
+  there is nothing to say about the file.
 - **The index page at `/`.** Cookie-gated with a navigation origin like the
   plan page, under the same nonce policy (every `<style>` of every inlined
   poster is stamped). One row per registry entry with the poster inline,
@@ -1069,8 +1073,8 @@ then the release configuration; then the prose; then a hand-drive.
   strict origin, refuses a live artifact (409: its next event would write
   the row back), refuses a malformed id (400), and answers 404 for a row
   that is not there; a live row whose file is gone is greyed and says it
-  is kept while its review is open here. The page answers GET only and has
-  no script but the remove handler.
+  is kept while its review is open here. The page answers GET and HEAD,
+  405 to anything else, and has no script but the remove handler.
 - **`open` lands on the index** when the server holds several artifacts
   and none is named (`"index": true`, `"artifact": null`). A bootstrap
   token now maps to a landing path, `/a/<id>` or `/`. Every served plan
@@ -1260,6 +1264,48 @@ index", which the `/N` contract makes moot; an `await` retrying across a
 for a deliberate rotation. The fix slice was mutated seventeen ways, all
 caught once the render test backdated its row (in the same second, "now"
 and "the revision's time" coincide).
+
+### Review round seventeen: the fix slice, reviewed fresh, and why the loop stops
+
+A second fresh reviewer read the round-sixteen fixes narrowly, drove every
+one of the six against the real binary (push then render in four orders,
+wrong-typed and non-object rows, a non-array `artifacts`, an empty file, a
+newer file with a bad row, `clean` against a bad line, a repeated seq and
+a foreign format with the server up, a push under a lock held for three
+seconds and for twelve, two and four concurrent `serve`s over eight rounds,
+POST and PUT on `/`, and the server log across two commits), and ran
+eleven mutations of its own, all caught. Two confirmed defects, both low,
+both in the new code, no regressions; both closed:
+
+1. **`list` said "no artifacts yet" on stdout beside the stderr note that
+   a row could not be read**, because its guard checked read-only and
+   corrupt but not unreadable rows, while the page's guard had been
+   extended. Both now say it only when there is nothing to say about the
+   file.
+2. **A second repair overwrote `index.json.corrupt`**, against the
+   comment beside it. Each repair keeps its own copy.
+
+Observation adopted: an unreadable row sharing an id with a recorded one
+left two rows under that id, one unlisted and unremovable. A recorded row
+replaces it, and `remove` under that id forgets it. Prose findings
+adopted: the `list` bullet omitted `corrupt` and `unreadable_rows`; "GET
+only" was loose (HEAD is answered); the lib test that listed a one-bad-row
+file among its corrupt cases now has that case as its own test. Noted,
+not acted on: a render of a pushed artifact whose local file has changed
+records the local hash and title beside the server's review facts until
+the next push, which is what a row that is one row can do; the server's
+newer-index note is once per daemon life, not per episode; `clean` has a
+window between stopping the server and taking the lock in which a `serve`
+can start (pre-existing, unchanged by the slice); a corrupt envelope's
+top-level extra fields survive only in the kept-aside copy.
+
+**The loop stops here for plan 4.** Round sixteen found one high and one
+medium defect in the registry's two directions of merge and two low ones
+in `clean`'s ordering; round seventeen found only two low findings in the
+code the fixes added and verified the six fixes under attack. The fixes
+were mutated seventeen and then four ways, all caught. What remains is a
+window in `clean` that predates the slice, a note said once per daemon,
+and prose. The next real finding will come from use.
 
 ## Where the code diverges from plan 2b, with the reason
 
@@ -1487,7 +1533,10 @@ file, or printing no notes, the page showing no notes or "no artifacts"
 over a corrupt file, the index answering POST, a live greyed row saying
 nothing, poster ids colliding, the server silent over a newer index or
 saying it on every commit, `clean` stopping the server before checking the
-log, and `serve` waiting only for a peer.
+log, and `serve` waiting only for a peer. Round seventeen's: `list`
+saying "no artifacts" beside a note, a second repair overwriting the kept
+copy, a same-id unreadable row kept beside the new one, and `remove`
+leaving an unreadable row under the id.
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,
