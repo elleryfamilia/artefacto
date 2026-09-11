@@ -110,7 +110,13 @@ fn status_json_lists_each_artifact_with_its_review_state() {
             "out of scope",
         ])
         .success();
-    // Page-level chat, an answer, and a reviewed mark.
+    // A blocking thread the agent changed the plan for: resolved, so it no
+    // longer blocks anything.
+    let third = r.open_thread(&cookie, "cid-6", "meta:demo", true);
+    r.repo
+        .run(&["resolve", &third, "--session", &r.session, "--changed"])
+        .success();
+    // Page-level chat and a reviewed mark.
     r.server.post_cmd(
         &cookie,
         "plan:demo",
@@ -161,12 +167,15 @@ fn status_json_lists_each_artifact_with_its_review_state() {
     assert_eq!(a["submitted"], false);
     assert_eq!(a["open_threads"], 1, "{a}");
     assert_eq!(a["unanchored_threads"], 0, "{a}");
-    assert_eq!(a["blocking_threads"], 1, "{a}");
+    assert_eq!(
+        a["blocking_threads"], 1,
+        "a resolved thread blocks nothing, whatever its checkbox said: {a}"
+    );
     assert_eq!(a["chat"], 1, "page-level chat, not thread chat: {a}");
     assert_eq!(a["reviewed"], 1, "{a}");
 
     let threads = a["threads"].as_array().expect("threads");
-    assert_eq!(threads.len(), 2, "{a}");
+    assert_eq!(threads.len(), 3, "{a}");
     assert_eq!(threads[0]["id"], first);
     assert_eq!(threads[0]["ref"], "task:t-a");
     assert_eq!(threads[0]["status"], "open");
