@@ -113,6 +113,15 @@ fn the_served_page_runs_its_script_under_the_nonce_policy() {
         true,
         "the page mounted its controls"
     );
+    let banner = page.text("document.querySelector('.pv-banner').textContent");
+    assert!(
+        banner.contains("send your review"),
+        "a served page ends in Send review: {banner}"
+    );
+    assert!(
+        !banner.contains("copy"),
+        "not in copying feedback: {banner}"
+    );
     assert_eq!(
         page.text("JSON.parse(document.getElementById('plan-data').textContent).meta.id"),
         "demo"

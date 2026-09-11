@@ -4909,9 +4909,31 @@ pre code { font-size: 1em; }
       renderRecovery();
     }
 
+    /* The render's orientation banner describes the static flow, which
+       ends in copying feedback. A served page ends in Send review. */
+    function mountBanner(root) {
+      const text = root.querySelector(".pv-banner-text");
+      if (text && !text.hasAttribute("data-served")) {
+        text.setAttribute("data-served", "");
+        text.replaceChildren(
+          document.createTextNode("This plan is under live review. "),
+          el("strong", { text: "Comment on anything, answer the questions, then send your review." }),
+          document.createTextNode(" The agent hears you as you go."));
+      }
+      const steps = root.querySelector(".pv-banner-steps");
+      if (steps && !steps.hasAttribute("data-served")) {
+        steps.setAttribute("data-served", "");
+        steps.replaceChildren(
+          el("b", { text: "01" }), document.createTextNode(" skim  "),
+          el("b", { text: "02" }), document.createTextNode(" comment  "),
+          el("b", { text: "03" }), document.createTextNode(" send review"));
+      }
+    }
+
     S.mount = function (root, plan) {
       S.root = root;
       S.plan = plan;
+      mountBanner(root);
       mountPresence(root);
       mountElements(root);
       mountBar(root);
