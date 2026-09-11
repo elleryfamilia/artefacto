@@ -21,7 +21,7 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-326 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+328 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
 clean.
 
 | area | file | notes |
@@ -150,6 +150,43 @@ before exiting (#17); a replayed lease after a restart blocks other names for
 up to five minutes with an age measured from server start (#18); every push
 prints a fresh bootstrap URL into the transcript (#19).
 
+## Review round four: the fix slice, reviewed fresh
+
+A second fresh reviewer on a different model read the fix slice against the
+spec and drove twelve probe scenarios against the real binary. Its verdict:
+every one of the twelve findings is closed in the code, and it could not make
+the server lose or double-acknowledge an event in any scenario, including
+expiry mid-wait, takeover mid-wait, a killed follow, and a killed server. It
+found three sharp edges, all now fixed with a test each:
+
+- **A long `await` could expire its own lease mid-wait.** The wait now
+  re-validates the token every tick, which refreshes the lease and ends the
+  wait with exit 6 the moment the lease changes hands.
+- **`--takeover` was ignored when a dead token was presented.** A takeover now
+  falls through a dead token and claims fresh.
+- **The follow still printed a passive-only frame on `stopped`.** A stop is
+  signalled by exiting 0, and by nothing else.
+
+And three contract facts the skill (plan 5) and the page (plan 3) must carry,
+which are not defects:
+
+- **A page that connects after the agent attached is never told there is an
+  agent.** Presence is announced on change only. Plan 3 needs an initial
+  presence snapshot on socket connect.
+- **A same-name `events --follow` adopts the push's token, and killing the
+  follow kills that token.** That is "the token is the identity" plus "a
+  follow disconnect releases immediately". The skill must say: on exit 6,
+  retry without `--session` under the same name; the cursor is keyed by name
+  and nothing is lost.
+- **`push` reports `revision_seq`, never `seq`.** Acknowledging a push's own
+  event would skip reviewer events the agent never saw. Acknowledge only
+  `await` and `events` seqs.
+
+One transient it left alone: `sync_presence` reads the lease and compares
+under two separate `core` locks, so a takeover landing in between can announce
+the outgoing holder once before the next tick announces the real one. The
+final state is always right.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
@@ -247,7 +284,10 @@ acknowledge the frame it hands out, printing no session line, refusing an ack
 behind the cursor, letting the timeout tail carry active events, skipping the
 token check in push's gate, demoting a live lease on a waiting claim, never
 announcing detached, never resetting `submitted`, and reverting the batch-mark
-subtraction to one that underflows. Each fails the test that names it.
+subtraction to one that underflows. Each fails the test that names it. The
+follow-up slice added three more: removing the per-tick validation from the
+wait, refusing a dead token even with `--takeover`, and printing a passive
+tail on `stopped`.
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,
