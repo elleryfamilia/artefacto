@@ -17,6 +17,7 @@ pub mod event;
 pub mod feedback;
 pub mod fold;
 pub mod http;
+pub mod index_page;
 pub mod ingress;
 pub mod lease;
 pub mod log;

@@ -450,6 +450,21 @@ code {
   text-overflow: ellipsis;
 }
 
+/* The way back to the artifact index, present only on a served page (the
+   server adds it; a static export has no index). Same voice as the id
+   beside it: mono, muted, uppercase. */
+.pv-topbar-link {
+  font-family: var(--font-mono);
+  font-size: 0.719rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.pv-topbar-link:hover { color: var(--accent); }
+
 /* Theme toggle -- injected by plan.js, because a control that does nothing
    without scripting should not be in the served markup. */
 .pv-theme {

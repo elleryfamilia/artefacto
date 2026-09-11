@@ -308,6 +308,12 @@ fn handle(shared: &Arc<Shared>, request: Request) {
             }
         };
     }
+    if path == "/" {
+        return crate::server::index_page::serve_index(shared, request);
+    }
+    if path == "/index/remove" {
+        return crate::server::index_page::handle_remove(shared, request);
+    }
     if path == "/healthz" {
         let _ = request.respond(json_response(200, "{\"ok\":true}"));
         return;

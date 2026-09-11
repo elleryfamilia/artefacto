@@ -43,31 +43,44 @@ pub fn mint_bootstrap_aged(shared: &Shared, artifact: &str, age: Duration) -> Re
     if !valid_artifact_id(artifact) {
         bail!("invalid artifact id: {artifact:?}");
     }
+    Ok(mint_landing(shared, format!("/a/{artifact}"), age))
+}
+
+/// A one-time link that lands on the artifact index at `/` rather than on
+/// one artifact's page: what `open` mints when the server holds several
+/// and none was named (spec 5).
+pub fn mint_index_bootstrap(shared: &Shared) -> String {
+    mint_landing(shared, "/".to_string(), Duration::ZERO)
+}
+
+/// A token maps to the path the bootstrap redirect lands on. The artifact
+/// id is validated by the callers that build an artifact path.
+fn mint_landing(shared: &Shared, landing: String, age: Duration) -> String {
     let token = new_secret();
     let issued = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
     let mut core = shared.core.lock().unwrap();
-    core.bootstrap
-        .insert(token.clone(), (artifact.to_string(), issued));
-    Ok(token)
+    core.bootstrap.insert(token.clone(), (landing, issued));
+    token
 }
 
 pub fn bootstrap_url(port: u16, token: &str) -> String {
     format!("http://127.0.0.1:{port}/b/{token}")
 }
 
-/// Consumes the token whatever the outcome. A token presented once is spent,
-/// even if it had already expired, so a leaked URL is never retryable.
+/// Consumes the token whatever the outcome, and returns where it lands. A
+/// token presented once is spent, even if it had already expired, so a
+/// leaked URL is never retryable.
 fn consume_bootstrap(shared: &Shared, token: &str) -> Option<String> {
     let mut core = shared.core.lock().unwrap();
-    let (artifact, issued) = core.bootstrap.remove(token)?;
+    let (landing, issued) = core.bootstrap.remove(token)?;
     if issued.elapsed() > BOOTSTRAP_TTL {
         return None;
     }
-    Some(artifact)
+    Some(landing)
 }
 
 pub fn handle_bootstrap(shared: &Arc<Shared>, request: Request, token: &str) {
-    let Some(artifact) = consume_bootstrap(shared, token) else {
+    let Some(landing) = consume_bootstrap(shared, token) else {
         let _ = request.respond(error_response(
             403,
             "bad_bootstrap",
@@ -81,18 +94,15 @@ pub fn handle_bootstrap(shared: &Arc<Shared>, request: Request, token: &str) {
     );
     let response = Response::empty(302)
         .with_header(Header::from_bytes(&b"Set-Cookie"[..], cookie.as_bytes()).expect("cookie"))
-        .with_header(
-            Header::from_bytes(&b"Location"[..], format!("/a/{artifact}").as_bytes())
-                .expect("location"),
-        );
+        .with_header(Header::from_bytes(&b"Location"[..], landing.as_bytes()).expect("location"));
     let _ = request.respond(response);
 }
 
 /// `POST /cli/open?artifact=ID`: a fresh link for `artefacto open`.
 ///
-/// Spec 5: "mint a fresh bootstrap URL and open the browser". Without a name
-/// it follows `reply`'s rule — one artifact needs no name, several do — and
-/// an artifact the fold does not know is refused rather than minted for,
+/// Spec 5: "mint a fresh bootstrap URL and open the browser; with no id and
+/// one artifact, that one; with no id and several, the artifact index". An
+/// artifact the fold does not know is refused rather than minted for,
 /// because a link that lands on the placeholder page is a link that lied.
 pub fn handle_open(shared: &Arc<Shared>, request: Request, query: &Query) {
     let named = query.get("artifact").filter(|a| !a.is_empty());
@@ -101,12 +111,12 @@ pub fn handle_open(shared: &Arc<Shared>, request: Request, query: &Query) {
             if !review.artifacts.contains_key(named.as_str()) {
                 return Err(format!("no such artifact: {named}"));
             }
-            return Ok(named.clone());
+            return Ok(Some(named.clone()));
         }
         match review.artifacts.len() {
-            1 => Ok(review.artifacts.keys().next().cloned().unwrap_or_default()),
+            1 => Ok(review.artifacts.keys().next().cloned()),
             0 => Err("there is nothing to open yet; push a plan first".to_string()),
-            _ => Err("this server has several artifacts; name one with --artifact".to_string()),
+            _ => Ok(None),
         }
     });
     let artifact = match resolved {
@@ -116,14 +126,22 @@ pub fn handle_open(shared: &Arc<Shared>, request: Request, query: &Query) {
             return;
         }
     };
-    let url = match mint_bootstrap(shared, &artifact) {
-        Ok(token) => bootstrap_url(shared.port, &token),
-        Err(e) => {
-            let _ = request.respond(error_response(400, "invalid_artifact", &format!("{e:#}")));
-            return;
-        }
+    let token = match &artifact {
+        Some(artifact) => match mint_bootstrap(shared, artifact) {
+            Ok(token) => token,
+            Err(e) => {
+                let _ = request.respond(error_response(400, "invalid_artifact", &format!("{e:#}")));
+                return;
+            }
+        },
+        None => mint_index_bootstrap(shared),
     };
-    let body = serde_json::json!({ "ok": true, "artifact": artifact, "url": url });
+    let body = serde_json::json!({
+        "ok": true,
+        "artifact": artifact,
+        "index": artifact.is_none(),
+        "url": bootstrap_url(shared.port, &token),
+    });
     let _ = request.respond(json_response(200, &body.to_string()));
 }
 
@@ -288,14 +306,23 @@ pub fn render_plan(plan: &serde_json::Value) -> Result<String> {
 /// id and the revision. Their presence is how the script knows it was served
 /// rather than opened from a file, which selects the server-mode store.
 pub fn served_document(rendered: &str, artifact: &str, revision: u32) -> String {
-    rendered.replacen(
-        "<body",
-        &format!(
-            "<body data-artefacto-artifact=\"{}\" data-artefacto-revision=\"{revision}\"",
-            html_escape(artifact).replace('"', "&quot;")
-        ),
-        1,
-    )
+    rendered
+        .replacen(
+            "<body",
+            &format!(
+                "<body data-artefacto-artifact=\"{}\" data-artefacto-revision=\"{revision}\"",
+                html_escape(artifact).replace('"', "&quot;")
+            ),
+            1,
+        )
+        // A served page is one of possibly several on this server, and the
+        // index at `/` is where the others are. A static export has no
+        // index to link to, so the link is added here rather than rendered.
+        .replacen(
+            "<div class=\"pv-topbar-right\">",
+            "<div class=\"pv-topbar-right\"><a class=\"pv-topbar-link\" href=\"/\">All artifacts</a>",
+            1,
+        )
 }
 
 /// The body a push delivers and `/state` returns: the served document's
