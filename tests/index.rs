@@ -207,7 +207,7 @@ fn a_newer_index_is_left_alone_by_render_and_reported_by_list() {
 }
 
 #[test]
-fn a_corrupt_index_is_repaired_by_the_next_render() {
+fn a_corrupt_index_is_reported_and_kept_aside_when_the_next_render_repairs_it() {
     let repo = Repo::new();
     let plan = plan_in(&repo, "minimal.json", "plan.json");
     let index_path = repo.state_dir().join("index.json");
@@ -216,14 +216,93 @@ fn a_corrupt_index_is_repaired_by_the_next_render() {
 
     let listed = list(&repo);
     assert_eq!(listed["readonly"], false, "corrupt is not newer");
+    assert_eq!(listed["corrupt"], true, "{listed}");
     assert_eq!(listed["artifacts"].as_array().unwrap().len(), 0);
+    let text = repo.run(&["list"]);
+    text.success();
+    assert!(
+        text.stderr.contains("could not be read"),
+        "a reader is told: {}",
+        text.stderr
+    );
+    assert!(
+        !text.stdout.contains("no artifacts yet"),
+        "and not told the index is empty: {}",
+        text.stdout
+    );
 
     let out = render(&repo, &plan, "plan.html");
     assert_eq!(out["index"]["recorded"], true, "{out}");
-    let text = std::fs::read_to_string(&index_path).unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&text).expect("repaired");
-    assert_eq!(parsed["format"], "artefacto.index/1");
-    assert_eq!(list(&repo)["artifacts"].as_array().unwrap().len(), 1);
+    let repaired: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&index_path).unwrap()).expect("repaired");
+    assert_eq!(repaired["format"], "artefacto.index/1");
+    assert_eq!(
+        std::fs::read_to_string(repo.state_dir().join("index.json.corrupt")).unwrap(),
+        "{this is not",
+        "the old bytes are kept aside, not thrown away"
+    );
+    let listed = list(&repo);
+    assert_eq!(listed["corrupt"], false);
+    assert_eq!(listed["artifacts"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn one_unreadable_row_keeps_every_other_row_and_is_reported() {
+    // Spec 4.4: never auto-prune. A row this binary cannot read costs that
+    // row's listing and nothing else; it is written back as it was.
+    let repo = Repo::new();
+    let plan = plan_in(&repo, "minimal.json", "plan.json");
+    let index_path = repo.state_dir().join("index.json");
+    std::fs::create_dir_all(repo.state_dir()).unwrap();
+    let good = serde_json::json!({
+        "id": "plan:good", "kind": "plan", "title": "Good", "plan_hash": "sha256:g",
+        "source_path": "/tmp/good.json", "revision": 2, "revised_at": "2026-09-10T00:00:00Z",
+        "recorded_at": "2026-09-10T00:00:00Z", "open_threads": 1, "verdict": "approve",
+    });
+    let bad = serde_json::json!({ "id": "plan:odd", "shape": "unknown" });
+    std::fs::write(
+        &index_path,
+        serde_json::json!({ "format": "artefacto.index/1", "artifacts": [good, bad] }).to_string(),
+    )
+    .unwrap();
+
+    let listed = list(&repo);
+    assert_eq!(listed["corrupt"], false);
+    assert_eq!(listed["unreadable_rows"], 1, "{listed}");
+    let rows = listed["artifacts"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], "plan:good");
+    assert_eq!(rows[0]["verdict"], "approve");
+    let text = repo.run(&["list"]);
+    text.success();
+    assert!(
+        text.stderr
+            .contains("1 row in index.json could not be read"),
+        "{}",
+        text.stderr
+    );
+    assert!(text.stdout.contains("plan:good"), "{}", text.stdout);
+
+    render(&repo, &plan, "plan.html");
+    let file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&index_path).unwrap()).unwrap();
+    let ids: Vec<&str> = file["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        ["plan:demo", "plan:good", "plan:odd"],
+        "nothing lost: {file}"
+    );
+    assert_eq!(
+        file["artifacts"][2],
+        serde_json::json!({ "id": "plan:odd", "shape": "unknown" }),
+        "the row it could not read, byte for byte"
+    );
+    assert_eq!(list(&repo)["artifacts"].as_array().unwrap().len(), 2);
 }
 
 #[test]
@@ -567,4 +646,125 @@ fn a_stored_plan_with_a_field_this_binary_does_not_know_still_has_a_row() {
     assert_eq!(rows[0]["revision"], 1);
     let poster = std::fs::read_to_string(rows[0]["poster"].as_str().unwrap()).unwrap();
     assert!(poster.contains("From the future"), "{poster}");
+}
+
+#[test]
+fn a_render_of_a_live_artifact_keeps_the_reviews_facts() {
+    // A render knows the plan and nothing of the review; the row is one
+    // row, and the review's facts are the server's to change.
+    let l = pushed("minimal.json");
+    let thread = l.open_thread("plan:demo", "cid-1", "task:t-a", true);
+    let before = l.row();
+    assert_eq!(before["open_threads"], 1);
+
+    let out = render(&l.repo, &l.plan, "plan.html");
+    assert_eq!(out["index"]["recorded"], true, "{out}");
+    let row = l.row();
+    assert_eq!(row["revision"], 1, "still the pushed revision: {row}");
+    assert_eq!(row["open_threads"], 1);
+    assert_eq!(
+        row["revised_at"], before["revised_at"],
+        "the revision's time, not the render's"
+    );
+    assert_eq!(
+        row["rendered_path"],
+        real(&l.repo).join("plan.html").display().to_string()
+    );
+    assert_eq!(row["plan_hash"], before["plan_hash"]);
+    let poster = l.poster();
+    assert!(poster.contains(">rev 1<"), "{poster}");
+    assert!(poster.contains("1 open · in review"), "{poster}");
+
+    // The same after a verdict.
+    l.repo
+        .run(&["resolve", &thread, "--session", &l.session, "--changed"])
+        .success();
+    let cookie = l.server.session_cookie("plan:demo");
+    l.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "review.submit", "client_id": "cid-2", "verdict": "approve", "base_revision": 1,
+        }),
+    );
+    render(&l.repo, &l.plan, "plan.html");
+    let row = l.row();
+    assert_eq!(row["verdict"], "approve");
+    assert_eq!(row["submitted"], true);
+    assert_eq!(row["open_threads"], 0);
+    assert!(l.poster().contains("0 open · approved"));
+
+    // And a row that was never pushed still takes the render as its revision.
+    let other = plan_in(&l.repo, "kitchen-sink.json", "other.json");
+    render(&l.repo, &other, "other.html");
+    let listed = list(&l.repo);
+    let fresh = listed["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "plan:auth-refactor")
+        .unwrap();
+    assert_eq!(fresh["revision"], 0);
+    assert_eq!(fresh["age"], "just now");
+}
+
+#[test]
+fn a_server_over_a_newer_index_says_so_once_in_its_log() {
+    // The server keeps rows current best effort; when it cannot, because a
+    // newer artefacto wrote the file, that must not be silent. Against the
+    // real daemon, whose stderr is server.log.
+    let repo = Repo::new();
+    let plan = plan_in(&repo, "minimal.json", "plan.json");
+    repo.json(&["plan", "push", &plan, "--json", "--no-open"]);
+    let index_path = repo.state_dir().join("index.json");
+    let future = r#"{"format":"artefacto.index/2","artifacts":[]}"#;
+    std::fs::write(&index_path, future).unwrap();
+
+    // Two row-changing events: the note is said once, not per commit.
+    let out = repo.json(&["open", "--json"]);
+    let port = repo.port();
+    let path = out["url"]
+        .as_str()
+        .unwrap()
+        .strip_prefix(&format!("http://127.0.0.1:{port}"))
+        .unwrap()
+        .to_string();
+    let response = support::get(port, &path);
+    let cookie = response
+        .lines()
+        .find(|l| l.to_ascii_lowercase().starts_with("set-cookie:"))
+        .and_then(|l| l.split_once(": ").map(|(_, v)| v))
+        .and_then(|v| v.split(';').next())
+        .expect("a cookie")
+        .trim()
+        .to_string();
+    for client in ["c1", "c2"] {
+        let body = serde_json::json!({
+            "cmd": "thread.open", "client_id": client, "ref": "task:t-a",
+            "text": "x", "opened_revision": 1,
+        })
+        .to_string();
+        let response = support::raw(
+            port,
+            &format!(
+                "POST /a/plan:demo/cmd HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {cookie}\r\n\
+                 Origin: http://127.0.0.1:{port}\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            ),
+        );
+        assert_eq!(support::status_of(&response), 200, "{response}");
+    }
+    repo.stop();
+    assert_eq!(
+        std::fs::read_to_string(&index_path).unwrap(),
+        future,
+        "never rewritten"
+    );
+    let log = std::fs::read_to_string(repo.state_dir().join("server.log")).unwrap();
+    assert_eq!(
+        log.matches("newer artefacto").count(),
+        1,
+        "said once: {log}"
+    );
 }

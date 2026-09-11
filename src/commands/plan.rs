@@ -296,15 +296,13 @@ fn index_render(plan: &model::Plan, source: &Path, out: &Path) -> serde_json::Va
         let dir = crate::server::state_dir::state_dir(&root);
         let source = std::fs::canonicalize(source)
             .unwrap_or_else(|_| crate::paths::resolve_relative(&cwd, source));
-        let entry = crate::index::render_entry(
-            plan,
-            source.display().to_string(),
-            out.display().to_string(),
-        );
-        let id = entry.id.clone();
-        let poster =
-            crate::plan::poster::poster_svg(plan, &crate::plan::poster::ReviewState::default());
-        match crate::index::record(&dir, entry, Some(&poster))? {
+        let id = crate::server::push::artifact_id(plan);
+        let (source, out) = (source.display().to_string(), out.display().to_string());
+        let outcome = crate::index::record_with(&dir, &id, |previous| {
+            let (entry, poster) = crate::index::render_row(plan, source, out, previous);
+            (entry, Some(poster))
+        })?;
+        match outcome {
             crate::index::Outcome::Recorded => Ok(crate::index::poster_path(&dir, &id)),
             crate::index::Outcome::ReadOnlyNewer => anyhow::bail!(
                 "index.json was written by a newer artefacto; update artefacto to record into it"

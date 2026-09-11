@@ -86,6 +86,74 @@ pub fn has_artifact(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the log would open: the same reading as [`EventLog::open`] with
+/// nothing written back, for a caller that must know before it acts. A
+/// torn tail or an interrupted commit passes (open would recover them); a
+/// bad line, a foreign format, or a number that does not go up fails.
+pub fn check(dir: &Path) -> Result<()> {
+    let path = dir.join("events.ndjson");
+    if !path.exists() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    parse(&path, &bytes).map(|_| ())
+}
+
+/// Every complete record of `bytes`, and where the good bytes end.
+fn parse(path: &Path, bytes: &[u8]) -> Result<(Vec<Event>, usize)> {
+    let mut events = Vec::new();
+    let mut offset = 0usize;
+    let mut line_no = 0usize;
+    let mut good_bytes = 0usize;
+    // Where each accepted record starts, so an interrupted commit can be
+    // cut back to the byte before its first member.
+    let mut starts: Vec<usize> = Vec::new();
+
+    while offset < bytes.len() {
+        starts.push(offset);
+        let rest = &bytes[offset..];
+        let Some(nl) = rest.iter().position(|b| *b == b'\n') else {
+            // No terminator: a torn tail. Truncate it, whatever it holds.
+            break;
+        };
+        line_no += 1;
+        let line = &rest[..nl];
+        let text = std::str::from_utf8(line)
+            .with_context(|| format!("{}: line {line_no} is not utf-8", path.display()))?;
+        let event: Event = serde_json::from_str(text)
+            .with_context(|| format!("{}: line {line_no} is not an event", path.display()))?;
+        if event.format != EVENT_FORMAT {
+            bail!(
+                "{}: line {line_no} declares {}, not {EVENT_FORMAT}",
+                path.display(),
+                event.format
+            );
+        }
+        // Strictly increasing, not contiguous: `clean` takes a finished
+        // review's events out and leaves the rest at their numbers, so a
+        // gap is history, not corruption. A number that does not go up is.
+        let last = events.last().map(|e: &Event| e.seq).unwrap_or(0);
+        if event.seq <= last {
+            bail!(
+                "{}: line {line_no} has seq {}, not above seq {last}",
+                path.display(),
+                event.seq
+            );
+        }
+        events.push(event);
+        offset += nl + 1;
+        good_bytes = offset;
+    }
+
+    // An interrupted commit: the last record on disk says it is one of
+    // several, and the rest never arrived.
+    if let Some(cut) = incomplete_batch_start(&events, &starts)? {
+        events.truncate(cut);
+        good_bytes = starts[cut];
+    }
+    Ok((events, good_bytes))
+}
+
 impl EventLog {
     pub fn open(dir: &Path) -> Result<EventLog> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -95,65 +163,14 @@ impl EventLog {
         if path.exists() {
             let bytes =
                 std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-            let mut offset = 0usize;
-            let mut line_no = 0usize;
-            let mut good_bytes = 0usize;
-            // Where each accepted record starts, so an interrupted commit can
-            // be cut back to the byte before its first member.
-            let mut starts: Vec<usize> = Vec::new();
-
-            while offset < bytes.len() {
-                starts.push(offset);
-                let rest = &bytes[offset..];
-                let Some(nl) = rest.iter().position(|b| *b == b'\n') else {
-                    // No terminator: a torn tail. Truncate it, whatever it holds.
-                    break;
-                };
-                line_no += 1;
-                let line = &rest[..nl];
-                let text = std::str::from_utf8(line)
-                    .with_context(|| format!("{}: line {line_no} is not utf-8", path.display()))?;
-                let event: Event = serde_json::from_str(text).with_context(|| {
-                    format!("{}: line {line_no} is not an event", path.display())
-                })?;
-                if event.format != EVENT_FORMAT {
-                    bail!(
-                        "{}: line {line_no} declares {}, not {EVENT_FORMAT}",
-                        path.display(),
-                        event.format
-                    );
-                }
-                // Strictly increasing, not contiguous: `clean` takes a
-                // finished review's events out and leaves the rest at their
-                // numbers, so a gap is history, not corruption. A number that
-                // does not go up is.
-                let last = events.last().map(|e: &Event| e.seq).unwrap_or(0);
-                if event.seq <= last {
-                    bail!(
-                        "{}: line {line_no} has seq {}, not above seq {last}",
-                        path.display(),
-                        event.seq
-                    );
-                }
-                events.push(event);
-                offset += nl + 1;
-                good_bytes = offset;
-            }
-
-            // An interrupted commit: the last record on disk says it is one of
-            // several, and the rest never arrived.
-            if let Some(cut) = incomplete_batch_start(&events, &starts)? {
-                events.truncate(cut);
-                good_bytes = starts[cut];
-            }
-
+            let (parsed, good_bytes) = parse(&path, &bytes)?;
+            events = parsed;
             if good_bytes < bytes.len() {
                 let f = OpenOptions::new().write(true).open(&path)?;
                 f.set_len(good_bytes as u64)?;
                 f.sync_all()?;
             }
         }
-
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let next_seq = events.last().map(|e| e.seq + 1).unwrap_or(1);
         Ok(EventLog {

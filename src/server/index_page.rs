@@ -5,8 +5,11 @@
 //! that file is still there. A row whose artifact this server holds links
 //! to the page; the rest are what the registry remembers — a static render,
 //! or a review `clean` took out of the log — and say so. A row whose source
-//! file is gone is greyed and offers a per-row remove. Nothing is removed on
-//! the user's behalf: an absent file usually means an unmounted volume.
+//! file is gone is greyed and, unless this server holds its review, offers a
+//! per-row remove: a live row's next event would write it straight back, so
+//! it says it is kept instead (a divergence from spec 4.4's sentence, noted
+//! in BUILD-STATUS). Nothing is removed on the user's behalf: an absent file
+//! usually means an unmounted volume.
 //!
 //! A page route: it needs the cookie and a navigation origin, like the plan
 //! page, and is served under the same nonce policy. The posters are inline
@@ -100,6 +103,17 @@ struct Row<'a> {
 }
 
 pub fn serve_index(shared: &Arc<Shared>, request: Request) {
+    if !matches!(
+        request.method(),
+        tiny_http::Method::Get | tiny_http::Method::Head
+    ) {
+        let _ = request.respond(error_response(
+            405,
+            "method_not_allowed",
+            "the index is a GET",
+        ));
+        return;
+    }
     if !cookie_ok(&request, shared) {
         let _ = request.respond(error_response(401, "unauthorized", "no session cookie"));
         return;
@@ -140,6 +154,7 @@ pub fn index_document(shared: &Shared) -> String {
         1 => "1 artifact".to_string(),
         n => format!("{n} artifacts"),
     };
+    let notes = crate::commands::list::notes(&index);
     let page = html! {
         (DOCTYPE)
         html lang="en" {
@@ -163,7 +178,10 @@ pub fn index_document(shared: &Shared) -> String {
                         }
                     }
                     main.ix-main {
-                        @if rows.is_empty() {
+                        @for note in &notes {
+                            p.ix-empty.ix-note { (note) }
+                        }
+                        @if rows.is_empty() && notes.is_empty() {
                             p.ix-empty {
                                 "No artifacts yet. Push a plan with "
                                 code { "artefacto plan push plan.json" }
@@ -171,15 +189,10 @@ pub fn index_document(shared: &Shared) -> String {
                                 code { "artefacto plan render plan.json" }
                                 ", and it appears here."
                             }
-                        } @else {
+                        } @else if !rows.is_empty() {
                             p.pv-label { "Every artifact for this repository, newest first" }
                             ul.ix-rows {
                                 @for row in &rows { (row_html(row)) }
-                            }
-                        }
-                        @if index.is_readonly() {
-                            p.ix-empty {
-                                "The index file was written by a newer artefacto; update artefacto to read it."
                             }
                         }
                     }
@@ -252,6 +265,9 @@ fn row_html(row: &Row) -> maud::Markup {
                 p.pv-meta.ix-where {
                     @if row.live {
                         a href=(page) { "Open on this server" }
+                        @if !row.source_exists {
+                            " · kept in the index while its review is open here"
+                        }
                     } @else if let Some(rendered) = &e.rendered_path {
                         "Static page at " (rendered)
                     } @else {

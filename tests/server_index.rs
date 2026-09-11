@@ -107,6 +107,15 @@ fn the_index_needs_the_cookie_and_a_navigation_origin() {
         "a page route takes the cookie, never the bearer: {bearer}"
     );
     assert_eq!(status_of(&m.index()), 200);
+    let posted = raw(
+        m.server.port,
+        &format!(
+            "POST / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {cookie}\r\nContent-Length: 0\r\n\
+             Connection: close\r\n\r\n",
+            m.server.port
+        ),
+    );
+    assert_eq!(status_of(&posted), 405, "the index is a GET: {posted}");
 }
 
 #[test]
@@ -129,10 +138,13 @@ fn the_index_lists_every_row_with_its_poster_and_links_only_live_ones() {
     );
     assert_eq!(page.matches("<svg").count(), 2, "a poster per row, inline");
     assert!(
-        page.contains(">rev 1<") || page.contains("rev 1"),
-        "the live row's revision"
+        page.contains("· rev 1 · 0 open · in review"),
+        "the live row's facts line, not the poster's text: {page}"
     );
-    assert!(page.contains("not pushed"), "the static row's revision");
+    assert!(
+        page.contains("· not pushed</p>"),
+        "the static row's facts line ends at the revision: {page}"
+    );
     assert!(page.contains("2 artifacts"), "{page}");
 
     // The live row keeps no remove button; the static row offers one.
@@ -217,6 +229,53 @@ fn a_missing_source_greys_its_row_and_says_so() {
         .find(|s| s.contains("plan:auth-refactor"))
         .unwrap();
     assert!(!live.contains("is-missing"));
+}
+
+#[test]
+fn a_live_row_with_a_missing_source_is_greyed_and_says_why_it_stays() {
+    // Spec 4.4 offers Remove on every greyed row; a live row's next event
+    // would write it straight back, so it is kept and says so (recorded as
+    // a divergence).
+    let m = mixed();
+    let pushed = m.repo.path().join("plan.json");
+    std::fs::rename(&pushed, m.repo.path().join("moved.json")).unwrap();
+    let page = m.index();
+    let row = page
+        .split("<li class=\"")
+        .find(|s| s.contains("plan:auth-refactor"))
+        .unwrap();
+    assert!(row.starts_with("ix-row is-live is-missing"), "{row}");
+    assert!(row.contains("(file missing)"));
+    assert!(
+        row.contains("kept in the index while its review is open here"),
+        "{row}"
+    );
+    assert!(!row.contains("Remove from index"), "{row}");
+}
+
+#[test]
+fn a_corrupt_or_unreadable_registry_is_said_on_the_page_not_shown_as_empty() {
+    let repo = Repo::new();
+    let server = InProcess::start_in(&repo);
+    let cookie = server.session_cookie("plan:any");
+    let index_path = repo.state_dir().join("index.json");
+    std::fs::write(&index_path, "{not an index").unwrap();
+    let page = server.get("/", &[("Cookie", &cookie)]);
+    assert_eq!(status_of(&page), 200);
+    assert!(page.contains("could not be read"), "{page}");
+    assert!(
+        !page.contains("No artifacts yet"),
+        "the two messages would contradict: {page}"
+    );
+
+    std::fs::write(
+        &index_path,
+        r#"{"format":"artefacto.index/2","artifacts":[]}"#,
+    )
+    .unwrap();
+    let page = server.get("/", &[("Cookie", &cookie)]);
+    assert!(page.contains("newer artefacto"), "{page}");
+    assert!(!page.contains("No artifacts yet"), "{page}");
 }
 
 #[test]

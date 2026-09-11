@@ -68,10 +68,13 @@ pub struct Entry {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
+/// The file as written: rows are kept raw so that one row this binary
+/// cannot read is carried through a rewrite untouched rather than costing
+/// every other row.
 #[derive(Debug, Serialize, Deserialize)]
 struct IndexFile {
     format: String,
-    artifacts: Vec<Entry>,
+    artifacts: Vec<serde_json::Value>,
     #[serde(flatten)]
     extra: BTreeMap<String, serde_json::Value>,
 }
@@ -86,30 +89,44 @@ impl Default for IndexFile {
     }
 }
 
-/// The row a static `render` records: the plan as it is, never pushed, with
-/// no review state. `revised_at` is now, because the render is the revision.
-pub fn render_entry(
+/// The row a static `render` records, and its poster. A render knows the
+/// plan and where its page went; it knows nothing of the review, so the
+/// review's facts — revision, its time, the counts, the verdict — come from
+/// the row already there. A plan never pushed has none, and the render is
+/// then the revision: `revised_at` is now.
+pub fn render_row(
     plan: &crate::plan::model::Plan,
     source_path: String,
     rendered_path: String,
-) -> Entry {
+    previous: Option<&Entry>,
+) -> (Entry, String) {
     let now = crate::time::now_rfc3339();
-    Entry {
+    let review = previous.filter(|p| p.revision > 0);
+    let state = crate::plan::poster::ReviewState {
+        revision: review.map(|p| p.revision).unwrap_or(0),
+        open_threads: review.map(|p| p.open_threads).unwrap_or(0),
+        unanchored_threads: review.map(|p| p.unanchored_threads).unwrap_or(0),
+        submitted: review.map(|p| p.submitted).unwrap_or(false),
+        verdict: review.and_then(|p| p.verdict.clone()),
+    };
+    let poster = crate::plan::poster::poster_svg(plan, &state);
+    let entry = Entry {
         id: crate::server::push::artifact_id(plan),
         kind: "plan".to_string(),
         title: plan.meta.title.clone(),
         plan_hash: crate::plan::model::plan_hash(plan),
         source_path,
         rendered_path: Some(rendered_path),
-        revision: 0,
-        revised_at: now.clone(),
-        recorded_at: now,
-        open_threads: 0,
-        unanchored_threads: 0,
-        submitted: false,
-        verdict: None,
+        revision: state.revision,
+        revised_at: review.map(|p| p.revised_at.clone()).unwrap_or(now),
+        recorded_at: String::new(),
+        open_threads: state.open_threads,
+        unanchored_threads: state.unanchored_threads,
+        submitted: state.submitted,
+        verdict: state.verdict,
         extra: BTreeMap::new(),
-    }
+    };
+    (entry, poster)
 }
 
 /// Which events change what a row says. A reply, an answer, a reviewed
@@ -197,33 +214,47 @@ fn format_version(format: &str) -> Option<u32> {
 #[derive(Debug)]
 pub struct Index {
     dir: PathBuf,
-    file: IndexFile,
+    /// The rows this binary could read.
+    entries: Vec<Entry>,
+    /// Rows it could not, kept verbatim and written back as they are.
+    unreadable: Vec<serde_json::Value>,
+    extra: BTreeMap<String, serde_json::Value>,
     readonly: bool,
+    /// The file was there and was not an index. It reads as empty, and the
+    /// next write keeps the old bytes aside as `index.json.corrupt`.
+    corrupt: bool,
 }
 
 impl Index {
     pub fn load(dir: &Path) -> Index {
         let path = dir.join(INDEX_FILE);
-        let (file, readonly) = match fs::read_to_string(&path) {
-            Err(_) => (IndexFile::default(), false),
-            Ok(text) => Index::parse(&text),
-        };
-        Index {
+        let mut index = Index {
             dir: dir.to_path_buf(),
-            file,
-            readonly,
+            entries: Vec::new(),
+            unreadable: Vec::new(),
+            extra: BTreeMap::new(),
+            readonly: false,
+            corrupt: false,
+        };
+        if let Ok(text) = fs::read_to_string(&path) {
+            index.parse(&text);
         }
+        index
     }
 
     /// The version is read before the rows are parsed: a newer artefacto's
     /// rows may have a shape this binary cannot read, and that must come
     /// out as "newer, leave it alone", never as "corrupt, overwrite it".
-    fn parse(text: &str) -> (IndexFile, bool) {
+    /// Rows are then parsed one at a time, so one bad row costs that row's
+    /// listing and nothing else: it is carried through the next write as
+    /// it is, because the registry never prunes on the user's behalf.
+    fn parse(&mut self, text: &str) {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
-            // Not JSON: corrupt, and repaired by the next write, because the
-            // registry is a convenience and not a record anything else
-            // depends on.
-            return (IndexFile::default(), false);
+            // Not JSON: corrupt. It reads as empty and the next write
+            // repairs it, keeping the old bytes aside, because the registry
+            // is a convenience and not a record anything else depends on.
+            self.corrupt = true;
+            return;
         };
         let version = value
             .get("format")
@@ -232,14 +263,21 @@ impl Index {
         match version {
             // Newer: read-only. A rewrite would destroy structure this
             // binary cannot represent, and the bytes are preserved.
-            Some(v) if v > INDEX_VERSION => (IndexFile::default(), true),
-            // Ours, if the rows parse; corrupt otherwise.
+            Some(v) if v > INDEX_VERSION => self.readonly = true,
             Some(_) => match serde_json::from_value::<IndexFile>(value) {
-                Ok(f) => (f, false),
-                Err(_) => (IndexFile::default(), false),
+                Ok(file) => {
+                    self.extra = file.extra;
+                    for row in file.artifacts {
+                        match serde_json::from_value::<Entry>(row.clone()) {
+                            Ok(entry) => self.entries.push(entry),
+                            Err(_) => self.unreadable.push(row),
+                        }
+                    }
+                }
+                // The envelope itself is wrong: not an index.
+                Err(_) => self.corrupt = true,
             },
-            // Not an index at all.
-            None => (IndexFile::default(), false),
+            None => self.corrupt = true,
         }
     }
 
@@ -253,21 +291,32 @@ impl Index {
         self.readonly
     }
 
+    /// True when the file was there and was not an index at all. Every row
+    /// it held is unreadable, and the next write keeps its bytes aside.
+    pub fn is_corrupt(&self) -> bool {
+        self.corrupt
+    }
+
+    /// Rows this binary could not read, kept as they are.
+    pub fn unreadable_rows(&self) -> usize {
+        self.unreadable.len()
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.file.artifacts.is_empty()
+        self.entries.is_empty()
     }
 
     /// Newest first by `revised_at`; the most recently recorded first among
     /// rows revised in the same second, because `record` puts a row at the
     /// front and the sort is stable.
     pub fn entries(&self) -> Vec<&Entry> {
-        let mut v: Vec<&Entry> = self.file.artifacts.iter().collect();
+        let mut v: Vec<&Entry> = self.entries.iter().collect();
         v.sort_by(|a, b| b.revised_at.cmp(&a.revised_at));
         v
     }
 
     pub fn get(&self, id: &str) -> Option<&Entry> {
-        self.file.artifacts.iter().find(|e| e.id == id)
+        self.entries.iter().find(|e| e.id == id)
     }
 
     fn save(&self) -> Result<()> {
@@ -275,8 +324,25 @@ impl Index {
             .with_context(|| format!("creating {}", self.dir.display()))?;
         let path = self.path();
         let tmp = self.dir.join("index.json.tmp");
-        let text = serde_json::to_string_pretty(&self.file)?;
+        let file = IndexFile {
+            format: INDEX_FORMAT.to_string(),
+            artifacts: self
+                .entries
+                .iter()
+                .map(|e| serde_json::to_value(e).expect("a row serializes"))
+                .chain(self.unreadable.iter().cloned())
+                .collect(),
+            extra: self.extra.clone(),
+        };
+        let text = serde_json::to_string_pretty(&file)?;
         fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
+        if self.corrupt && path.exists() {
+            // Whatever was there is not thrown away: a file that was not an
+            // index may still be something the user wants to look at.
+            let aside = self.dir.join("index.json.corrupt");
+            fs::rename(&path, &aside)
+                .with_context(|| format!("keeping {} aside", path.display()))?;
+        }
         // No fsync, on purpose. The server writes this under its commit
         // gate, and a full fsync on macOS costs tens of milliseconds per
         // commit for a file that is a convenience: a crash that loses the
@@ -306,17 +372,32 @@ pub enum Outcome {
 /// A field the new row leaves empty keeps the old row's value, so a push
 /// does not erase where the static page was written, and fields a newer
 /// artefacto wrote survive a rewrite by this one.
-pub fn record(dir: &Path, mut entry: Entry, poster_svg: Option<&str>) -> Result<Outcome> {
+pub fn record(dir: &Path, entry: Entry, poster_svg: Option<&str>) -> Result<Outcome> {
+    let id = entry.id.clone();
+    record_with(dir, &id, |_| (entry, poster_svg.map(str::to_string)))
+}
+
+/// `record`, with the row built from the one already there. `build` runs
+/// under the lock and sees the previous row for `id`, if any, so a writer
+/// that knows only half the facts — a static render, which knows the plan
+/// and nothing of the review — can keep the other half.
+pub fn record_with(
+    dir: &Path,
+    id: &str,
+    build: impl FnOnce(Option<&Entry>) -> (Entry, Option<String>),
+) -> Result<Outcome> {
     let _lock = IndexLock::acquire(dir)?;
     let mut index = Index::load(dir);
     if index.readonly {
         return Ok(Outcome::ReadOnlyNewer);
     }
+    let previous = index.entries.iter().find(|e| e.id == id).cloned();
+    let (mut entry, poster) = build(previous.as_ref());
     entry.recorded_at = crate::time::now_rfc3339();
-    if let Some(svg) = poster_svg {
+    if let Some(svg) = &poster {
         write_poster(dir, &entry.id, svg)?;
     }
-    if let Some(previous) = index.file.artifacts.iter().find(|e| e.id == entry.id) {
+    if let Some(previous) = &previous {
         if entry.rendered_path.is_none() {
             entry.rendered_path = previous.rendered_path.clone();
         }
@@ -327,8 +408,8 @@ pub fn record(dir: &Path, mut entry: Entry, poster_svg: Option<&str>) -> Result<
                 .or_insert_with(|| value.clone());
         }
     }
-    index.file.artifacts.retain(|e| e.id != entry.id);
-    index.file.artifacts.insert(0, entry);
+    index.entries.retain(|e| e.id != entry.id);
+    index.entries.insert(0, entry);
     index.save()?;
     Ok(Outcome::Recorded)
 }
@@ -348,9 +429,9 @@ pub fn remove(dir: &Path, id: &str) -> Result<Removed> {
     if index.readonly {
         return Ok(Removed::ReadOnlyNewer);
     }
-    let before = index.file.artifacts.len();
-    index.file.artifacts.retain(|e| e.id != id);
-    if index.file.artifacts.len() == before {
+    let before = index.entries.len();
+    index.entries.retain(|e| e.id != id);
+    if index.entries.len() == before {
         return Ok(Removed::Absent);
     }
     index.save()?;

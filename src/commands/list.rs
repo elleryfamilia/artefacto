@@ -24,21 +24,52 @@ pub fn list(json: bool) -> Result<()> {
             "ok": true,
             "state_dir": dir.to_string_lossy(),
             "readonly": index.is_readonly(),
+            "corrupt": index.is_corrupt(),
+            "unreadable_rows": index.unreadable_rows(),
             "artifacts": rows,
         });
         println!("{doc}");
         return Ok(());
     }
-    if index.is_readonly() {
-        eprintln!("index.json was written by a newer artefacto; update artefacto to read it");
+    for note in notes(&index) {
+        eprintln!("{note}");
     }
-    if rows.is_empty() {
+    if rows.is_empty() && !index.is_readonly() && !index.is_corrupt() {
         println!("no artifacts yet; render or push a plan");
     }
     for row in &rows {
         print!("{}", row_text(row));
     }
     Ok(())
+}
+
+/// What a reader should be told about the file itself, when anything. The
+/// served index page shows the same lines.
+pub fn notes(index: &Index) -> Vec<String> {
+    let mut notes = Vec::new();
+    if index.is_readonly() {
+        notes.push(
+            "index.json was written by a newer artefacto; update artefacto to read it".to_string(),
+        );
+    }
+    if index.is_corrupt() {
+        notes.push(
+            "index.json could not be read; the next render or push replaces it and keeps the \
+             old file as index.json.corrupt"
+                .to_string(),
+        );
+    }
+    match index.unreadable_rows() {
+        0 => {}
+        1 => notes.push(
+            "1 row in index.json could not be read by this artefacto and is kept as it is"
+                .to_string(),
+        ),
+        n => notes.push(format!(
+            "{n} rows in index.json could not be read by this artefacto and are kept as they are"
+        )),
+    }
+    notes
 }
 
 /// One row, as `list --json` and the served index both see it. The facts

@@ -99,6 +99,9 @@ pub struct Shared {
     /// reach zero before returning, so a long poll that is about to answer
     /// "stopped" is not cut off by the process exiting underneath it.
     in_flight: AtomicUsize,
+    /// The index refused a row because a newer artefacto wrote the file.
+    /// Said once in the server's log, not on every commit.
+    index_readonly_said: AtomicBool,
 }
 
 impl Shared {
@@ -141,6 +144,7 @@ impl Shared {
             epoch: Instant::now(),
             stopping: AtomicBool::new(false),
             in_flight: AtomicUsize::new(0),
+            index_readonly_said: AtomicBool::new(false),
         })
     }
 
@@ -574,8 +578,17 @@ impl<'a> Committer<'a> {
         // purpose: the commit is already in the log, and a registry problem
         // is reported in the server's log rather than as a failed write.
         for (entry, poster) in rows {
-            if let Err(e) = crate::index::record(&self.shared.dir, entry, Some(&poster)) {
-                eprintln!("index: {e:#}");
+            match crate::index::record(&self.shared.dir, entry, Some(&poster)) {
+                Ok(crate::index::Outcome::Recorded) => {}
+                Ok(crate::index::Outcome::ReadOnlyNewer) => {
+                    if !self.shared.index_readonly_said.swap(true, Ordering::SeqCst) {
+                        eprintln!(
+                            "index: index.json was written by a newer artefacto; rows are not \
+                             being kept current"
+                        );
+                    }
+                }
+                Err(e) => eprintln!("index: {e:#}"),
             }
         }
         Ok(events)

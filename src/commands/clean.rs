@@ -19,6 +19,13 @@ pub fn clean(json: bool) -> Result<()> {
     if !dir.exists() {
         return report(json, false, &Cleaned::default(), false);
     }
+    // A log the server would refuse is checked before anything is changed:
+    // stopping the server and then failing would leave it stopped, the
+    // secret unrotated, and a JSON caller with nothing on stdout. A torn
+    // tail passes here, as it does at a restart.
+    log::check(&dir).context(
+        "the event log cannot be read, and clean would not repair it; nothing was changed",
+    )?;
     let mut stopped = false;
     if state_dir::read_server_file(&dir).is_some() {
         crate::commands::serve::stop().context("stopping the server")?;

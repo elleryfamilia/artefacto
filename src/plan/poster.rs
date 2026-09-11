@@ -46,13 +46,17 @@ const STYLE: &str = "\
 pub fn poster_svg(plan: &Plan, state: &ReviewState) -> String {
     let title = &plan.meta.title;
     let tasks: usize = plan.phases.iter().map(|p| p.tasks.len()).sum();
+    // The title's id carries the plan's id, which the model constrains to
+    // `[a-z][a-z0-9_-]*`: several posters inlined into one page must not
+    // share an id, or every card is labelled with the first one's title.
+    let title_id = format!("ap-title-{}", plan.meta.id);
     let mut out = String::with_capacity(4096);
     out.push_str(&format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {WIDTH} {HEIGHT}\" \
          width=\"{WIDTH}\" height=\"{HEIGHT}\" class=\"ap\" role=\"img\" \
-         aria-labelledby=\"ap-title\">"
+         aria-labelledby=\"{title_id}\">"
     ));
-    out.push_str(&format!("<title id=\"ap-title\">{}</title>", esc(title)));
+    out.push_str(&format!("<title id=\"{title_id}\">{}</title>", esc(title)));
     out.push_str(&format!("<style>{STYLE}</style>"));
     out.push_str(&format!(
         "<rect class=\"ap-bg\" x=\"0.5\" y=\"0.5\" width=\"{}\" height=\"{}\" rx=\"6\"/>",
@@ -271,7 +275,8 @@ mod tests {
         let a = poster_svg(&plan, &reviewed());
         assert_eq!(a, poster_svg(&plan, &reviewed()));
         assert!(a.starts_with("<svg"));
-        assert!(a.contains("<title id=\"ap-title\">Auth refactor</title>"));
+        assert!(a.contains("<title id=\"ap-title-auth-refactor\">Auth refactor</title>"));
+        assert!(a.contains("aria-labelledby=\"ap-title-auth-refactor\""));
         assert!(a.contains(">PLAN<"));
         assert!(a.contains(">rev 3<"));
         assert!(a.contains("2 phases · 5 tasks · 2 questions"));

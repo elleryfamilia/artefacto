@@ -492,3 +492,149 @@ fn a_seq_that_does_not_go_up_is_corruption() {
         );
     }
 }
+
+#[test]
+fn clean_refuses_a_log_the_server_would_refuse_and_changes_nothing() {
+    // The state a user reaches for clean in must not be made worse by it:
+    // the log is checked before the server is stopped, so a bad log leaves
+    // the server up, the secret as it was, and a JSON caller told why.
+    let repo = Repo::new();
+    let demo = plan_in(&repo, "minimal.json", "demo.json");
+    repo.json(&["plan", "push", &demo, "--json", "--no-open"]);
+    let pid = repo.pid();
+    let secret = repo.secret();
+    let log_path = repo.state_dir().join("events.ndjson");
+    let mut lines: Vec<String> = std::fs::read_to_string(&log_path)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    lines.insert(1, r#"{"garbage":true}"#.to_string());
+    let broken = lines.join("\n") + "\n";
+    std::fs::write(&log_path, &broken).unwrap();
+
+    let out = repo.run(&["clean", "--json"]);
+    assert_eq!(out.code, 2, "{}", out.stdout);
+    assert!(out.stderr.contains("cannot be read"), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("line 2"),
+        "names the line: {}",
+        out.stderr
+    );
+    assert_eq!(repo.pid(), pid, "the server was not stopped");
+    assert!(support::is_alive(pid));
+    assert_eq!(repo.secret(), secret, "the secret was not rotated");
+    assert_eq!(
+        std::fs::read_to_string(&log_path).unwrap(),
+        broken,
+        "the log was not touched"
+    );
+    repo.json(&["status", "--json"]);
+    repo.stop();
+}
+
+#[test]
+fn a_push_that_arrives_while_clean_holds_the_lock_waits_for_it() {
+    // clean holds the startup lock for the rewrite; a push that lands then
+    // must wait for the lock to come free, not for a server that clean will
+    // never start.
+    let repo = Repo::new();
+    let demo = plan_in(&repo, "minimal.json", "demo.json");
+    repo.json(&["plan", "push", &demo, "--json", "--no-open"]);
+    repo.stop();
+    let dir = repo.state_dir();
+    let lock = artefacto::server::state_dir::StartupLock::acquire(&dir).expect("held by the test");
+
+    let started = std::time::Instant::now();
+    let mut child = repo.spawn(&["plan", "push", &demo, "--force", "--json", "--no-open"]);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "still waiting on the lock"
+    );
+    drop(lock);
+    let out = child.wait_with_output().unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(8),
+        "went on as soon as the lock came free, not after a 10 s wait: {elapsed:?}"
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["revision"], 2);
+    repo.stop();
+}
+
+#[test]
+fn clean_removes_a_multi_event_commit_whole_and_the_log_still_replays() {
+    // A push with resolutions is one commit of several records under one
+    // batch mark. Every record names the artifact, so clean takes the whole
+    // group or none of it, and the marker keeps the tail well-formed.
+    let repo = Repo::new();
+    let demo = plan_in(&repo, "minimal.json", "demo.json");
+    let first = repo.json(&["plan", "push", &demo, "--json", "--no-open"]);
+    let session = first["session"].as_str().unwrap().to_string();
+    let port = repo.port();
+    let cookie = cookie_via_open(&repo, "plan:demo");
+    let opened = post_cmd(
+        port,
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "thread.open", "client_id": "c1", "ref": "task:t-a",
+            "text": "why", "opened_revision": 1,
+        }),
+    );
+    let thread: serde_json::Value =
+        serde_json::from_str(opened.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    let thread = thread["assigned"].as_str().unwrap().to_string();
+    let resolutions = repo.path().join("resolutions.json");
+    std::fs::write(
+        &resolutions,
+        serde_json::json!([{ "thread": thread, "status": "changed", "note": "done" }]).to_string(),
+    )
+    .unwrap();
+    repo.json(&[
+        "plan",
+        "push",
+        &demo,
+        "--json",
+        "--no-open",
+        "--session",
+        &session,
+        "--base-revision",
+        "1",
+        "--resolutions",
+        resolutions.to_str().unwrap(),
+    ]);
+    post_cmd(
+        port,
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "review.submit", "client_id": "c2", "verdict": "approve", "base_revision": 2,
+        }),
+    );
+    let log_before = std::fs::read_to_string(repo.state_dir().join("events.ndjson")).unwrap();
+    assert!(
+        log_before.contains("\"batch\":{"),
+        "the commit is marked: {log_before}"
+    );
+
+    let out = repo.json(&["clean", "--json"]);
+    assert_eq!(out["removed"], serde_json::json!(["plan:demo"]));
+    let log_after = std::fs::read_to_string(repo.state_dir().join("events.ndjson")).unwrap();
+    assert!(
+        !log_after.contains("\"batch\":{"),
+        "the whole commit went: {log_after}"
+    );
+    assert!(!log_after.contains("thread.resolved"));
+    repo.run(&["serve", "--no-open"]).success();
+    let status = repo.json(&["status", "--json"]);
+    assert!(status["artifacts"].as_array().unwrap().is_empty());
+    repo.stop();
+}
