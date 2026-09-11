@@ -173,9 +173,9 @@ pub fn settle(
     }))
 }
 
-/// Acknowledge explicitly, as `artefacto ack --seq N --session TOKEN` does.
-/// Spec 5 offers this "when an agent wants to acknowledge only part of a
-/// frame"; the rest of that frame comes back on the next read.
+/// Acknowledge explicitly, as `artefacto ack --seq N --session TOKEN` does —
+/// what a monitor-mode agent runs after acting on a printed frame. Part of a
+/// frame may be acknowledged; the rest comes back on the next read.
 pub fn ack(shared: &Shared, session: &LeaseRecord, seq: u64) -> Result<()> {
     // Spec 4.2: every agent mutation carries the token, and a superseded one
     // is refused. Validating inside the gate means a takeover cannot land

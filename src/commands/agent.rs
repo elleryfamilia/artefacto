@@ -182,11 +182,13 @@ fn follow(client: &Client, args: &EventsArgs) -> Result<()> {
         let status = result["status"].as_str().unwrap_or("timeout");
         let events = result["events"].as_array().cloned().unwrap_or_default();
         // Digest, spec 6.4: "a passive event does not by itself cause a
-        // frame". A timeout carries whatever passive events accumulated, and
-        // waking a monitoring agent for them costs a model turn that buys
-        // nothing. They are not printed, and the read position stays put, so
-        // they ride along in the next frame that does wake it.
-        if status != "timeout" && !events.is_empty() {
+        // frame". `timeout` and `stopped` carry whatever passive events
+        // accumulated, and waking a monitoring agent for them costs a model
+        // turn that buys nothing. They are not printed, and the read position
+        // stays put, so they ride along in the next frame that does wake it.
+        // A stop is signalled by this process exiting 0 — consistently, never
+        // sometimes by a frame that ends at a passive event.
+        if !matches!(status, "timeout" | "stopped") && !events.is_empty() {
             let frame = serde_json::json!({
                 "format": FRAME_FORMAT,
                 "seq": result["seq"],

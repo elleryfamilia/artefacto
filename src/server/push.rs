@@ -289,7 +289,10 @@ pub fn commit(
             "tasks": plan.phases.iter().map(|p| p.tasks.len()).sum::<usize>(),
             "summary": summary,
             "open_threads": open_threads,
-            "seq": events.last().map(|e| e.seq).unwrap_or(0),
+            // Not `seq`: that key is the acknowledgement point on `await` and
+            // `events` results, and an agent that acknowledged this one would
+            // skip every reviewer event between its cursor and the push.
+            "revision_seq": events.last().map(|e| e.seq).unwrap_or(0),
         }),
         frame: Frame::of(events),
     })

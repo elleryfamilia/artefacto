@@ -514,11 +514,73 @@ fn events_follow_exits_zero_when_the_server_stops() {
         "--follow should have attached",
     );
 
+    let hello = follow.next_frame();
+    assert_eq!(hello["format"], "artefacto.session/1");
+    // A passive event with no active one after it: the stop carries it as a
+    // tail, and a tail is not a frame the monitor should be woken for.
+    server.log_reviewer("thread.opened");
+
     server.shared.request_stop();
     assert_eq!(
         follow.wait_code(),
         0,
         "a shutdown is not a failed tool call"
+    );
+    assert!(
+        follow.no_frame_within(Duration::from_millis(100)),
+        "a stop is signalled by exiting, never by a frame that ends at a passive event"
+    );
+}
+
+#[test]
+fn a_long_await_refreshes_its_lease_and_ends_when_it_changes_hands() {
+    // Spec 4.2: "any agent call refreshes it". A long poll is one long call.
+    // An earlier version refreshed only when the call arrived, so an
+    // `await --timeout 8m` — which spec 5 allows — expired its own lease at
+    // five minutes and then handed a frame to a token that could no longer
+    // act on it.
+    let (repo, server) = attached();
+    let first = json_of(
+        repo.run(&["await", "--timeout", "1s", "--agent", "claude"])
+            .success(),
+    );
+    let session = first["session"].as_str().unwrap().to_string();
+
+    let started = std::time::Instant::now();
+    let waiting = {
+        let session = session.clone();
+        std::thread::spawn(move || repo.run(&["await", "--timeout", "20s", "--session", &session]))
+    };
+    std::thread::sleep(Duration::from_millis(600));
+    // Most of the TTL passes, as far as the clock knows. A wait that refreshed
+    // only when it arrived would now be four seconds from expiring; one that
+    // refreshes every tick is back at zero within a tick. Twice, because
+    // "refreshed once more at the start" would pass a single check.
+    for _ in 0..2 {
+        server.age_lease(artefacto::server::lease::TTL - Duration::from_secs(4));
+        std::thread::sleep(Duration::from_millis(300));
+        let holder = artefacto::server::lease::current(&server.shared)
+            .expect("the open poll is the holder calling; the lease is held");
+        assert!(
+            holder.age_secs < 2,
+            "the wait refreshes the lease every tick, but its age is {}s",
+            holder.age_secs
+        );
+    }
+
+    // Now the lease changes hands. The wait ends with the refusal at once,
+    // not with a frame for a dead token after the deadline.
+    artefacto::server::lease::acquire(
+        &server.shared,
+        artefacto::server::lease::Claim::waiting("codex").with_takeover(true),
+    )
+    .unwrap();
+    let out = waiting.join().unwrap();
+    assert_eq!(out.code, 6, "{}\n{}", out.stdout, out.stderr);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "it ended when superseded, not at its deadline: {:?}",
+        started.elapsed()
     );
 }
 

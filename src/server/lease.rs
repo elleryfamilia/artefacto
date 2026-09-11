@@ -292,10 +292,17 @@ fn decide_locked(core: &Core, now_ms: i64, claim: &Claim) -> Result<Decision, Le
     if let Some(token) = claim.presenting {
         // The holder calling again. Expired means released (module docs), so
         // the token has to name a lease that is still live.
-        let Some(record) = blocking_locked(core, now_ms).filter(|r| holds(r, token)) else {
-            return Err(LeaseError::Superseded);
-        };
-        return Ok(rejoin(record, claim.mode, pid));
+        match blocking_locked(core, now_ms).filter(|r| holds(r, token)) {
+            Some(record) => return Ok(rejoin(record, claim.mode, pid)),
+            // A dead token: expired, released, or taken over. Spec 4.2 refuses
+            // "unless it passes --takeover", so a takeover falls through and
+            // claims fresh, exactly as it would with no token at all. Without
+            // this, an agent that paused past the TTL and retried with both
+            // its token and --takeover was refused, and only dropping the
+            // token worked — which no agent would guess.
+            None if !claim.takeover => return Err(LeaseError::Superseded),
+            None => {}
+        }
     }
 
     if !claim.takeover {

@@ -67,6 +67,15 @@ pub fn handle_await(shared: &Arc<Shared>, request: Request, query: &Query) {
     let deadline = Instant::now() + timeout_of(query);
 
     loop {
+        // The holder is provably here — its request is open — and spec 4.2
+        // says any agent call refreshes the TTL, so a long poll refreshes on
+        // every tick: a wait longer than the TTL must not expire the lease it
+        // is holding. The same check ends the wait the moment the lease
+        // changes hands, with the refusal, rather than handing a frame to a
+        // token that can no longer act on it.
+        if let Err(e) = lease::validate(shared, &session.token) {
+            return refuse(request, e);
+        }
         if let Some(frame) = delivery::frame_since_for(shared, cursor, artifact.as_deref()) {
             return answer(request, &session, &frame);
         }

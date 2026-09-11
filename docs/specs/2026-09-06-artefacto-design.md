@@ -610,9 +610,7 @@ For agents with a monitor (Claude Code):
 3. On `chat.sent`: check the thread for an existing agent reply first, because
    a frame can be redelivered after a crash. If there is none, answer with
    `artefacto reply`, in the thread it came from. If the answer changes the
-   plan, push a new revision as well. Then `artefacto ack --seq <seq>` with
-   the frame's `seq`: nothing else moves the cursor, and a frame that is never
-   acknowledged comes back.
+   plan, push a new revision as well. Then acknowledge the frame (rule 8).
 4. On `review.submitted`: address every thread by its ref, resolve each one as
    changed or declined with a note, push the next revision with the same ids
    and `--resolutions`, and keep the monitor armed for the next round. A push
@@ -622,6 +620,13 @@ For agents with a monitor (Claude Code):
 6. On `reviewer.away`: one push notification where the harness has one, else
    one terminal line.
 7. On `server.stopping`: stop the monitor.
+8. **After acting on any frame, whichever rule applied**, run
+   `artefacto ack --seq <seq>` with that frame's `seq`. Nothing else moves the
+   cursor: a frame that is never acknowledged comes back when the monitor
+   restarts, and a replayed `review.submitted` means every thread addressed
+   twice and a second revision pushed for nothing. Acknowledge only `await`
+   and `events` seqs; a `push` result names its own event as `revision_seq`
+   because acknowledging it would skip reviewer events the agent never saw.
 
 For agents that run commands to completion: run `artefacto await` in a loop.
 Act on `status` exactly as the rules above act on the matching event, then

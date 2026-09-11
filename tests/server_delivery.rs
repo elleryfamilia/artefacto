@@ -5,10 +5,12 @@
 //! so the same passive event cannot be delivered once by a poll and again by
 //! the next wake-up.
 //!
-//! The second is codex's finding #9. Spec 5 says "calling `await` or `events`
-//! again acknowledges everything the previous call returned" — and the caller
-//! is a fresh CLI process that knows only its session token. So the server,
-//! not the CLI, has to remember which frame it last handed out.
+//! The second is spec 16's: delivery is **at-least-once**. The agent says
+//! what it has dealt with (`--ack`, or `ack --seq`), the server never guesses,
+//! and a call that acknowledges nothing is handed the same frame again. An
+//! earlier version had the server remember the frame it last handed out and
+//! acknowledge it on the next call, which is at-most-once: an agent that
+//! received a frame and restarted before acting on it lost it.
 
 mod support;
 

@@ -9,10 +9,15 @@
 //!    A token that died on restart would also break spec 5's promise that
 //!    `await` "retries against the same cursor" when "the server restarts
 //!    mid-wait". So the holder keeps its lease across a restart here.
-//! 2. It implies an expired lease kills its own holder's token. The TTL exists
-//!    to let *another* agent in; while nobody else has taken it, the holder
-//!    presenting its own token revives it. See
-//!    `the_holder_may_revive_its_own_expired_lease`.
+//! 2. Its `acquire` returns `Superseded` for any presented token whenever
+//!    `--takeover` is not set, and never lets a takeover win over a dead
+//!    token. Spec 4.2 refuses "unless it passes `--takeover`". See
+//!    `a_takeover_wins_over_a_dead_presented_token`.
+//!
+//! One rule here was changed after a review: an expired lease is **released**,
+//! and its token is dead. An earlier version let the holder revive it, which
+//! left `status` saying no agent while a write with the old token worked. See
+//! `an_expired_lease_is_released_and_its_token_is_dead`.
 
 mod support;
 
@@ -322,6 +327,48 @@ fn an_expired_lease_is_released_and_its_token_is_dead() {
     let again = lease::acquire(&s.shared, Claim::waiting("claude")).expect("the name is free");
     assert_ne!(again.token, first.token);
     assert_eq!(again.generation, 2);
+}
+
+#[test]
+fn a_takeover_wins_over_a_dead_presented_token() {
+    // Spec 4.2: a second agent is refused "unless it passes `--takeover`". An
+    // earlier version checked the presented token first and returned
+    // `Superseded` before looking at `--takeover`, so an agent that paused
+    // past the TTL and retried with both its old token and `--takeover` was
+    // refused; only dropping the token worked, which no agent would guess.
+    let s = InProcess::start();
+    let expired = take(&s, "claude");
+    s.age_lease(lease::TTL + Duration::from_secs(1));
+    let back = lease::acquire(
+        &s.shared,
+        Claim::waiting("claude")
+            .with_token(Some(&expired.token))
+            .with_takeover(true),
+    )
+    .expect("a takeover with a dead token claims fresh");
+    assert_eq!(back.generation, 2);
+    assert_ne!(back.token, expired.token);
+
+    // The same after a takeover by someone else.
+    lease::acquire(&s.shared, Claim::waiting("codex").with_takeover(true)).unwrap();
+    let again = lease::acquire(
+        &s.shared,
+        Claim::waiting("claude")
+            .with_token(Some(&back.token))
+            .with_takeover(true),
+    )
+    .expect("a takeover with a superseded token claims fresh too");
+    assert_eq!(again.generation, 4);
+    assert!(
+        matches!(
+            lease::acquire(
+                &s.shared,
+                Claim::waiting("claude").with_token(Some(&expired.token))
+            ),
+            Err(LeaseError::Superseded)
+        ),
+        "without --takeover a dead token is still refused"
+    );
 }
 
 #[test]
