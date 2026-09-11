@@ -4,30 +4,34 @@
 
 > ## Implementation status — read this before executing anything
 >
-> **Tasks 1 and 2 are built and green** on the `feat/server-spine` branch.
-> Tasks 3 through 8 are not started.
+> **Every task in this plan is built and green** on the `feat/server-spine`
+> branch. Do not execute it; read `src/server/` and the tests instead. This
+> document is kept for the reasoning, not as instructions.
 >
-> **Where the code deliberately diverges from this plan:**
+> `docs/BUILD-STATUS.md` is the current picture: what exists, what does not,
+> what has no test, and every place the code deliberately diverges from this
+> plan. The divergences that matter most here:
 >
 > - **Task 2 is wrong as written.** It puts ingress on WebSocket messages. The
 >   socket is outbound only (see plan 2a's status note), so commands arrive at
 >   `POST /a/<artifact>/cmd` instead, guarded by the cookie and a strict
->   `Origin`. The protocol, the assigned ids and the dedupe rule are unchanged;
->   only the transport moved. See `src/server/ingress.rs`.
-> - **Commands carry `opened_revision`**, and the artifact comes from the URL
->   rather than the command body.
-> - **The socket's first frame is `artefacto.hello/1`**, carrying the page's own
->   id so it can name itself in its POSTs and be skipped by the broadcast.
-> - **`Committer` in `src/server/http.rs`** is the mutation gate this plan calls
->   for. Every remaining task must append through it; nothing else may touch the
->   log.
+>   `Origin`. See `src/server/ingress.rs`.
+> - **Task 3's restart test is wrong.** It asserts a pre-restart session token
+>   stops validating. Spec 4.2 folds the lease from the log like everything
+>   else and 6.7 rebuilds "every piece of state"; the lease survives a restart.
+> - **Task 3 also implies an expired lease kills its own holder's token.** The
+>   TTL exists to let another agent in, not to punish the holder.
+> - **Task 6's `--follow` is a loop of long polls**, not a streamed response
+>   body. `Mode::Live` recording the process's pid is what releases the lease
+>   on a disconnect.
+> - **Task 7's `append_all` is not enough.** One `write_all` is not a
+>   transaction: a crash can leave a complete, newline-terminated prefix of a
+>   commit, which the torn-tail rule accepts as history. Every record of a
+>   commit carries a batch mark, and an incomplete trailing group is dropped
+>   whole. See `src/server/log.rs`.
+> - **Task 5, live passive mode, is not built.** Delivery is digest-only, which
+>   is spec 16's default.
 >
-> **Still open from the reviews, and still true of tasks 3-8:** the lease
-> check-then-act race, `append_all`'s atomicity (one `write_all` is not a
-> transaction), and the missing record of which frame was last offered to a
-> session, without which "the next call acknowledges the previous frame" cannot
-> be implemented.
-
 **Goal:** Turn the transport from plan 2a into a working review loop. The server folds its whole state from the log, accepts the reviewer's commands over the page socket, leases itself to one agent at a time, delivers frames against a persisted cursor, and serves `push`, `events`, `await`, `ack`, `reply`, and `resolve`. When this plan is done, an agent can publish a plan, hear a reviewer's question, answer it, and receive the submitted feedback document — all driven by a fake page client, because the real page is plan 3.
 
 **Architecture:** Every piece of live state is a pure fold over the append-only log, rebuilt on start; nothing is memory-only. The page speaks a small command protocol over its WebSocket; the server assigns ids, suppresses duplicates, appends, and broadcasts. Agents hold a lease identified by a session token with a generation, and receive frames computed **only** from their cursor — never from a side buffer.

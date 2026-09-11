@@ -354,14 +354,15 @@ artefacto open   [--artifact ID]     # mint a fresh bootstrap URL and open the b
 artefacto plan check  <file>... [--json] [--lenient]   # prints plan_hash, title, counts, per file
 artefacto plan render <file> [--out PATH] [--no-open] [--json]
 artefacto plan status <file> [--json]                  # is the rendered HTML fresh for this plan
-artefacto plan push   <file> --session TOKEN (--base-revision N | --force)
+artefacto plan push   <file> [--session TOKEN] [--agent NAME] [--takeover]
+                             (--base-revision N | --force)
                              [--resolutions FILE] [--json]
 artefacto plan schema
 
 artefacto await  [--timeout 90s] [--since SEQ] [--artifact ID] [--agent NAME] [--takeover]
 artefacto events [--since SEQ] [--follow] [--agent NAME] [--takeover]
 artefacto ack    --seq N --session TOKEN
-artefacto reply  --session TOKEN (--thread ID | --artifact ID) (<text> | --stdin)
+artefacto reply  --session TOKEN (--thread ID | --artifact ID) [--nudge] (<text> | --stdin)
 artefacto resolve <thread-id> --session TOKEN (--changed | --declined) [--note TEXT]
 
 artefacto skill (--print | --install DIR)
@@ -385,6 +386,17 @@ Behaviour that matters:
   artifact needs neither flag. A later push must pass one or the other; if the
   server is ahead, it is refused with exit 7 and the agent re-reads with
   `status --json`.
+
+  **`--session` is optional**, because push is usually the first command an
+  agent runs and there is no token to present yet. Without one, push takes the
+  lease under `--agent` exactly as `await` does, and returns the token in its
+  result. With one, it refreshes the lease it already holds. A push under
+  another agent's name is refused with exit 6, naming the holder.
+
+  The change summary section 6.3 requires is **derived** by comparing the
+  previous revision's plan with the new one, not typed by the agent: there is
+  no flag for it here, and a summary nobody has to write is one that is always
+  present and always true.
 - `await` long-polls the server and returns when something the agent should
   act on happens. It always exits 0 when the server answered and prints one
   JSON object carrying `status`, `seq`, and `events` (the same frame shape as
@@ -396,6 +408,7 @@ Behaviour that matters:
   | `submitted` | the feedback document (section 6.6) and its path |
   | `chat` | a chat event, with every undelivered passive event before it |
   | `idle`, `away` | the timer event, same prepending |
+  | `back` | a page reconnected after `away`; section 6.2 lists it as active |
   | `timeout` | nothing actionable; the frame holds whatever passive events accumulated |
   | `stopped` | the server is shutting down; same partial frame |
 
@@ -432,7 +445,9 @@ Behaviour that matters:
   and exits. With it, it stays attached, holds the lease, flushes every line,
   and exits when the server stops.
 - `reply` needs either a thread or an artifact. When the server has exactly one
-  artifact, `--artifact` may be omitted for page-level chat.
+  artifact, `--artifact` may be omitted for page-level chat. `--nudge` posts
+  the `nudge` banner of section 6.3 instead of a message; it reaches open pages
+  and is never written to the log, because it records nothing about the review.
 - `status --json` prints port, artifacts, revisions, open and unanchored
   threads, the last event sequence, each lease's `acked_seq`, the lease holder
   and its age, reviewer presence, and the exact `events --follow` command line
