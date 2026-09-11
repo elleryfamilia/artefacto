@@ -292,7 +292,7 @@ fn shape_fetch(page: &mut support::browser::Page, path: &str, mode: &str, ms: u6
             if ({mode} === 'drop-response') return p.then(function () {{ return new Promise(function () {{}}); }}); \
             if ({mode} === 'hold-first' || {mode} === 'hold-first-release') {{ if (heldFirst) return p; heldFirst = true; }} \
             if ({mode} === 'hold-release' || {mode} === 'hold-first-release') \
-              return p.then(function (r) {{ return new Promise(function (res) {{ (window.__releasers = window.__releasers || []).push(function () {{ res(r); }}); }}); }}); \
+              return p.then(function (r) {{ return new Promise(function (res) {{ (window.__releasers = window.__releasers || []).push({{ path: {path}, fn: function () {{ res(r); }} }}); }}); }}); \
             return p.then(function (r) {{ return new Promise(function (res) {{ setTimeout(function () {{ res(r); }}, {ms}); }}); }}); \
           }}; return true; }})()",
         path = serde_json::to_string(path).unwrap(),
@@ -302,7 +302,16 @@ fn shape_fetch(page: &mut support::browser::Page, path: &str, mode: &str, ms: u6
 
 /// Let every response held by a "-release" shim through.
 fn release(page: &mut support::browser::Page) {
-    page.eval("(function(){ const r = window.__releasers || []; window.__releasers = []; r.forEach(function (f) { f(); }); return true; })()");
+    page.eval("(function(){ const r = window.__releasers || []; window.__releasers = []; r.forEach(function (h) { h.fn(); }); return true; })()");
+}
+
+/// Let through only the held responses for `path`.
+fn release_path(page: &mut support::browser::Page, path: &str) {
+    page.eval(&format!(
+        "(function(){{ const all = window.__releasers || []; window.__releasers = all.filter(function (h) {{ return h.path !== {path}; }}); \
+          all.filter(function (h) {{ return h.path === {path}; }}).forEach(function (h) {{ h.fn(); }}); return true; }})()",
+        path = serde_json::to_string(path).unwrap(),
+    ));
 }
 
 /// Make the page's `fetch` answer `path` with `status` and an empty body,
@@ -1060,6 +1069,21 @@ fn catch_up_with(s: &Served, page: &mut support::browser::Page, mode: &str) {
         "window.artefactoPlan.debug().reconnects >= 1 && window.artefactoPlan.debug().connected && window.artefactoPlan.debug().syncing",
         "the page to reconnect and start catching up",
     );
+}
+
+/// Make the page's `fetch` answer `path` with `status` and `body` (JSON),
+/// every time; counts calls in `window.__calls`.
+fn answer_json(page: &mut support::browser::Page, path: &str, status: u16, body: &str) {
+    page.eval(&format!(
+        "(function(){{ const prev = window.fetch; window.__calls = 0; \
+          window.fetch = function (u, o) {{ \
+            if (!String(u).endsWith({path})) return prev(u, o); \
+            window.__calls++; \
+            return Promise.resolve(new Response({body}, {{ status: {status}, headers: {{ 'Content-Type': 'application/json' }} }})); \
+          }}; return true; }})()",
+        path = serde_json::to_string(path).unwrap(),
+        body = serde_json::to_string(body).unwrap(),
+    ));
 }
 
 /// Cut the page's socket so it reconnects and catches up, holding the
@@ -1873,9 +1897,15 @@ fn reviewed_mark_replies_out_of_order_settle_on_the_servers_value() {
         s.server().last_event_of_type("element.reviewed")["data"]["on"],
         false
     );
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    page.wait_until(
+        "window.artefactoPlan.debug().pending === 1",
+        "the off reply to be in",
+    );
     release(&mut page);
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    page.wait_until(
+        "window.artefactoPlan.debug().pending === 0",
+        "the on reply to be in",
+    );
     assert_eq!(
         page.eval("window.artefactoPlan.debug().reviewed.length"),
         0,
@@ -2073,7 +2103,10 @@ fn an_older_own_reply_does_not_win_over_a_newer_frame_or_a_newer_buffered_reply(
         "a to hear b's frame",
     );
     release(&mut a);
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    a.wait_until(
+        "window.artefactoPlan.debug().pending === 0",
+        "a's own reply to be in",
+    );
     assert_eq!(
         a.eval("window.artefactoPlan.debug().reviewed.length"),
         0,
@@ -2103,7 +2136,10 @@ fn an_older_own_reply_does_not_win_over_a_newer_frame_or_a_newer_buffered_reply(
         || s.server().count_events("element.reviewed") == 2,
         "off landed",
     );
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    page.wait_until(
+        "window.artefactoPlan.debug().pending === 1",
+        "the off reply to be in",
+    );
     release(&mut page);
     std::thread::sleep(std::time::Duration::from_millis(300));
     release(&mut page);
@@ -2117,6 +2153,9 @@ fn an_older_own_reply_does_not_win_over_a_newer_frame_or_a_newer_buffered_reply(
 
 #[test]
 fn a_write_during_the_end_of_backoff_probe_is_kept() {
+    // The socket keeps failing, so nothing but the probe's own snapshot
+    // can put the mark on the page: the assertion is taken right after
+    // that snapshot is applied.
     let Some(browser) = Browser::launch() else {
         return;
     };
@@ -2125,11 +2164,11 @@ fn a_write_during_the_end_of_backoff_probe_is_kept() {
     page.navigate(&s.url);
     connected(&mut page);
     page.eval("window.artefactoPlan.settings.backoffMs = [30, 30, 30]");
-    failing_sockets(&mut page, 4);
+    failing_sockets(&mut page, 1_000_000);
     shape_fetch(&mut page, "/state", "hold-release", 0);
     artefacto::server::socket::close_all(&s.server().shared);
     page.wait_until(
-        "window.artefactoPlan.debug().reconnects >= 3 && window.artefactoPlan.debug().syncing",
+        "(window.__releasers || []).length > 0",
         "the probe's snapshot request to be in flight",
     );
     page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
@@ -2137,14 +2176,20 @@ fn a_write_during_the_end_of_backoff_probe_is_kept() {
         || s.server().count_events("element.reviewed") == 1,
         "the mark landed",
     );
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    release(&mut page);
     page.wait_until(
-        "window.artefactoPlan.debug().connected && window.artefactoPlan.debug().reconnects >= 4",
-        "the page to get through",
+        "window.artefactoPlan.debug().pending === 1",
+        "the reply to be in",
     );
     release(&mut page);
-    connected(&mut page);
+    page.wait_until(
+        "!window.artefactoPlan.debug().syncing",
+        "the probe's snapshot to be applied",
+    );
+    assert_eq!(
+        page.eval("window.artefactoPlan.debug().connected"),
+        false,
+        "still no socket"
+    );
     assert_eq!(
         debug(&mut page)["reviewed"][0],
         "task:t-a",
@@ -2343,4 +2388,149 @@ fn a_sent_chat_message_leaves_a_place_for_the_next() {
         ""
     );
     let _ = s;
+}
+
+// --- the round-nine fix slice, reviewed fresh ---------------------------------
+
+#[test]
+fn a_resync_that_overtakes_the_probe_does_not_read_as_gone() {
+    // A write's repeated reply starts a resync of its own; if that one
+    // overtakes the probe's, HTTP has answered, and the page must keep
+    // trying the socket rather than say the server is gone.
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.eval("window.artefactoPlan.settings.backoffMs = [30, 30, 30]");
+    failing_sockets(&mut page, 3);
+    shape_fetch(&mut page, "/state", "hold-release", 0);
+    artefacto::server::socket::close_all(&s.server().shared);
+    page.wait_until(
+        "(window.__releasers || []).length > 0",
+        "the probe's snapshot request in flight",
+    );
+    // A retried write: the server says it already did this.
+    answer_json(
+        &mut page,
+        "/cmd",
+        200,
+        "{\"ok\":true,\"client_id\":\"x\",\"assigned\":null,\"seq\":0,\"error\":null}",
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    page.wait_until(
+        "(window.__releasers || []).length >= 2",
+        "the overtaking resync in flight",
+    );
+    release(&mut page);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        release(&mut page);
+        let d = debug(&mut page);
+        if d["connected"] == true && d["syncing"] == false {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the page did not get through: {d}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(
+        page.eval("window.artefactoPlan.debug().gone"),
+        false,
+        "HTTP answered; not gone"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"gone\"]')"),
+        false
+    );
+}
+
+#[test]
+fn a_phases_error_line_does_not_toggle_the_phase() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    answer_with(&mut page, "/cmd", 500, 1_000);
+    page.click("[data-plan-ref=\"phase:p-core\"] summary .reviewed-toggle input");
+    page.wait_until(
+        "document.querySelector('[data-plan-ref=\"phase:p-core\"] summary .reviewed-toggle + .pv-error')",
+        "the error line in the phase's summary",
+    );
+    let open = page.eval("document.querySelector('[data-plan-ref=\"phase:p-core\"]').open");
+    page.click("[data-plan-ref=\"phase:p-core\"] summary .reviewed-toggle + .pv-error");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        page.eval("document.querySelector('[data-plan-ref=\"phase:p-core\"]').open"),
+        open,
+        "reading the error is not a click on the phase"
+    );
+    let _ = s;
+}
+
+#[test]
+fn buffered_replies_drain_in_log_order() {
+    // Set-valued writes settle by seq whatever the order; appended
+    // messages would show in arrival order without the sort.
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    comment(&mut page, "task:t-a", "the comment");
+    catch_up_held(&s, &mut page);
+    shape_fetch(&mut page, "/cmd", "hold-first-release", 0);
+    // A reply (its reply held) and then a question (its reply immediate):
+    // both buffered, the later one first.
+    page.click(".thread[data-thread=\"c-1\"] .thread-reply");
+    page.type_into(
+        ".thread[data-thread=\"c-1\"] .composer[data-kind=\"reply\"] textarea",
+        "one",
+    );
+    page.click(".thread[data-thread=\"c-1\"] .composer[data-kind=\"reply\"] .composer-send");
+    support::wait_for(
+        || s.server().count_events("thread.replied") == 1,
+        "the reply landed",
+    );
+    page.click(".thread[data-thread=\"c-1\"] .thread-ask");
+    page.type_into(
+        ".thread[data-thread=\"c-1\"] .composer[data-kind=\"ask\"] textarea",
+        "two",
+    );
+    page.click(".thread[data-thread=\"c-1\"] .composer[data-kind=\"ask\"] .composer-send");
+    support::wait_for(
+        || s.server().count_events("chat.sent") == 1,
+        "the question landed",
+    );
+    page.wait_until(
+        "!document.querySelector('.composer[data-kind=\"ask\"]')",
+        "the question's reply to be in",
+    );
+    release_path(&mut page, "/cmd");
+    page.wait_until(
+        "!document.querySelector('.composer[data-kind=\"reply\"]')",
+        "the reply's reply to be in",
+    );
+    assert_eq!(
+        page.eval("window.artefactoPlan.debug().syncing"),
+        true,
+        "both buffered, nothing drained yet"
+    );
+    release_path(&mut page, "/state");
+    connected(&mut page);
+    let messages = debug(&mut page)["threads"][0]["messages"].clone();
+    assert_eq!(
+        messages,
+        serde_json::json!(["reviewer: the comment", "reviewer: one", "reviewer: two"]),
+        "log order, not arrival order"
+    );
 }

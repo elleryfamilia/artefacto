@@ -1834,8 +1834,19 @@
            is what will not — in which case the state is taken and the
            socket tried again, a bounded number of times, then the page
            says so. */
-        resync().then(function (applied) {
+        resync().then(function (outcome) {
           if (S.lost) return;
+          if (outcome === "superseded") {
+            /* Another resync overtook this one — a write's repeated reply
+               starts one — so HTTP answered, whatever the socket did. That
+               is not "gone"; ask again after the last backoff step. */
+            S.timers.reconnect = setTimeout(function () {
+              S.timers.reconnect = null;
+              scheduleReconnect();
+            }, schedule[schedule.length - 1]);
+            return;
+          }
+          const applied = outcome === "applied";
           if (applied && S.probes < 3) {
             S.probes++;
             S.attempts = 0;
@@ -1893,13 +1904,20 @@
           return r.json();
         })
         .then(function (snap) {
-          if (gen !== S.syncGen) return false;
+          if (gen !== S.syncGen) return "superseded";
           applySnapshot(snap);
           drain(snap.last_seq || 0, snap.last_seq || 0);
-          return true;
+          return "applied";
         })
         .catch(function () {
-          if (gen !== S.syncGen || S.lost) return false;
+          if (gen !== S.syncGen) return "superseded";
+          if (S.lost) {
+            /* Nothing will drain a lost page; do not leave it "catching
+               up" with a buffer nobody empties. */
+            S.syncing = false;
+            S.buffer = [];
+            return "failed";
+          }
           /* Best effort: fold in what arrived, skipping what the state
              already has. The page's own replies are applied whatever
              their seq — no snapshot holds them — and it tries again. */
@@ -1907,7 +1925,7 @@
           if (S.connected && !S.timers.resync) {
             S.timers.resync = setTimeout(function () { S.timers.resync = null; resync(); }, 1500);
           }
-          return false;
+          return "failed";
         });
     }
 
@@ -2461,6 +2479,9 @@
         : place.host.querySelector(":scope > .pv-error");
       if (!line) {
         line = el("span", { class: "pv-error", role: "alert" });
+        /* Inside a phase's <summary>, a click on the line would toggle the
+           phase. Reading an error is not a click on anything. */
+        line.addEventListener("click", function (ev) { ev.stopPropagation(); ev.preventDefault(); });
         if (place.after) place.after.insertAdjacentElement("afterend", line);
         else place.host.appendChild(line);
       }
@@ -2502,7 +2523,9 @@
         return c.getAttribute("data-kind") === d.kind;
       });
       if (twin && !spec.id) { twin.querySelector("textarea").focus(); return twin; }
-      saveDraft(d);
+      /* A composer opened for the reviewer's convenience, with nothing
+         in it yet, is not a draft until they type. */
+      if (!spec.lazy) saveDraft(d);
 
       const box = el("div", { class: "composer comment-box", dataset: { composer: d.id, kind: d.kind, revision: String(d.revision) } });
       const label = { comment: "Comment", answer: "Answer", reply: "Reply", ask: "Ask the agent", edit: "Edit", chat: "Message" }[d.kind];
@@ -2536,7 +2559,7 @@
          write the next one. */
       const afterSend = function () {
         close();
-        if (d.kind === "chat" && S.ui.chatOpen) openComposer({ kind: "chat", silent: true });
+        if (d.kind === "chat" && S.ui.chatOpen) openComposer({ kind: "chat", silent: true, lazy: true });
       };
       cancelBtn.addEventListener("click", close);
       sendBtn.addEventListener("click", function () {
@@ -2717,6 +2740,7 @@
         reconnects: S.reconnects, applied: S.applied, revision: S.state.revision,
         planHash: S.state.planHash, lastSeq: S.state.lastSeq, presence: S.state.presence,
         submitted: S.state.submitted, chat: S.state.chat.length, chatOpen: S.ui.chatOpen,
+        pending: Object.keys(S.pendingMarks).length,
         threads: S.state.threads.map(function (t) {
           return { id: t.id, target: t.target, status: t.status, blocking: t.blocking,
             messages: t.messages.map(function (m) { return m.actor + ": " + m.text; }) };
@@ -2795,7 +2819,7 @@
       if (!summary) return;
       summary.addEventListener("click", function (e) {
         if (e.defaultPrevented) return;
-        if (e.target.closest && e.target.closest("a[href], button, input, select, textarea, label")) {
+        if (e.target.closest && e.target.closest("a[href], button, input, select, textarea, label, .pv-error")) {
           return;
         }
         e.preventDefault();
