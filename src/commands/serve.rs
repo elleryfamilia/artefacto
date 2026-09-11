@@ -1,0 +1,203 @@
+//! `serve`, `stop`, and `status`.
+
+use crate::cli::ServeArgs;
+use crate::server::daemon::{self, ForkOutcome};
+use crate::server::http::{self, Shared, SELF_EXIT};
+use crate::server::log::now_rfc3339;
+use crate::server::state_dir::{self, ServerFile, StartupLock};
+use anyhow::{bail, Context, Result};
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::os::unix::io::AsRawFd;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Exit code for "there is no server". Agents branch on it, so it is part of
+/// the contract rather than an implementation detail.
+pub use crate::client::EXIT_NO_SERVER;
+
+pub fn serve(args: &ServeArgs) -> Result<()> {
+    let dir = current_state_dir()?;
+    std::fs::create_dir_all(&dir)?;
+
+    // One winner. Two concurrent `serve` calls would otherwise both find no
+    // server and both start a daemon.
+    let Some(_lock) = StartupLock::acquire(&dir) else {
+        return wait_for_peer(&dir);
+    };
+    if state_dir::read_server_file(&dir).is_some() {
+        return Ok(());
+    }
+
+    // Reuse the recorded port and secret even after a clean shutdown, so an
+    // open page reconnects and its cookie stays valid.
+    let previous = state_dir::read_server_file_any(&dir);
+    let secret = previous
+        .as_ref()
+        .map(|p| p.secret.clone())
+        .unwrap_or_else(state_dir::new_secret);
+
+    // A RAW listener, bound before the fork. A file descriptor survives fork;
+    // a `tiny_http::Server` does not, because building one spawns an accept
+    // thread and fork keeps only the calling thread.
+    let listener = bind_preferring(args.port.or(previous.as_ref().map(|p| p.port))).context(
+        "could not bind a loopback port; if this environment forbids listening sockets, \
+         run `artefacto serve --foreground` in your own terminal",
+    )?;
+    let port = listener.local_addr()?.port();
+
+    let readiness = if args.foreground {
+        None
+    } else {
+        match daemon::daemonize(&dir.join("server.log"), &[listener.as_raw_fd()])? {
+            // The parent's job is done the moment the grandchild says it is
+            // serving. Returning here rather than falling through is the
+            // whole point of the outcome type.
+            ForkOutcome::Parent => return Ok(()),
+            ForkOutcome::Child(readiness) => Some(readiness),
+        }
+    };
+
+    // Everything below runs in the grandchild. Every failure between here and
+    // accepting must be reported through `readiness`, or the parent sees only
+    // EOF and can say nothing useful.
+    let nudges = crate::server::presence::Nudges {
+        idle: args.idle.0,
+        away: args.away.0,
+    };
+    let started = start(&dir, listener, port, secret, nudges);
+    let (shared, server) = match started {
+        Ok(pair) => pair,
+        Err(e) => match readiness {
+            Some(r) => r.fail(&format!("{e:#}")),
+            None => return Err(e),
+        },
+    };
+
+    if let Some(r) = readiness {
+        r.ready();
+    }
+    http::run(shared, server, SELF_EXIT);
+
+    // `server.json` is deliberately left behind: it carries the port and
+    // secret the next start reuses, and its now-dead pid already reads as
+    // "no server".
+    Ok(())
+}
+
+/// Record the server, then build the `tiny_http::Server` from the inherited
+/// descriptor. Both steps are here so a failure in either reaches the pipe.
+fn start(
+    dir: &Path,
+    listener: TcpListener,
+    port: u16,
+    secret: String,
+    nudges: crate::server::presence::Nudges,
+) -> Result<(Arc<Shared>, Arc<tiny_http::Server>)> {
+    state_dir::write_server_file(
+        dir,
+        &ServerFile {
+            pid: std::process::id(),
+            port,
+            secret: secret.clone(),
+            started_at: now_rfc3339(),
+        },
+    )?;
+    let shared = Arc::new(Shared::with_nudges(dir, secret, port, nudges)?);
+    let server = tiny_http::Server::from_listener(listener, None)
+        .map_err(|e| anyhow::anyhow!("building the http server: {e}"))?;
+    Ok((shared, Arc::new(server)))
+}
+
+/// Prefer the recorded port so an open page reconnects. If it is taken, fall
+/// back to any free port; the page shows "restarted on a new port" once its
+/// retries run out.
+fn bind_preferring(preferred: Option<u16>) -> Result<TcpListener> {
+    if let Some(p) = preferred {
+        if let Ok(l) = TcpListener::bind(("127.0.0.1", p)) {
+            return Ok(l);
+        }
+    }
+    TcpListener::bind(("127.0.0.1", 0)).context("binding 127.0.0.1")
+}
+
+/// Another `serve` holds the startup lock. Wait briefly for its server rather
+/// than racing it or reporting a spurious failure.
+fn wait_for_peer(dir: &Path) -> Result<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if state_dir::read_server_file(dir).is_some() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    bail!("another `artefacto serve` is starting but did not come up within 10s")
+}
+
+pub fn stop() -> Result<()> {
+    let dir = current_state_dir()?;
+    let Some(server) = state_dir::read_server_file(&dir) else {
+        // Already stopped is not a failure.
+        return Ok(());
+    };
+    // Ask over the authenticated port. No blind SIGTERM fallback: a pid can be
+    // reused, and signalling an unrelated process is worse than failing.
+    request(&server, "stop").context("asking the server to stop")?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if state_dir::read_server_file(&dir).is_none() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    Ok(())
+}
+
+pub fn status(json: bool) -> Result<()> {
+    let dir = current_state_dir()?;
+    let Some(server) = state_dir::read_server_file(&dir) else {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({ "ok": false, "error": { "code": "no_server" } })
+            );
+        } else {
+            eprintln!("no server is running for this repository");
+        }
+        std::process::exit(EXIT_NO_SERVER);
+    };
+    let body = request(&server, "status")?;
+    let mut value: serde_json::Value = serde_json::from_str(&body)?;
+    // The state directory is useful enough for debugging to be part of the
+    // output, and it is not a secret.
+    value["state_dir"] = serde_json::json!(dir.to_string_lossy());
+    if json {
+        println!("{value}");
+    } else {
+        println!("port {}  last_seq {}", value["port"], value["last_seq"]);
+    }
+    Ok(())
+}
+
+/// A one-shot authenticated GET. The CLI's whole client surface for now; it
+/// stays here rather than pulling in an HTTP client crate for four lines.
+fn request(server: &ServerFile, route: &str) -> Result<String> {
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", server.port))
+        .with_context(|| format!("connecting to 127.0.0.1:{}", server.port))?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    write!(
+        stream,
+        "GET /cli/{route} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\n\
+         Connection: close\r\n\r\n",
+        server.port, server.secret
+    )?;
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw)?;
+    Ok(raw.rsplit("\r\n\r\n").next().unwrap_or("").to_string())
+}
+
+fn current_state_dir() -> Result<std::path::PathBuf> {
+    let root = state_dir::repo_root(&std::env::current_dir()?)?;
+    Ok(state_dir::state_dir(&root))
+}

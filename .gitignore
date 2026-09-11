@@ -8,3 +8,9 @@
 # OS / editor
 .DS_Store
 *.swp
+.loadout/generated/
+.loadout/cache/
+.loadout/logs/
+.loadout/local.toml
+CLAUDE.local.md
+.claude/commands/loadout/

@@ -19,6 +19,12 @@ fn main() {
         {
             std::process::exit(2);
         }
+        // A command that named its own exit code owns the message too: an
+        // agent branches on the code, so it must not be flattened to 2.
+        if let Some(exit) = err.downcast_ref::<artefacto::commands::Exit>() {
+            eprintln!("error: {exit}");
+            std::process::exit(exit.code);
+        }
         eprintln!("error: {err:#}");
         std::process::exit(2);
     }
