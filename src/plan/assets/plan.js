@@ -1824,10 +1824,7 @@
     }
 
     function scheduleReconnect() {
-      /* Nothing to schedule while a socket is open: a probe on a live
-         socket could read a failed snapshot as "gone" while frames are
-         still arriving. */
-      if (S.timers.reconnect || S.lost || S.socket) return;
+      if (S.timers.reconnect || S.lost) return;
       const schedule = core.settings.backoffMs;
       if (S.attempts >= schedule.length) {
         /* The handshake's status is invisible to script, so a cookie that
@@ -1856,7 +1853,14 @@
             : applied
               ? "The server answers, but its socket will not connect. Reload this page, or run `artefacto open` for a fresh link."
               : "The server is not answering. If it moved to a new port, run `artefacto open` for a fresh link.",
-            { action: "Retry", onAction: function () { S.attempts = 0; S.probes = 0; S.gone = false; notice("gone", null); connect(); } });
+            { action: "Retry", onAction: function () {
+              S.attempts = 0;
+              S.probes = 0;
+              S.gone = false;
+              notice("gone", null);
+              renderPresence();
+              connect();
+            } });
           renderPresence();
         });
         return;
@@ -1909,10 +1913,10 @@
         .catch(function () {
           if (gen !== S.syncGen) return "superseded";
           if (S.lost) {
-            /* Nothing will drain a lost page; do not leave it "catching
-               up" with a buffer nobody empties, or marks nobody settles. */
-            S.syncing = false;
-            S.buffer = [];
+            /* A lost page still shows what the server accepted: its own
+               buffered replies apply, then nothing is left "catching up"
+               or pending, because nothing will ever settle it. */
+            drain(S.state.lastSeq, null);
             S.pendingMarks = {};
             renderAll();
             return "failed";
@@ -2332,7 +2336,10 @@
     function ensureChatComposer() {
       const panel = document.querySelector(".pv-chat");
       if (S.ui.chatOpen && panel && !panel.querySelector(".composer")) {
-        openComposer({ kind: "chat", silent: true, lazy: true });
+        /* Under a stable id, so a swap re-creates it as the same composer
+           and focus finds its way back (spec 4.3), draft or no draft. */
+        if (!S.ui.chatComposerId) S.ui.chatComposerId = newId("composer");
+        openComposer({ kind: "chat", silent: true, lazy: true, id: S.ui.chatComposerId });
       }
     }
 
@@ -2562,6 +2569,7 @@
          close that one. */
       const close = function () {
         dropDraft(d.id);
+        if (S.ui.chatComposerId === d.id) S.ui.chatComposerId = null;
         document.querySelectorAll('[data-composer="' + d.id + '"]').forEach(function (n) { n.remove(); });
         renderRecovery();
       };
@@ -2569,9 +2577,18 @@
          write the next one. */
       const afterSend = function () {
         close();
-        if (d.kind === "chat" && S.ui.chatOpen) openComposer({ kind: "chat", silent: true, lazy: true });
+        if (d.kind === "chat") ensureChatComposer();
       };
-      cancelBtn.addEventListener("click", close);
+      cancelBtn.addEventListener("click", function () {
+        close();
+        /* An open panel always gets a composer back, so cancelling the
+           chat's is closing the chat. */
+        if (d.kind === "chat") {
+          S.ui.chatOpen = false;
+          S.ui.chatDraftShown = true;
+          renderChat();
+        }
+      });
       sendBtn.addEventListener("click", function () {
         const text = ta.value.trim();
         if (!text) return;

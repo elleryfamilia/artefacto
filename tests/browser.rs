@@ -2691,4 +2691,115 @@ fn a_lost_page_is_not_left_catching_up() {
     assert_eq!(d["syncing"], false, "{d}");
     assert_eq!(d["buffered"], 0, "{d}");
     assert_eq!(d["pending"], 0, "{d}");
+    assert_eq!(
+        page.eval(
+            "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle input').checked"
+        ),
+        true,
+        "the write the server accepted stays on the page"
+    );
+    assert_eq!(d["reviewed"][0], "task:t-a");
+}
+
+// --- the round-eleven fix slice, reviewed fresh --------------------------------
+
+#[test]
+fn focus_in_an_untyped_chat_composer_survives_a_push() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".feedback-bar-chat");
+    page.type_into(".pv-chat .composer textarea", "first");
+    page.click(".pv-chat .composer .composer-send");
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 1",
+        "the message shown",
+    );
+    page.eval("(function(){ document.querySelector('.pv-chat .composer textarea').focus(); return true; })()");
+    let id = page.text("document.querySelector('.pv-chat .composer').dataset.composer");
+
+    s.edit_plan("Demo plan", "Demo plan, revised");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "revision 2",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-chat .composer').dataset.composer"),
+        id,
+        "the same composer"
+    );
+    assert_eq!(
+        page.eval(
+            "document.activeElement === document.querySelector('.pv-chat .composer textarea')"
+        ),
+        true,
+        "focus came back to it"
+    );
+}
+
+#[test]
+fn retry_clears_the_notice_and_the_pill() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.eval("window.artefactoPlan.settings.backoffMs = [30, 30, 30]");
+    failing_sockets(&mut page, 1_000_000);
+    artefacto::server::socket::close_all(&s.server().shared);
+    page.wait_until("window.artefactoPlan.debug().gone", "the page to give up");
+    page.click(".pv-notice[data-kind=\"gone\"] .pv-notice-action");
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"gone\"]')"),
+        false
+    );
+    assert_ne!(
+        page.text("document.querySelector('.pv-presence').textContent"),
+        "server gone",
+        "the pill follows the retry at once"
+    );
+    assert_eq!(page.eval("window.artefactoPlan.debug().gone"), false);
+}
+
+#[test]
+fn cancelling_the_chat_composer_closes_the_chat() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".feedback-bar-chat");
+    page.type_into(".pv-chat .composer textarea", "never mind");
+    page.click(".pv-chat .composer .composer-cancel");
+    assert_eq!(
+        page.eval("document.querySelector('.pv-chat').hidden"),
+        true,
+        "Cancel closes the chat"
+    );
+    page.eval(
+        "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 999, events: [] })",
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-chat').hidden"),
+        true,
+        "and it stays closed"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-chat .composer').length"),
+        0
+    );
+    assert_eq!(
+        page.eval("Object.keys(window.artefactoPlan.debug().drafts).length"),
+        0
+    );
+    let _ = s;
 }
