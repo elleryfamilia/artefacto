@@ -21,8 +21,8 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-393 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
-clean. Thirty-five of the tests run the served page in a headless Chromium;
+399 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+clean. Forty-one of the tests run the served page in a headless Chromium;
 they skip with a printed line on a machine without one (see "Plan 3" below).
 
 | area | file | notes |
@@ -287,7 +287,7 @@ one the tests print a skip line and pass, and `ARTEFACTO_REQUIRE_BROWSER=1`
 makes that a failure. **CI must install a Chromium or set that variable**, or
 the browser suite is silently green.
 
-The thirty-five tests cover the loop end to end and the races spec 14 names:
+The forty-one tests cover the loop end to end and the races spec 14 names:
 a push while typing (draft kept, `opened_revision` is the old one), a draft
 and a thread whose element was removed (recovery panel, re-anchoring when it
 returns), focus and caret across a push, scroll anchored to an element across
@@ -431,8 +431,47 @@ swap re-created while its send is in flight still lets the write land; the
 test hooks on `window.artefactoPlan` are reachable only by script already
 running under the nonce CSP.
 
-The mutation pass over these fixes caught ten of eleven; the survivor is the
-snapshot-covered-reply guard, which has no test.
+The mutation pass over these fixes caught ten of eleven; the survivor was the
+snapshot-covered-reply guard, which round eight then gave a test.
+
+## Review round eight: the second fix slice, reviewed fresh
+
+A fourth fresh reviewer read commit `c1c5613` and drove it. Three confirmed
+defects, one of them a regression from round seven's chat-draft fix, plus a
+contrived fourth and three fixes with no test. All fixed or tested in commit
+`919b46f`:
+
+1. **The chat panel reopened on every render while a chat draft existed**,
+   because the reload fix ran inside every render and a draft is saved the
+   moment its composer opens. A draft now opens the panel once, the first
+   time the page finds it with text in it; opening or closing the panel by
+   hand counts as having seen it; closing with nothing written drops the
+   empty draft.
+2. **Two reviewed-mark replies arriving in reverse order settled the page on
+   the earlier write.** A set-valued write (a mark per ref, an answer per
+   question) records the highest seq applied for its key; an older reply
+   arriving later is not applied on top. Thread messages are append-only and
+   are not reordered; a resync shows the server's order.
+3. **A mark answered while catching up flickered off** until its buffered
+   reply drained. A pending mark stays pending until then.
+4. **The end-of-backoff probe could cycle forever** while HTTP answered and
+   the socket kept failing. Three cycles, then "gone" with Retry. Reachable
+   only with a socket that fails while `/state` answers, which nothing on
+   loopback produces; fixed because spec 4.3 promises a bounded number of
+   retries.
+
+Tests were added for the three fixes that had none: the snapshot-covered
+reply guard, the probe's recovery path, and the probe's bound. Adopted
+suspicions: the probe carries a resync generation and reads a 404 as lost; a
+failed resync applies the page's own buffered replies whatever their seq; a
+thread going from changed to declined between snapshots counts in the banner;
+an error line clears on the next success. Left as is: the orphaned-draft
+row key is an optimisation with no observable effect to test.
+
+The mutation pass caught six of seven. The survivor is the null own-cursor
+on a failed resync: a write made while catching up always has a higher seq
+than anything applied before, so both branches behave the same and the rule
+cannot be reached.
 
 ## Where the code diverges from plan 2b, with the reason
 
@@ -512,12 +551,13 @@ Stated plainly, because a passing suite is not the same as a covered one.
   the server's `broadcast_except` (the page filters its own client ids). Both
   server halves are tested on their own.
 - **Not exercised in a browser**: the "gone" notice after eight failed
-  reconnects against a server that is really absent, the resync generation
-  counter (two resyncs in flight), a `/state` 404 marking the page lost, the
-  guard against a reply answered after the snapshot that already held it,
-  and the recovery panel's Discard for a reply draft whose thread was
-  deleted by another tab. A reply with `seq: 0` is exercised only through
-  the reload-mid-send test, which reaches it by way of a repeated client id.
+  reconnects against a server that is really absent (the bounded-probe test
+  reaches "gone" with HTTP alive), the resync generation counter (two
+  resyncs in flight), a `/state` 404 marking the page lost, the null
+  own-cursor on a failed resync (unreachable, above), and the recovery
+  panel's Discard for a reply draft whose thread was deleted by another
+  tab. A reply with `seq: 0` is exercised only through the reload-mid-send
+  test, which reaches it by way of a repeated client id.
 - **The poisoned log has no test.** `EventLog` refuses every append after a
   failed write, and nothing exercises that path: there is no way to make a
   write fail from a test without a hook that exists only for tests.
@@ -578,8 +618,12 @@ applying buffered frames blindly. Round seven's fixes: other artifacts'
 frames applied, the composer host found by descent, pending marks not shown,
 a lost reply never looked up, the snapshot banner without counts, a chat
 draft restored hidden, the ping clock reset by a swap, Send review not
-guarded, notice code spans as text, no fetch deadline, and (survived) a
-snapshot-covered reply applied again.
+guarded, notice code spans as text, no fetch deadline, and (survived, then
+tested in round eight) a snapshot-covered reply applied again. Round eight's
+fixes: a chat draft reopening the panel every render, set-valued replies
+applied in arrival order, a pending mark dropped while syncing, probe cycles
+unbounded, the probe never recovering, a snapshot-covered reply applied
+again, and (survived, unreachable) own replies skipped on a failed resync.
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,
