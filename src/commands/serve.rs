@@ -289,7 +289,7 @@ fn request(server: &ServerFile, route: &str) -> Result<String> {
     Ok(raw.rsplit("\r\n\r\n").next().unwrap_or("").to_string())
 }
 
-fn current_state_dir() -> Result<std::path::PathBuf> {
+pub(crate) fn current_state_dir() -> Result<std::path::PathBuf> {
     let root = state_dir::repo_root(&std::env::current_dir()?)?;
     Ok(state_dir::state_dir(&root))
 }

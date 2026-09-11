@@ -28,6 +28,12 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List every artifact for this repository, newest first. Needs no server.
+    List {
+        /// Emit machine-readable JSON, with absolute timestamps and poster paths.
+        #[arg(long)]
+        json: bool,
+    },
     /// Mint a fresh one-time link to an artifact's page and open the browser.
     Open(OpenArgs),
     /// Wait for something the agent should act on, then print one JSON result.

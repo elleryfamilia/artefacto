@@ -1,0 +1,543 @@
+//! The artifact index (spec 4.4): every artifact artefacto has produced for
+//! this repository, in one registry file, with a drawn poster per row.
+//!
+//! Not a view over the event log, on purpose: `clean` truncates the log and
+//! a static `render` is made with no server running, so the index is its
+//! own file, `index.json` in the state directory. `render` writes it, the
+//! server writes it whenever a review's facts change, and `list` and the
+//! served index page read it. It keeps the conventions rosita settled on
+//! for its Recents registry: a file written by a newer artefacto is left
+//! alone and read as empty, a corrupt file loads empty and is repaired by
+//! the next write, and nothing is ever pruned on the user's behalf — an
+//! absent source file usually means an unmounted volume, not a dead
+//! artifact.
+//!
+//! Two writers can race: a `render` in a shell while the server records a
+//! thread. Every write takes an advisory lock on `index.lock`, reloads the
+//! file, applies its one change, and writes atomically, so neither loses
+//! the other's row.
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fs;
+use std::os::unix::io::AsRawFd;
+use std::path::{Path, PathBuf};
+
+pub const INDEX_FILE: &str = "index.json";
+pub const POSTERS_DIR: &str = "posters";
+/// The format this binary writes. A file declaring a higher number was
+/// written by a newer artefacto and is never rewritten by this one.
+pub const INDEX_FORMAT: &str = "artefacto.index/1";
+const INDEX_VERSION: u32 = 1;
+
+/// One artifact. `id` is the key: `plan:<meta.id>`, the same id the server
+/// uses, so a render and a push of the same plan are one row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Entry {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub plan_hash: String,
+    /// Absolute. Where the plan came from; the row says whether it is still
+    /// there.
+    pub source_path: String,
+    /// The static render's output, when the last record was a `render`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendered_path: Option<String>,
+    /// The server's revision; 0 for a plan that was rendered and never
+    /// pushed.
+    pub revision: u32,
+    /// When the last revision was made, which is what "how long ago" is
+    /// computed from.
+    pub revised_at: String,
+    /// When this row was last written.
+    pub recorded_at: String,
+    #[serde(default)]
+    pub open_threads: usize,
+    #[serde(default)]
+    pub unanchored_threads: usize,
+    #[serde(default)]
+    pub submitted: bool,
+    /// The last verdict, once a review has been sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
+    /// Fields a newer artefacto may have written, carried through a rewrite
+    /// by this one.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct IndexFile {
+    format: String,
+    artifacts: Vec<Entry>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl Default for IndexFile {
+    fn default() -> Self {
+        IndexFile {
+            format: INDEX_FORMAT.to_string(),
+            artifacts: Vec::new(),
+            extra: BTreeMap::new(),
+        }
+    }
+}
+
+/// The row a static `render` records: the plan as it is, never pushed, with
+/// no review state. `revised_at` is now, because the render is the revision.
+pub fn render_entry(
+    plan: &crate::plan::model::Plan,
+    source_path: String,
+    rendered_path: String,
+) -> Entry {
+    let now = crate::time::now_rfc3339();
+    Entry {
+        id: crate::server::push::artifact_id(plan),
+        kind: "plan".to_string(),
+        title: plan.meta.title.clone(),
+        plan_hash: crate::plan::model::plan_hash(plan),
+        source_path,
+        rendered_path: Some(rendered_path),
+        revision: 0,
+        revised_at: now.clone(),
+        recorded_at: now,
+        open_threads: 0,
+        unanchored_threads: 0,
+        submitted: false,
+        verdict: None,
+        extra: BTreeMap::new(),
+    }
+}
+
+/// The version number of an `artefacto.index/N` string, if it is one.
+fn format_version(format: &str) -> Option<u32> {
+    format.strip_prefix("artefacto.index/")?.parse().ok()
+}
+
+/// The registry as read from disk. A reader; the writers are the free
+/// functions below, which reload under the lock.
+#[derive(Debug)]
+pub struct Index {
+    dir: PathBuf,
+    file: IndexFile,
+    readonly: bool,
+}
+
+impl Index {
+    pub fn load(dir: &Path) -> Index {
+        let path = dir.join(INDEX_FILE);
+        let (file, readonly) = match fs::read_to_string(&path) {
+            Err(_) => (IndexFile::default(), false),
+            Ok(text) => Index::parse(&text),
+        };
+        Index {
+            dir: dir.to_path_buf(),
+            file,
+            readonly,
+        }
+    }
+
+    /// The version is read before the rows are parsed: a newer artefacto's
+    /// rows may have a shape this binary cannot read, and that must come
+    /// out as "newer, leave it alone", never as "corrupt, overwrite it".
+    fn parse(text: &str) -> (IndexFile, bool) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+            // Not JSON: corrupt, and repaired by the next write, because the
+            // registry is a convenience and not a record anything else
+            // depends on.
+            return (IndexFile::default(), false);
+        };
+        let version = value
+            .get("format")
+            .and_then(|f| f.as_str())
+            .and_then(format_version);
+        match version {
+            // Newer: read-only. A rewrite would destroy structure this
+            // binary cannot represent, and the bytes are preserved.
+            Some(v) if v > INDEX_VERSION => (IndexFile::default(), true),
+            // Ours, if the rows parse; corrupt otherwise.
+            Some(_) => match serde_json::from_value::<IndexFile>(value) {
+                Ok(f) => (f, false),
+                Err(_) => (IndexFile::default(), false),
+            },
+            // Not an index at all.
+            None => (IndexFile::default(), false),
+        }
+    }
+
+    pub fn path(&self) -> PathBuf {
+        self.dir.join(INDEX_FILE)
+    }
+
+    /// True when the file was written by a newer artefacto: it reads as
+    /// empty and every write is refused.
+    pub fn is_readonly(&self) -> bool {
+        self.readonly
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.file.artifacts.is_empty()
+    }
+
+    /// Newest first by `revised_at`; the most recently recorded first among
+    /// rows revised in the same second, because `record` puts a row at the
+    /// front and the sort is stable.
+    pub fn entries(&self) -> Vec<&Entry> {
+        let mut v: Vec<&Entry> = self.file.artifacts.iter().collect();
+        v.sort_by(|a, b| b.revised_at.cmp(&a.revised_at));
+        v
+    }
+
+    pub fn get(&self, id: &str) -> Option<&Entry> {
+        self.file.artifacts.iter().find(|e| e.id == id)
+    }
+
+    fn save(&self) -> Result<()> {
+        fs::create_dir_all(&self.dir)
+            .with_context(|| format!("creating {}", self.dir.display()))?;
+        let path = self.path();
+        let tmp = self.dir.join("index.json.tmp");
+        let text = serde_json::to_string_pretty(&self.file)?;
+        fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
+        fs::File::open(&tmp)?.sync_all()?;
+        fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))?;
+        Ok(())
+    }
+}
+
+/// What a write did. `ReadOnlyNewer` is the one refusal that is not an
+/// error: the caller reports it and carries on, because the index is never
+/// the reason a render or a push fails.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Recorded,
+    ReadOnlyNewer,
+}
+
+/// Upsert `entry` by id, and write its poster beside it. The row goes to
+/// the front. Under the lock: a concurrent writer's row is reloaded before
+/// this one is added, not overwritten.
+pub fn record(dir: &Path, mut entry: Entry, poster_svg: Option<&str>) -> Result<Outcome> {
+    let _lock = IndexLock::acquire(dir)?;
+    let mut index = Index::load(dir);
+    if index.readonly {
+        return Ok(Outcome::ReadOnlyNewer);
+    }
+    entry.recorded_at = crate::time::now_rfc3339();
+    if let Some(svg) = poster_svg {
+        write_poster(dir, &entry.id, svg)?;
+    }
+    index.file.artifacts.retain(|e| e.id != entry.id);
+    index.file.artifacts.insert(0, entry);
+    index.save()?;
+    Ok(Outcome::Recorded)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Removed {
+    Removed,
+    Absent,
+    ReadOnlyNewer,
+}
+
+/// Forget one row and its poster. Never touches the artifact's own files:
+/// the source plan and a static render belong to the user.
+pub fn remove(dir: &Path, id: &str) -> Result<Removed> {
+    let _lock = IndexLock::acquire(dir)?;
+    let mut index = Index::load(dir);
+    if index.readonly {
+        return Ok(Removed::ReadOnlyNewer);
+    }
+    let before = index.file.artifacts.len();
+    index.file.artifacts.retain(|e| e.id != id);
+    if index.file.artifacts.len() == before {
+        return Ok(Removed::Absent);
+    }
+    index.save()?;
+    let _ = fs::remove_file(poster_path(dir, id));
+    Ok(Removed::Removed)
+}
+
+/// `<state dir>/posters/<artifact id>.svg`. Artifact ids are constrained to
+/// `[A-Za-z0-9:_.-]` by the mint and the model, so the id is a safe file
+/// name as it is.
+pub fn poster_path(dir: &Path, id: &str) -> PathBuf {
+    dir.join(POSTERS_DIR).join(format!("{id}.svg"))
+}
+
+fn write_poster(dir: &Path, id: &str, svg: &str) -> Result<PathBuf> {
+    let path = poster_path(dir, id);
+    let parent = path.parent().expect("posters dir");
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let tmp = parent.join(format!("{id}.svg.tmp"));
+    fs::write(&tmp, svg).with_context(|| format!("writing {}", tmp.display()))?;
+    fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))?;
+    Ok(path)
+}
+
+/// An advisory exclusive lock on `index.lock`, held while a writer reloads,
+/// changes, and saves. Blocking: the critical section is one small file.
+struct IndexLock {
+    _file: fs::File,
+}
+
+impl IndexLock {
+    fn acquire(dir: &Path) -> Result<IndexLock> {
+        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join("index.lock"))
+            .context("opening index.lock")?;
+        // SAFETY: flock on a valid owned descriptor; it blocks until the
+        // other holder releases and touches no memory.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if rc != 0 {
+            anyhow::bail!("locking index.lock: {}", std::io::Error::last_os_error());
+        }
+        Ok(IndexLock { _file: file })
+    }
+}
+
+/// "How long ago", from a row's `revised_at`. Elapsed time, not calendar
+/// days: "yesterday" is between one and two days ago. Empty when the
+/// timestamp is not one this crate wrote, because display sugar must never
+/// fail a listing.
+pub fn age_label(revised_at: &str, now_secs: u64) -> String {
+    let Some(then) = crate::time::parse_rfc3339(revised_at) else {
+        return String::new();
+    };
+    let secs = now_secs.saturating_sub(then);
+    let plural = |n: u64, unit: &str| {
+        if n == 1 {
+            format!("1 {unit} ago")
+        } else {
+            format!("{n} {unit}s ago")
+        }
+    };
+    match secs {
+        0..=59 => "just now".to_string(),
+        60..=3_599 => plural(secs / 60, "minute"),
+        3_600..=86_399 => plural(secs / 3_600, "hour"),
+        86_400..=172_799 => "yesterday".to_string(),
+        172_800..=2_591_999 => plural(secs / 86_400, "day"),
+        _ => format!("on {}", &revised_at[..10]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: &str, revised_at: &str) -> Entry {
+        Entry {
+            id: id.to_string(),
+            kind: "plan".to_string(),
+            title: id.to_string(),
+            plan_hash: "sha256:x".to_string(),
+            source_path: format!("/tmp/{id}.json"),
+            rendered_path: None,
+            revision: 0,
+            revised_at: revised_at.to_string(),
+            recorded_at: String::new(),
+            open_threads: 0,
+            unanchored_threads: 0,
+            submitted: false,
+            verdict: None,
+            extra: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn ages_read_correctly_either_side_of_each_boundary() {
+        let now = 1_789_000_000u64;
+        let at = |ago: u64| crate::time::rfc3339(now - ago);
+        assert_eq!(age_label(&at(0), now), "just now");
+        assert_eq!(age_label(&at(59), now), "just now");
+        assert_eq!(age_label(&at(60), now), "1 minute ago");
+        assert_eq!(age_label(&at(3_599), now), "59 minutes ago");
+        assert_eq!(age_label(&at(3_600), now), "1 hour ago");
+        assert_eq!(age_label(&at(86_399), now), "23 hours ago");
+        assert_eq!(
+            age_label(&at(86_400), now),
+            "yesterday",
+            "one day: the boundary"
+        );
+        assert_eq!(age_label(&at(172_799), now), "yesterday");
+        assert_eq!(age_label(&at(172_800), now), "2 days ago");
+        assert_eq!(age_label(&at(29 * 86_400), now), "29 days ago");
+        assert_eq!(age_label(&at(30 * 86_400), now), "on 2026-08-11");
+        assert_eq!(
+            age_label("2026-09-10T05:46:40Z", 0),
+            "just now",
+            "a clock behind the row"
+        );
+        assert_eq!(age_label("last tuesday", now), "");
+    }
+
+    #[test]
+    fn a_record_goes_to_the_front_and_a_repeat_replaces_its_row() {
+        let dir = tempfile::tempdir().unwrap();
+        record(dir.path(), entry("plan:a", "2026-09-10T00:00:00Z"), None).unwrap();
+        record(dir.path(), entry("plan:b", "2026-09-10T00:00:00Z"), None).unwrap();
+        let ids = |i: &Index| i.entries().iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            ids(&Index::load(dir.path())),
+            ["plan:b", "plan:a"],
+            "same second: last recorded first"
+        );
+
+        let mut again = entry("plan:a", "2026-09-10T00:00:00Z");
+        again.title = "A, again".to_string();
+        record(dir.path(), again, None).unwrap();
+        let index = Index::load(dir.path());
+        assert_eq!(ids(&index), ["plan:a", "plan:b"]);
+        assert_eq!(index.get("plan:a").unwrap().title, "A, again");
+        assert_eq!(index.entries().len(), 2, "one row per id");
+    }
+
+    #[test]
+    fn newest_revision_comes_first_whatever_the_record_order() {
+        let dir = tempfile::tempdir().unwrap();
+        record(dir.path(), entry("plan:new", "2026-09-11T00:00:00Z"), None).unwrap();
+        record(dir.path(), entry("plan:old", "2026-09-01T00:00:00Z"), None).unwrap();
+        let index = Index::load(dir.path());
+        let ids: Vec<&str> = index.entries().iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["plan:new", "plan:old"]);
+    }
+
+    #[test]
+    fn a_file_from_a_newer_artefacto_is_read_as_empty_and_never_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(INDEX_FILE);
+        let future = r#"{"format":"artefacto.index/2","artifacts":[{"id":"plan:future","shape":"unknown"}],"aisle":7}"#;
+        fs::write(&path, future).unwrap();
+        let index = Index::load(dir.path());
+        assert!(index.is_readonly());
+        assert!(index.is_empty());
+        assert_eq!(
+            record(
+                dir.path(),
+                entry("plan:a", "2026-09-10T00:00:00Z"),
+                Some("<svg/>")
+            )
+            .unwrap(),
+            Outcome::ReadOnlyNewer
+        );
+        assert_eq!(
+            remove(dir.path(), "plan:future").unwrap(),
+            Removed::ReadOnlyNewer
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            future,
+            "bytes preserved"
+        );
+        assert!(
+            !poster_path(dir.path(), "plan:a").exists(),
+            "no poster for a row that was not written"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_file_loads_empty_and_the_next_record_repairs_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(INDEX_FILE);
+        for junk in [
+            "{not json",
+            r#"{"format":"artefacto.feedback/1","artifacts":[]}"#,
+            r#"{"format":"artefacto.index/1","artifacts":[{"id":"plan:x"}]}"#,
+            "",
+        ] {
+            fs::write(&path, junk).unwrap();
+            let index = Index::load(dir.path());
+            assert!(!index.is_readonly(), "{junk:?}");
+            assert!(index.is_empty(), "{junk:?}");
+            record(dir.path(), entry("plan:a", "2026-09-10T00:00:00Z"), None).unwrap();
+            let repaired = Index::load(dir.path());
+            assert_eq!(repaired.entries().len(), 1, "{junk:?}");
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(text.contains(INDEX_FORMAT), "{text}");
+        }
+    }
+
+    #[test]
+    fn fields_this_binary_does_not_know_survive_a_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(INDEX_FILE);
+        let mut e = entry("plan:a", "2026-09-10T00:00:00Z");
+        e.extra
+            .insert("screenshot".to_string(), serde_json::json!("/tmp/a.png"));
+        record(dir.path(), e, None).unwrap();
+        let mut file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        file["studio"] = serde_json::json!({"pinned": true});
+        fs::write(&path, file.to_string()).unwrap();
+
+        record(dir.path(), entry("plan:b", "2026-09-10T00:00:00Z"), None).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"screenshot\""), "row field kept: {text}");
+        assert!(text.contains("\"studio\""), "file field kept: {text}");
+    }
+
+    #[test]
+    fn remove_forgets_the_row_and_its_poster_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("a.json");
+        fs::write(&source, "{}").unwrap();
+        let mut e = entry("plan:a", "2026-09-10T00:00:00Z");
+        e.source_path = source.display().to_string();
+        record(dir.path(), e, Some("<svg/>")).unwrap();
+        let poster = poster_path(dir.path(), "plan:a");
+        assert_eq!(fs::read_to_string(&poster).unwrap(), "<svg/>");
+
+        assert_eq!(remove(dir.path(), "plan:a").unwrap(), Removed::Removed);
+        assert!(Index::load(dir.path()).is_empty());
+        assert!(!poster.exists(), "the poster goes with the row");
+        assert!(source.exists(), "the user's file is never touched");
+        assert_eq!(remove(dir.path(), "plan:a").unwrap(), Removed::Absent);
+    }
+
+    #[test]
+    fn a_missing_source_is_never_pruned() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = entry("plan:gone", "2026-09-10T00:00:00Z");
+        e.source_path = dir.path().join("unmounted/plan.json").display().to_string();
+        record(dir.path(), e, None).unwrap();
+        record(dir.path(), entry("plan:b", "2026-09-10T00:00:00Z"), None).unwrap();
+        let index = Index::load(dir.path());
+        let gone = index.get("plan:gone").expect("the row is still there");
+        assert!(!Path::new(&gone.source_path).exists());
+    }
+
+    #[test]
+    fn concurrent_records_lose_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let threads: Vec<_> = (0..8)
+            .map(|n| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    record(
+                        &path,
+                        entry(&format!("plan:t{n}"), "2026-09-10T00:00:00Z"),
+                        Some("<svg/>"),
+                    )
+                    .unwrap()
+                })
+            })
+            .collect();
+        for t in threads {
+            assert_eq!(t.join().unwrap(), Outcome::Recorded);
+        }
+        assert_eq!(
+            Index::load(&path).entries().len(),
+            8,
+            "every writer's row survived"
+        );
+    }
+}

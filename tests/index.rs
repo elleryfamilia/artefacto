@@ -1,0 +1,336 @@
+//! The artifact index (spec 4.4) and `artefacto list` (spec 5), through the
+//! real binary: `render` records a row and draws a poster, `list` reads the
+//! registry with no server running, and the registry keeps rosita's Recents
+//! conventions — a newer file is left alone, a corrupt one self-heals, and a
+//! row whose source is gone is greyed, never pruned.
+
+mod support;
+
+use std::path::Path;
+use support::{bin, Repo};
+
+fn fixture(name: &str) -> String {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/plan")
+        .join(name)
+        .display()
+        .to_string()
+}
+
+/// Copy a fixture into the repository under `as_name`, so the row's source
+/// path is one the test can delete.
+fn plan_in(repo: &Repo, fixture_name: &str, as_name: &str) -> String {
+    let target = repo.path().join(as_name);
+    std::fs::copy(fixture(fixture_name), &target).expect("copy the fixture");
+    // Resolved, because the row records the real path and on macOS the
+    // temp directory sits behind a `/var` symlink.
+    std::fs::canonicalize(&target)
+        .expect("the copy exists")
+        .display()
+        .to_string()
+}
+
+/// The repository's path as the binary sees it (symlinks resolved).
+fn real(repo: &Repo) -> std::path::PathBuf {
+    std::fs::canonicalize(repo.path()).expect("the repo exists")
+}
+
+fn render(repo: &Repo, plan: &str, out: &str) -> serde_json::Value {
+    repo.json(&["plan", "render", plan, "--out", out, "--no-open", "--json"])
+}
+
+fn list(repo: &Repo) -> serde_json::Value {
+    repo.json(&["list", "--json"])
+}
+
+#[test]
+fn render_records_a_row_and_a_poster_and_list_reads_it_with_no_server() {
+    let repo = Repo::new();
+    let plan = plan_in(&repo, "kitchen-sink.json", "plan.json");
+    let out = render(&repo, &plan, "docs/plan.html");
+    assert_eq!(out["index"]["recorded"], true, "{out}");
+    let poster = out["index"]["poster"].as_str().expect("the poster's path");
+    assert!(
+        Path::new(poster).is_file(),
+        "the poster is on disk where the result says: {poster}"
+    );
+    assert!(
+        !repo.server_json().exists(),
+        "a render starts no server, and list must not need one"
+    );
+
+    let listed = list(&repo);
+    assert_eq!(listed["ok"], true);
+    assert_eq!(listed["readonly"], false);
+    let rows = listed["artifacts"].as_array().expect("rows");
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row["id"], "plan:auth-refactor", "the server's own id");
+    assert_eq!(row["kind"], "plan");
+    assert_eq!(row["title"], "Auth refactor");
+    assert_eq!(row["revision"], 0, "rendered, never pushed");
+    assert_eq!(row["age"], "just now");
+    assert_eq!(row["open_threads"], 0);
+    assert_eq!(row["unanchored_threads"], 0);
+    assert_eq!(row["verdict"], serde_json::Value::Null);
+    assert_eq!(row["source_exists"], true);
+    assert_eq!(
+        row["source_path"]
+            .as_str()
+            .map(|p| Path::new(p).is_absolute()),
+        Some(true),
+        "the source is recorded absolute: {row}"
+    );
+    assert_eq!(
+        row["rendered_path"],
+        real(&repo).join("docs/plan.html").display().to_string()
+    );
+    assert_eq!(row["poster"], poster);
+    assert!(
+        row["revised_at"].as_str().unwrap().ends_with('Z'),
+        "absolute timestamps in the JSON: {row}"
+    );
+    assert_eq!(
+        row["plan_hash"], out["plan_hash"],
+        "the row carries the render's own hash"
+    );
+}
+
+#[test]
+fn the_poster_on_disk_is_the_drawn_card_for_an_unpushed_plan() {
+    let repo = Repo::new();
+    let plan = plan_in(&repo, "kitchen-sink.json", "plan.json");
+    let out = render(&repo, &plan, "plan.html");
+    let poster = std::fs::read_to_string(out["index"]["poster"].as_str().unwrap()).unwrap();
+    let parsed = artefacto::plan::model::parse(&std::fs::read_to_string(&plan).unwrap(), false)
+        .unwrap()
+        .plan;
+    assert_eq!(
+        poster,
+        artefacto::plan::poster::poster_svg(&parsed, &Default::default()),
+        "drawn from the plan model, with no review state"
+    );
+    assert!(poster.contains(">not pushed<"));
+}
+
+#[test]
+fn a_render_outside_a_repository_still_succeeds_and_says_it_was_not_indexed() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = std::process::Command::new(bin())
+        .args([
+            "plan",
+            "render",
+            &fixture("minimal.json"),
+            "--out",
+            "plan.html",
+            "--no-open",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], true, "the render itself is fine");
+    assert!(dir.path().join("plan.html").is_file());
+    assert_eq!(v["index"]["recorded"], false);
+    let reason = v["index"]["reason"].as_str().unwrap();
+    assert!(reason.contains("git repository"), "{reason}");
+    assert!(
+        v["index"].get("poster").is_none(),
+        "nothing advertised that was not written: {v}"
+    );
+
+    // And in text mode the note is on stderr, beside the render.
+    let out = std::process::Command::new(bin())
+        .args([
+            "plan",
+            "render",
+            &fixture("minimal.json"),
+            "--out",
+            "plan.html",
+            "--no-open",
+        ])
+        .current_dir(dir.path())
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not added to the artifact index"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_newer_index_is_left_alone_by_render_and_reported_by_list() {
+    let repo = Repo::new();
+    let plan = plan_in(&repo, "minimal.json", "plan.json");
+    let index_path = repo.state_dir().join("index.json");
+    std::fs::create_dir_all(repo.state_dir()).unwrap();
+    let future =
+        r#"{"format":"artefacto.index/2","artifacts":[{"id":"plan:future","shape":"unknown"}]}"#;
+    std::fs::write(&index_path, future).unwrap();
+
+    let out = render(&repo, &plan, "plan.html");
+    assert_eq!(out["ok"], true);
+    assert_eq!(out["index"]["recorded"], false);
+    assert!(
+        out["index"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("newer artefacto"),
+        "{out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&index_path).unwrap(),
+        future,
+        "the bytes are preserved"
+    );
+    assert!(
+        !repo.state_dir().join("posters").exists(),
+        "no poster for a row that was not written"
+    );
+
+    let listed = list(&repo);
+    assert_eq!(listed["readonly"], true);
+    assert_eq!(listed["artifacts"].as_array().unwrap().len(), 0);
+    let text = repo.run(&["list"]);
+    text.success();
+    assert!(text.stderr.contains("newer artefacto"), "{}", text.stderr);
+}
+
+#[test]
+fn a_corrupt_index_is_repaired_by_the_next_render() {
+    let repo = Repo::new();
+    let plan = plan_in(&repo, "minimal.json", "plan.json");
+    let index_path = repo.state_dir().join("index.json");
+    std::fs::create_dir_all(repo.state_dir()).unwrap();
+    std::fs::write(&index_path, "{this is not").unwrap();
+
+    let listed = list(&repo);
+    assert_eq!(listed["readonly"], false, "corrupt is not newer");
+    assert_eq!(listed["artifacts"].as_array().unwrap().len(), 0);
+
+    let out = render(&repo, &plan, "plan.html");
+    assert_eq!(out["index"]["recorded"], true, "{out}");
+    let text = std::fs::read_to_string(&index_path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&text).expect("repaired");
+    assert_eq!(parsed["format"], "artefacto.index/1");
+    assert_eq!(list(&repo)["artifacts"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_missing_source_greys_the_row_and_is_never_removed() {
+    let repo = Repo::new();
+    let gone = plan_in(&repo, "minimal.json", "gone.json");
+    render(&repo, &gone, "gone.html");
+    std::fs::remove_file(&gone).unwrap();
+
+    // Another record, which is when pruning would happen if it happened.
+    let kept = plan_in(&repo, "kitchen-sink.json", "kept.json");
+    render(&repo, &kept, "kept.html");
+
+    let rows = list(&repo)["artifacts"].clone();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "the row whose file is gone is still listed");
+    let row = rows
+        .iter()
+        .find(|r| r["id"] == "plan:demo")
+        .expect("the greyed row");
+    assert_eq!(row["source_exists"], false);
+    assert_eq!(row["source_path"], gone);
+
+    let text = repo.run(&["list"]);
+    text.success();
+    assert!(
+        text.stdout.contains(&format!("{gone}  (missing)")),
+        "{}",
+        text.stdout
+    );
+}
+
+#[test]
+fn list_orders_newest_first_and_a_re_render_moves_its_row_up() {
+    let repo = Repo::new();
+    let a = plan_in(&repo, "minimal.json", "a.json");
+    let b = plan_in(&repo, "kitchen-sink.json", "b.json");
+    render(&repo, &a, "a.html");
+    render(&repo, &b, "b.html");
+    let ids = |v: &serde_json::Value| {
+        v["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&list(&repo)), ["plan:auth-refactor", "plan:demo"]);
+
+    render(&repo, &a, "a.html");
+    assert_eq!(
+        ids(&list(&repo)),
+        ["plan:demo", "plan:auth-refactor"],
+        "one row per artifact, and the latest render leads"
+    );
+}
+
+#[test]
+fn list_computes_ages_from_the_file_either_side_of_a_day() {
+    let repo = Repo::new();
+    let plan = plan_in(&repo, "minimal.json", "plan.json");
+    render(&repo, &plan, "plan.html");
+    let index_path = repo.state_dir().join("index.json");
+    let mut file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&index_path).unwrap()).unwrap();
+    let now = artefacto::time::now_secs();
+    let ago = |secs: u64| artefacto::time::rfc3339(now - secs);
+
+    for (age, label) in [
+        (23 * 3600, "23 hours ago"),
+        (25 * 3600, "yesterday"),
+        (49 * 3600, "2 days ago"),
+    ] {
+        file["artifacts"][0]["revised_at"] = serde_json::json!(ago(age));
+        std::fs::write(&index_path, file.to_string()).unwrap();
+        let listed = list(&repo);
+        assert_eq!(listed["artifacts"][0]["age"], label);
+        assert_eq!(
+            listed["artifacts"][0]["revised_at"],
+            ago(age),
+            "the absolute time too"
+        );
+        let text = repo.run(&["list"]);
+        assert!(text.stdout.contains(label), "{}", text.stdout);
+    }
+}
+
+#[test]
+fn list_with_nothing_recorded_says_so() {
+    let repo = Repo::new();
+    let listed = list(&repo);
+    assert_eq!(listed["ok"], true);
+    assert_eq!(listed["artifacts"].as_array().unwrap().len(), 0);
+    let text = repo.run(&["list"]);
+    text.success();
+    assert!(text.stdout.contains("no artifacts yet"), "{}", text.stdout);
+}
+
+#[test]
+fn list_outside_a_repository_is_a_usage_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = std::process::Command::new(bin())
+        .args(["list"])
+        .current_dir(dir.path())
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("git repository"));
+}
