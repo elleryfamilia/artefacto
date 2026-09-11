@@ -381,6 +381,28 @@ fn a_cursor_survives_clean_and_new_events_number_past_the_old_mark() {
         pushed["revision_seq"].as_u64().unwrap() > last_seq,
         "{pushed}"
     );
+
+    // And when something active does arrive, the record does not ride along
+    // with it as a passive event: the frame is the chat and nothing else.
+    let cookie = cookie_via_open(&repo, "plan:auth-refactor");
+    let chat = post_cmd(
+        port,
+        &cookie,
+        "plan:auth-refactor",
+        serde_json::json!({
+            "cmd": "chat.send", "client_id": "c3", "text": "still here?", "opened_revision": 1,
+        }),
+    );
+    assert_eq!(status_of(&chat), 200, "{chat}");
+    let frame = repo.json(&["await", "--timeout", "5s"]);
+    assert_eq!(frame["status"], "chat", "{frame}");
+    let types: Vec<&str> = frame["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(types, ["chat.sent"], "{frame}");
     repo.stop();
 }
 
