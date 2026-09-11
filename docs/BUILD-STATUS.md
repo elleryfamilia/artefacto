@@ -21,7 +21,7 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-416 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+409 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
 clean. Fifty-eight of the tests run the served page in a headless Chromium;
 they skip with a printed line on a machine without one (see "Plan 3" below).
 
