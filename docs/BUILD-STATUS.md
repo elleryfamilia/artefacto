@@ -1,6 +1,6 @@
 # Server build status
 
-Current as of 2026-09-10, branch `feat/server-spine`.
+Current as of 2026-09-11, branch `feat/server-spine`.
 
 ## Why this file exists
 
@@ -21,8 +21,9 @@ divergences were found by building the rest; they are listed below.
 
 ## What is built and green
 
-328 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
-clean.
+368 tests, `cargo fmt --all --check` and `cargo clippy --all-targets -D warnings`
+clean. Seventeen of the tests run the served page in a headless Chromium; they
+skip with a printed line on a machine without one (see "Plan 3" below).
 
 | area | file | notes |
 |---|---|---|
@@ -43,6 +44,9 @@ clean.
 | the feedback document | `src/server/feedback.rs` | `artefacto.feedback/1`, written atomically before the event |
 | CLI client | `src/client.rs` | bearer auth, exit codes, the reconnect rule |
 | `serve`, `stop`, `status` | `src/commands/serve.rs` | real double-fork daemon |
+| the served page | `src/server/page.rs` | the rendered plan at `/a/<artifact>`, the JSON snapshot at `/a/<artifact>/state`, both read under the commit gate |
+| the page itself | `src/plan/assets/plan.js`, `plan.css` | one pure fold, a re-entrant `mount(root)`, the socket client, POSTed commands, composers with drafts, the body swap and its restore, presence, notices, the recovery panel; the static export in the same file |
+| the browser harness | `tests/support/browser.rs`, `tests/browser.rs` | headless Chromium over the DevTools protocol, tungstenite as the client |
 
 ## What only running could establish
 
@@ -187,6 +191,145 @@ under two separate `core` locks, so a takeover landing in between can announce
 the outgoing holder once before the next tick announces the real one. The
 final state is always right.
 
+## Plan 3: the page
+
+There was no plan document for the page; spec 4.3 and the notes the earlier
+reviews left for plan 3 were the plan. It was built as three slices, each
+tested, mutated, and reviewed fresh before the next: the server side of the
+page, the browser harness, and the page itself.
+
+### What the server does for the page
+
+- **`GET /a/<artifact>`** serves the rendered plan from the fold, nonce-stamped,
+  with `data-artefacto-artifact` and `data-artefacto-revision` on `<body>`.
+  Those two attributes are how the script knows it was served; a body without
+  them is a static export.
+- **`GET /a/<artifact>/state`** returns everything a page needs to show a
+  review from nothing: the rendered `<body>` fragment (markers and all, the
+  page's own script stripped, the data island kept), the raw plan, threads,
+  answers, marks, chat, `submitted`, the lease holder, and `last_seq`. The fold
+  and `last_seq` are read under the commit gate, so they describe one moment.
+- **The socket's hello carries presence.** Presence is announced on change
+  only, so a page that connects after the agent attached would otherwise never
+  be told. It carries nothing else: a `last_seq` read outside the gate is not a
+  catch-up threshold, and a page that used it would apply an event twice.
+- **A push's frame to pages carries the rendered body** as a top-level `html`
+  field, so the page gets spec 4.3's "one snapshot holding the rendered body,
+  thread state, and resolutions together". Frames to agents are built from
+  the log and never carry it.
+- **Broadcasts run under the commit gate.** They take the innermost lock and
+  `try_send`, and never block. Released first, two commits could reach a page
+  as 6 then 5.
+- **A page is registered before its 101 goes out.** tiny_http flushes the
+  handshake before `upgrade` returns, and the browser's `open` event fires on
+  receipt and fetches `/state` at once; a page registered afterwards could
+  miss a commit that landed in between.
+- **The anchor set is every element the renderer marks**: the plan summary,
+  each question and risk, each phase and task. The page offers a comment
+  button on all of them; the server had refused everything but phases and
+  tasks.
+- **A stop closes every page socket after announcing itself**, so pages start
+  reconnecting now rather than when the process dies.
+- The CSP's `connect-src` names the page's own origin as well as the socket;
+  page routes strip the query and accept only `/a/<id>`, `/a/<id>/cmd` and
+  `/a/<id>/state`.
+
+### What the page does
+
+- **One pure fold** (`core.applyEvent`) mirrors `fold.rs`: thread ids,
+  replies, edits, deletes, resolutions with the note as an agent message,
+  answers, marks, chat, `submitted`, presence, and re-anchoring from the raw
+  plan a revision event carries. A frame, a snapshot, and the page's own
+  command reply all go through it.
+- **The server is the only store.** Nothing on a served page reads
+  localStorage. Every command carries a client id; the page applies its own
+  write from the reply, because the broadcast skips the page that posted. A
+  reply with `seq: 0` is the server saying it already did this, and the page
+  resyncs rather than guess.
+- **Catch-up.** On every socket open the page fetches `/state`, replaces its
+  state, then drains the frames buffered meanwhile, skipping *logged* events
+  with `seq <= last_seq` and never skipping announced ones (`agent.attached`,
+  `agent.detached`, `nudge`, `server.stopping`), which borrow that seq.
+- **A push swaps the body**, mounts again, and restores disclosure by element
+  id, focus and caret by composer id, and scroll by element anchor. Every
+  composer keeps its draft in sessionStorage under an id minted when it
+  opened, with the revision it opened against, and sends that as
+  `opened_revision`. A thread or draft whose element is gone is listed in a
+  recovery panel at the top; nothing is dropped.
+- Presence pill, revision banner with the previous title on hover, nudge and
+  stop notices, reconnect with backoff (eight tries, then a loud "gone" with
+  Retry), a lost session (401) as a notice, activity pings throttled to one
+  per 30 seconds.
+- The static export keeps localStorage and the clipboard, and gains the
+  Approve toggle spec 4.3 gives it.
+
+### The browser harness
+
+Spec 14 offered two options. The CDP one was built: `tests/support/browser.rs`
+launches a headless Chromium with a DevTools port, opens each tab as its own
+target, evaluates JavaScript in the page with real waits, and records console
+errors and browser log entries, which is where a CSP refusal shows up. No new
+dependency: tungstenite already speaks WebSocket. It finds a browser in
+Playwright's cache, `/Applications`, `/usr/bin`, or `ARTEFACTO_CHROME`; without
+one the tests print a skip line and pass, and `ARTEFACTO_REQUIRE_BROWSER=1`
+makes that a failure. **CI must install a Chromium or set that variable**, or
+the browser suite is silently green.
+
+The seventeen tests cover the loop end to end and the races spec 14 names: a
+push while typing (draft kept, `opened_revision` is the old one), a draft and
+a thread whose element was removed (recovery panel, re-anchoring when it
+returns), focus and caret across a push, scroll anchored to an element across
+a push that inserts a phase above, two tabs on one artifact, and duplicate
+suppression after a real daemon restart. The static export's own `#selftest`
+harness runs in the same browser, which is the smoke rosita had.
+
+### What only running could establish
+
+1. **Smooth scrolling never advances in a headless page.** `plan.css` asks for
+   it, so `scrollIntoView` left `scrollY` at zero and the restore's `scrollBy`
+   would have read mid-animation. Both scroll with `behavior: "instant"`.
+2. **`element.focus()` is a no-op without focus emulation**, and an element
+   inside a closed `<details>` has no layout and cannot be focused at all. The
+   harness enables `Emulation.setFocusEmulationEnabled`; the test opens the
+   phase, as a reviewer would have to.
+3. **An in-process server restart hangs the page's next fetch forever.** The
+   browser keeps idle HTTP connections alive and reuses one; tiny_http decides
+   keep-alive from the request only and drops any `Connection` header a
+   handler sets, and a browser fetch cannot set one either. A process exit
+   resets the connections, so the reconnect test restarts the real daemon.
+4. **The push that serves a page holds the lease**, so the pill's first word
+   is "agent waiting" and the hello presence is what the test actually
+   proves. Expiry then flips it to "no agent" through the tick.
+
+## Review round five: the page's server slice, reviewed fresh
+
+A fresh reviewer on a different model read the server slice (commits
+`fe9cf81`, `f7b45b0`) against the spec and drove it in a detached worktree.
+It found the lock order sound on every new acquisition, the snapshot atomic,
+both catch-up orderings correct, and hostile text in every plan field escaped.
+Five confirmed defects, all fixed with a test each:
+
+1. **A page was registered for broadcasts after the 101 was on the wire.**
+   Observed once in 300 real handshakes. Registration now precedes the
+   upgrade; hello is still first because the channel drains after it.
+2. **The body fragment dropped the served body's markers**, so a whole-body
+   swap would have put the page into static mode. The fragment now carries
+   them, with the new revision.
+3. **The placeholder's inline script was injectable through the raw path**;
+   `serde_json` does not escape `</script>`. Not reachable from a browser,
+   which percent-encodes the path. Escaped like the render's data island.
+4. **A query string or a trailing slash on a page route served the
+   placeholder with a 200.** Page routes strip the query and 404 anything but
+   the three shapes.
+5. **A stored plan the strict parser refuses gave a 500 JSON body to a
+   navigation.** The read path parses leniently; a plan that still will not
+   render gets an HTML page that says so.
+
+Two suspicions adopted: broadcasts now run under the gate (frames could reach a
+page out of log order), and hello no longer carries `last_seq`. One left: the
+snapshot has no revision summary, which only matters if the banner had to
+survive a reload.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
@@ -243,16 +386,30 @@ All are in `docs/specs/2026-09-06-artefacto-design.md`:
 - **`list`, the artifact index, and posters** are plan 4.
 - **`clean`** is plan 4.
 - **`skill --print` / `--install`** are plan 5.
-- **The page rewrite** is plan 3.
+- **`artefacto open`** is still not implemented, so a page that says "run
+  `artefacto open` for a fresh link" is pointing at a command that does not
+  exist yet. A second `push` is the only way to mint one.
+- **Question `options`** (spec 4.3): answers are free text, as v1 says.
 
 ## What is not covered by a test
 
 Stated plainly, because a passing suite is not the same as a covered one.
 
-- **There is still no browser-level test.** Every socket path is driven by a
-  fake client, which proves the server's half and nothing about a real
-  browser's. "The server delivers a frame" is verified; "the reviewer sees it"
-  is not. That closes in plan 3 with a headless-Chromium smoke test.
+- **The browser suite runs only where a Chromium is installed.** Everywhere
+  else it prints a skip line and passes, so a CI job without a browser (or
+  without `ARTEFACTO_REQUIRE_BROWSER=1`) is green without having proved the
+  page.
+- **The fine broadcast-ordering race has no test that reproduces it.** The
+  stress test in `server_page.rs` catches a reordering skew longer than an
+  fsync and nothing shorter; the rule (broadcast under the gate) is held by
+  reasoning.
+- **The page's use of hello's presence is not load-bearing**: the `/state`
+  snapshot fetched right after carries it too, so removing the page's hello
+  handling fails no test. The server side is tested.
+- **Not exercised in a browser**: the lost-session (401) notice, the "gone"
+  notice after eight failed reconnects, a reply with `seq: 0` (a retried
+  client id) triggering a resync, and the recovery panel's Discard for a
+  reply draft whose thread was deleted by another tab.
 - **The poisoned log has no test.** `EventLog` refuses every append after a
   failed write, and nothing exercises that path: there is no way to make a
   write fail from a test without a hook that exists only for tests.
@@ -288,6 +445,23 @@ subtraction to one that underflows. Each fails the test that names it. The
 follow-up slice added three more: removing the per-tick validation from the
 wait, refusing a dead token even with `--takeover`, and printing a passive
 tail on `stopped`.
+
+Plan 3 was checked the same way. Server slice: no nonce stamped, the meta CSP
+left in (caught only once the socket client existed), the placeholder served
+instead of the plan, hello without presence, the push frame without its body,
+`Frame::of` attaching a body (caught only by an `events` assertion, since
+`await` rebuilds its result from fields), the fragment keeping the script or
+being the whole document, the served body unmarked, the state route answering
+200 for an unknown artifact. Page: hello presence ignored (survived; see
+above), `opened_revision` sent as the current revision, no view restore after
+a swap, threads never unanchoring, drafts not restored on mount, the page's
+own command never applied, the server broadcasting to the poster, catch-up
+applying everything, announced events deduped by seq, no reconnect, the
+stopping notice never clearing, no ping throttle. Review fixes: the page
+registered after the 101, the query not stripped, any id or extra segment
+served as a page, the placeholder id unescaped, the fragment without markers,
+strict parse on the read path, a render failure as JSON, and broadcasts after
+the gate with a 40 ms skew.
 
 The loop was then driven by hand against a real daemon, twice. First: push
 with no server running, bootstrap a page, comment, ask, `await`, `reply`,
