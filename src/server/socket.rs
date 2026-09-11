@@ -162,6 +162,15 @@ pub fn handle_upgrade(shared: &Arc<Shared>, request: Request) {
         .lock()
         .unwrap()
         .push(PageHandle { id, tx });
+    {
+        // A reviewer has been here. The away timer reads this: without it, a
+        // server nobody ever opened would report the reviewer as away five
+        // minutes after it started. `sockets` is released before `core` is
+        // taken; the lock order forbids holding both.
+        let mut core = shared.core.lock().unwrap();
+        core.page_seen = true;
+        core.page_gone_since_ms = None;
+    }
 
     // Always the first frame. The page needs its own id so it can put it in
     // the commands it POSTs; `broadcast_except` then skips it, and it does not

@@ -46,5 +46,7 @@ pub fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Await(args) => agent::await_cmd(args),
         Command::Events(args) => agent::events(args),
         Command::Ack(args) => agent::ack_cmd(args),
+        Command::Reply(args) => agent::reply(args),
+        Command::Resolve(args) => agent::resolve(args),
     }
 }

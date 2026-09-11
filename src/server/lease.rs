@@ -244,6 +244,7 @@ pub fn acquire(shared: &Shared, claim: Claim) -> Result<LeaseRecord, LeaseError>
         decide_locked(&core, now, &claim)?
     };
 
+    let announce = !matches!(decision, Decision::Refresh(_));
     let record = match decision {
         Decision::Refresh(record) => record,
         Decision::Relog(record) => {
@@ -272,6 +273,12 @@ pub fn acquire(shared: &Shared, claim: Claim) -> Result<LeaseRecord, LeaseError>
     };
 
     shared.core.lock().unwrap().lease_seen_ms = now;
+    // Spec 6.3's `agent.attached`, for the page's presence pill. Announced
+    // rather than logged, and only when the lease actually changed, so a poll
+    // every 90 seconds does not repaint the pill.
+    if announce {
+        crate::server::presence::agent_attached(shared, &record.name, record.mode);
+    }
     Ok(record)
 }
 
@@ -452,6 +459,8 @@ pub fn release(shared: &Shared, token: &str) {
         "lease.released",
         serde_json::json!({ "agent": record.name, "generation": record.generation }),
     ));
+    drop(committer);
+    crate::server::presence::agent_detached(shared, &record.name);
 }
 
 #[cfg(test)]

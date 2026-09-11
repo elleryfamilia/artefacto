@@ -414,6 +414,7 @@ fn push(args: &crate::cli::PushArgs) -> Result<()> {
         port: None,
         foreground: false,
         no_open: true,
+        ..Default::default()
     })
     .context("starting the review server")?;
 

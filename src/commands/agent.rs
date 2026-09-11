@@ -27,7 +27,7 @@
 //! Only a real error is non-zero: 4 when there is no server, 6 when the lease
 //! is held or the token was superseded.
 
-use crate::cli::{AckArgs, AwaitArgs, EventsArgs};
+use crate::cli::{AckArgs, AwaitArgs, EventsArgs, ReplyArgs, ResolveArgs};
 use crate::client::Client;
 use crate::commands::Exit;
 use anyhow::Result;
@@ -170,4 +170,51 @@ fn push_common(
     if takeover {
         query.push(("takeover", "1".to_string()));
     }
+}
+
+/// Answer the reviewer. Spec 5: `reply` needs either a thread or an artifact,
+/// and `--artifact` may be omitted when the server has exactly one.
+pub fn reply(args: &ReplyArgs) -> Result<()> {
+    let text = match (&args.text, args.stdin) {
+        (Some(text), _) => text.clone(),
+        (None, true) => {
+            let mut buffer = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut buffer)?;
+            buffer.trim_end_matches('\n').to_string()
+        }
+        (None, false) => unreachable!("clap requires text or --stdin"),
+    };
+    let client = Client::connect()?;
+    let mut query = vec![("session", args.session.clone())];
+    if let Some(thread) = &args.thread {
+        query.push(("thread", thread.clone()));
+    }
+    if let Some(artifact) = &args.artifact {
+        query.push(("artifact", artifact.clone()));
+    }
+    if args.nudge {
+        query.push(("nudge", "1".to_string()));
+    }
+    let result = client.call_body("POST", "reply", &query, &text, Duration::from_secs(30))?;
+    println!("{result}");
+    Ok(())
+}
+
+/// Mark a thread addressed or declined, with a note the reviewer reads in the
+/// thread. Spec 6.3.
+pub fn resolve(args: &ResolveArgs) -> Result<()> {
+    let client = Client::connect()?;
+    let status = if args.changed { "changed" } else { "declined" };
+    let mut query = vec![
+        ("session", args.session.clone()),
+        ("thread", args.thread.clone()),
+        ("status", status.to_string()),
+    ];
+    if let Some(artifact) = &args.artifact {
+        query.push(("artifact", artifact.clone()));
+    }
+    let note = args.note.clone().unwrap_or_default();
+    let result = client.call_body("POST", "resolve", &query, &note, Duration::from_secs(30))?;
+    println!("{result}");
+    Ok(())
 }

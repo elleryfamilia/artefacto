@@ -35,6 +35,56 @@ pub enum Command {
     Events(EventsArgs),
     /// Acknowledge part of a frame explicitly.
     Ack(AckArgs),
+    /// Answer the reviewer, in a thread or on the page.
+    Reply(ReplyArgs),
+    /// Mark a thread addressed or declined.
+    Resolve(ResolveArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ReplyArgs {
+    /// The session token. Spec 4.2: every agent mutation carries it.
+    #[arg(long)]
+    pub session: String,
+    /// Reply inside this thread.
+    #[arg(long, conflicts_with = "artifact")]
+    pub thread: Option<String>,
+    /// Reply at page level on this artifact. May be omitted when the server
+    /// has exactly one.
+    #[arg(long)]
+    pub artifact: Option<String>,
+    /// Post a banner rather than a message. Spec 6.3 requires a `nudge` event;
+    /// spec 5's `reply` surface needs this flag added to it.
+    #[arg(long)]
+    pub nudge: bool,
+    /// The text. Use --stdin to read it from a pipe instead.
+    #[arg(required_unless_present = "stdin")]
+    pub text: Option<String>,
+    /// Read the text from standard input.
+    #[arg(long, conflicts_with = "text")]
+    pub stdin: bool,
+}
+
+#[derive(Args, Debug)]
+#[command(group = clap::ArgGroup::new("verdict").required(true))]
+pub struct ResolveArgs {
+    /// The thread id, such as `c-1`.
+    pub thread: String,
+    /// The session token.
+    #[arg(long)]
+    pub session: String,
+    /// Name the artifact when the same thread id exists on more than one.
+    #[arg(long)]
+    pub artifact: Option<String>,
+    /// The plan changed in response.
+    #[arg(long, group = "verdict")]
+    pub changed: bool,
+    /// The point was considered and not acted on.
+    #[arg(long, group = "verdict")]
+    pub declined: bool,
+    /// Why, in the reviewer's thread.
+    #[arg(long)]
+    pub note: Option<String>,
 }
 
 /// `<n>` seconds, or `<n>s`, `<n>m`, `<n>h`. Spec 5 writes timeouts as `90s`
@@ -110,6 +160,7 @@ pub struct AckArgs {
     pub session: String,
 }
 
+/// `Default` is how `push` starts a server without restating every flag.
 #[derive(Args, Debug)]
 pub struct ServeArgs {
     /// Bind this port instead of the recorded one.
@@ -121,6 +172,44 @@ pub struct ServeArgs {
     /// Do not open a browser.
     #[arg(long)]
     pub no_open: bool,
+    /// How long the reviewer may be quiet with the page open before the agent
+    /// is nudged. `off` disables it.
+    #[arg(long, default_value = "15m", value_parser = parse_window)]
+    pub idle: Window,
+    /// How long every page may stay closed, with the review unsubmitted,
+    /// before the agent is told the reviewer is away. `off` disables it.
+    #[arg(long, default_value = "5m", value_parser = parse_window)]
+    pub away: Window,
+}
+
+impl Default for ServeArgs {
+    fn default() -> ServeArgs {
+        ServeArgs {
+            port: None,
+            foreground: false,
+            no_open: false,
+            idle: Window(Some(std::time::Duration::from_secs(15 * 60))),
+            away: Window(Some(std::time::Duration::from_secs(5 * 60))),
+        }
+    }
+}
+
+/// A duration, or nothing at all.
+///
+/// A newtype rather than a bare `Option<Duration>`, because clap reads
+/// `Option<T>` on a field as "this argument is optional" and then tries to
+/// downcast the parsed value to `T`. With a `value_parser` that yields the
+/// `Option` itself, that mismatch is a panic at parse time, not a compile
+/// error — which is exactly how it was found.
+#[derive(Debug, Clone, Copy)]
+pub struct Window(pub Option<std::time::Duration>);
+
+/// A duration, or `off`. Spec 16: both nudge timers "can be set to `off`".
+pub fn parse_window(raw: &str) -> Result<Window, String> {
+    if raw.trim().eq_ignore_ascii_case("off") {
+        return Ok(Window(None));
+    }
+    parse_duration(raw).map(|d| Window(Some(d)))
 }
 
 #[derive(Args, Debug)]

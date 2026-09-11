@@ -62,7 +62,11 @@ pub fn serve(args: &ServeArgs) -> Result<()> {
     // Everything below runs in the grandchild. Every failure between here and
     // accepting must be reported through `readiness`, or the parent sees only
     // EOF and can say nothing useful.
-    let started = start(&dir, listener, port, secret);
+    let nudges = crate::server::presence::Nudges {
+        idle: args.idle.0,
+        away: args.away.0,
+    };
+    let started = start(&dir, listener, port, secret, nudges);
     let (shared, server) = match started {
         Ok(pair) => pair,
         Err(e) => match readiness {
@@ -89,6 +93,7 @@ fn start(
     listener: TcpListener,
     port: u16,
     secret: String,
+    nudges: crate::server::presence::Nudges,
 ) -> Result<(Arc<Shared>, Arc<tiny_http::Server>)> {
     state_dir::write_server_file(
         dir,
@@ -99,7 +104,7 @@ fn start(
             started_at: now_rfc3339(),
         },
     )?;
-    let shared = Arc::new(Shared::new(dir, secret, port)?);
+    let shared = Arc::new(Shared::with_nudges(dir, secret, port, nudges)?);
     let server = tiny_http::Server::from_listener(listener, None)
         .map_err(|e| anyhow::anyhow!("building the http server: {e}"))?;
     Ok((shared, Arc::new(server)))

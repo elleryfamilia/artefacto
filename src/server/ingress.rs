@@ -32,7 +32,6 @@ use crate::server::review::{plan_refs, Review};
 use serde::Deserialize;
 use std::io::Read;
 use std::sync::Arc;
-use std::time::Instant;
 use tiny_http::Request;
 
 /// Reviewer text is bounded so a runaway page cannot fill an append-only log.
@@ -196,7 +195,7 @@ pub fn handle_command(shared: &Arc<Shared>, mut request: Request, artifact: &str
     // is separate from the CLI's: an agent polling every 90 seconds is not the
     // reviewer doing anything, and one field for both would mean the idle
     // nudge could never fire while an agent was attached.
-    mark_reviewer_activity(shared, Instant::now());
+    mark_reviewer_activity(shared);
 
     let outcome = commit_command(shared, artifact, &command);
     match outcome {
@@ -238,9 +237,8 @@ struct Committed {
     frame: Option<Frame>,
 }
 
-fn mark_reviewer_activity(shared: &Shared, now: Instant) {
-    let mut core = shared.core.lock().unwrap();
-    core.last_reviewer_activity_at = now;
+fn mark_reviewer_activity(shared: &Shared) {
+    crate::server::presence::on_reviewer_activity(shared, shared.now_ms());
 }
 
 /// Validate, assign, append and fold — all under one gate, so two tabs cannot
@@ -273,6 +271,16 @@ fn commit_command(
 
     let (kind, mut data, assigned) = c.with_review(|review| build(review, artifact, command))?;
     data["client_id"] = serde_json::json!(client_id);
+    if kind == "review.submitted" {
+        // Ordering, not decoration. The file is written **first**, so the
+        // event can name it. The other way round — append, then work out the
+        // path, then put it into the event — is not something an append-only
+        // log can do, and an earlier draft of this was written that way.
+        //
+        // `core` is not held here: `with_review` took it and gave it back, and
+        // the gate is what makes the read-then-write safe.
+        attach_feedback(&c, artifact, &mut data)?;
+    }
 
     let revision = c.with_review(|r| r.artifacts.get(artifact).map(|a| a.revision).unwrap_or(0));
     let event = c.append(artifact, revision, Actor::Reviewer, kind, data)?;
@@ -286,6 +294,51 @@ fn commit_command(
         seq,
         frame: Some(frame),
     }))
+}
+
+/// Build the `artefacto.feedback/1` document from folded state and write it
+/// beside the plan, then put both the document and its path into the event.
+///
+/// The ids in it are the server's, not the page's: spec 6.6 makes them
+/// server-assigned and stable, so the document is built from the `Review`
+/// rather than from whatever the page believed.
+fn attach_feedback(
+    c: &Committer,
+    artifact: &str,
+    data: &mut serde_json::Value,
+) -> anyhow::Result<()> {
+    let chosen = data
+        .get("verdict")
+        .and_then(|v| v.as_str())
+        .unwrap_or("comment")
+        .to_string();
+    let base_revision = data
+        .get("base_revision")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let (verdict, document, source_path) = c.with_review(|review| {
+        let verdict = crate::server::feedback::settle_verdict(review, artifact, &chosen);
+        let document = crate::server::feedback::document(review, artifact, &verdict, base_revision);
+        let source = review
+            .artifacts
+            .get(artifact)
+            .map(|a| a.source_path.clone())
+            .unwrap_or_default();
+        (verdict, document, source)
+    });
+
+    data["verdict"] = serde_json::json!(verdict);
+    data["feedback"] = document.clone();
+    // Spec 6.7 writes it "next to the pushed plan file". An artifact with no
+    // source path — one seeded straight into the log — has nowhere to put it,
+    // and the event then carries the document without a path rather than
+    // inventing a location.
+    if !source_path.is_empty() {
+        let written =
+            crate::server::feedback::write(std::path::Path::new(&source_path), &document)?;
+        data["path"] = serde_json::json!(written.display().to_string());
+    }
+    Ok(())
 }
 
 type Built = (&'static str, serde_json::Value, Option<String>);

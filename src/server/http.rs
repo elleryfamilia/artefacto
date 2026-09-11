@@ -40,11 +40,21 @@ pub struct Core {
     /// the reviewer's is separate, because an agent polling every 90 seconds
     /// is not the reviewer doing anything.
     pub last_request_at: Instant,
-    /// When the reviewer last did anything, marked by ingress. Separate from
-    /// `last_request_at` on purpose: an `await` long poll is an HTTP request
-    /// every 90 seconds, so one field for both would mean the idle nudge could
-    /// never fire while an agent was attached.
-    pub last_reviewer_activity_at: Instant,
+    /// When the reviewer last did anything, marked by ingress, in milliseconds
+    /// since [`Shared::now_ms`]'s origin. Separate from `last_request_at` on
+    /// purpose: an `await` long poll is an HTTP request every 90 seconds, so
+    /// one field for both would mean the idle nudge could never fire while an
+    /// agent was attached.
+    pub last_reviewer_activity_ms: i64,
+    /// The idle nudge has fired for this quiet period. Cleared by activity.
+    pub idle_fired: bool,
+    /// The away nudge has fired. Cleared when a page comes back.
+    pub away_fired: bool,
+    /// When the last page socket closed. `None` while a page is open.
+    pub page_gone_since_ms: Option<i64>,
+    /// Whether a page has ever connected. The away clock does not start before
+    /// a reviewer has actually been here.
+    pub page_seen: bool,
     /// When the lease holder was last heard from, in milliseconds since
     /// [`Shared::now_ms`]'s origin. Written only by `lease`.
     ///
@@ -71,6 +81,9 @@ pub struct Shared {
     /// Derived from `secret`, so it survives a restart. Never the secret.
     pub page_cookie: String,
     pub port: u16,
+    /// How long the reviewer's idle and away timers wait. Spec 16 allows both
+    /// to be `off`.
+    pub nudges: crate::server::presence::Nudges,
     /// The origin every lease age is measured from. See [`Shared::now_ms`].
     epoch: Instant,
     stopping: AtomicBool,
@@ -82,6 +95,15 @@ pub struct Shared {
 
 impl Shared {
     pub fn new(dir: &Path, secret: String, port: u16) -> Result<Shared> {
+        Shared::with_nudges(dir, secret, port, Default::default())
+    }
+
+    pub fn with_nudges(
+        dir: &Path,
+        secret: String,
+        port: u16,
+        nudges: crate::server::presence::Nudges,
+    ) -> Result<Shared> {
         let log = EventLog::open(dir)?;
         // The single source of truth, read once at start. Everything the
         // server knows about a review, it read from here.
@@ -93,7 +115,11 @@ impl Shared {
                 review,
                 bootstrap: HashMap::new(),
                 last_request_at: Instant::now(),
-                last_reviewer_activity_at: Instant::now(),
+                last_reviewer_activity_ms: 0,
+                idle_fired: false,
+                away_fired: false,
+                page_gone_since_ms: None,
+                page_seen: false,
                 lease_seen_ms: 0,
                 last_offer: None,
             }),
@@ -101,6 +127,7 @@ impl Shared {
             page_cookie: derive_credential(&secret, "page-cookie"),
             secret,
             port,
+            nudges,
             epoch: Instant::now(),
             stopping: AtomicBool::new(false),
             in_flight: AtomicUsize::new(0),
@@ -172,6 +199,9 @@ pub fn run(shared: Arc<Shared>, server: Arc<tiny_http::Server>, idle: Duration) 
             // `Server::unblock` also produces this, which is why the stopping
             // flag is checked at the top rather than trusting the timeout.
             Ok(None) => {
+                // The nudge timers live here rather than on a thread of their
+                // own: this branch runs four times a second already.
+                crate::server::presence::tick(&shared, shared.now_ms());
                 if should_self_exit(&shared, idle) {
                     break;
                 }
@@ -267,6 +297,8 @@ fn cli_route(shared: &Arc<Shared>, request: Request, route: &str, query: &Query)
         "events" => crate::server::poll::handle_events(shared, request, query),
         "ack" => crate::server::poll::handle_ack(shared, request, query),
         "push" => crate::server::push::handle_push(shared, request, query),
+        "reply" => crate::server::verbs::handle_reply(shared, request, query),
+        "resolve" => crate::server::verbs::handle_resolve(shared, request, query),
         "status" => {
             let last_seq = shared.log.lock().unwrap().last_seq();
             let body = serde_json::json!({

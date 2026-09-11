@@ -14,6 +14,7 @@
 pub mod daemon;
 pub mod delivery;
 pub mod event;
+pub mod feedback;
 pub mod fold;
 pub mod http;
 pub mod ingress;
@@ -21,7 +22,9 @@ pub mod lease;
 pub mod log;
 pub mod page;
 pub mod poll;
+pub mod presence;
 pub mod push;
 pub mod review;
 pub mod socket;
 pub mod state_dir;
+pub mod verbs;

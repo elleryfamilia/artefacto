@@ -86,6 +86,30 @@ impl Repo {
             .expect("spawning artefacto")
     }
 
+    /// Run with something on standard input, for `reply --stdin`.
+    pub fn run_with_stdin(&self, args: &[&str], input: &str) -> Out {
+        use std::io::Write;
+        let mut child = self
+            .command(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawning artefacto");
+        child
+            .stdin
+            .as_mut()
+            .expect("piped stdin")
+            .write_all(input.as_bytes())
+            .expect("write stdin");
+        let out = child.wait_with_output().expect("running artefacto");
+        Out {
+            code: out.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+        }
+    }
+
     pub fn json(&self, args: &[&str]) -> serde_json::Value {
         let out = self.run(args);
         assert_eq!(out.code, 0, "{args:?} failed: {}", out.stderr);
@@ -216,10 +240,23 @@ impl InProcess {
     }
 
     pub fn start_with_idle(idle: std::time::Duration) -> InProcess {
+        InProcess::start_owned(idle, artefacto::server::presence::Nudges::off())
+    }
+
+    /// A server with the reviewer's nudge timers set. Distinct from
+    /// `start_with_idle`, which is the daemon's **self-exit** window.
+    pub fn start_with_nudges(nudges: artefacto::server::presence::Nudges) -> InProcess {
+        InProcess::start_owned(std::time::Duration::from_secs(3600), nudges)
+    }
+
+    fn start_owned(
+        idle: std::time::Duration,
+        nudges: artefacto::server::presence::Nudges,
+    ) -> InProcess {
         let dir = Arc::new(tempfile::tempdir().expect("tempdir"));
         let path = dir.path().to_path_buf();
         let secret = artefacto::server::state_dir::new_secret();
-        InProcess::boot(path, Some(dir), secret, idle)
+        InProcess::boot_on(path, Some(dir), secret, idle, 0, nudges)
     }
 
     /// Serve a real repository's state directory, and record this process in
@@ -230,14 +267,20 @@ impl InProcess {
     /// controls: the page and `push` are what normally write events, and
     /// neither exists yet on the agent side of the loop.
     pub fn start_in(repo: &Repo) -> InProcess {
+        InProcess::start_in_with(repo, artefacto::server::presence::Nudges::off())
+    }
+
+    pub fn start_in_with(repo: &Repo, nudges: artefacto::server::presence::Nudges) -> InProcess {
         let path = repo.state_dir();
         std::fs::create_dir_all(&path).expect("state dir");
         let secret = artefacto::server::state_dir::new_secret();
-        let server = InProcess::boot(
+        let server = InProcess::boot_on(
             path.clone(),
             None,
             secret.clone(),
             std::time::Duration::from_secs(3600),
+            0,
+            nudges,
         );
         artefacto::server::state_dir::write_server_file(
             &path,
@@ -265,6 +308,7 @@ impl InProcess {
             previous.secret.clone(),
             std::time::Duration::from_secs(3600),
             previous.port,
+            artefacto::server::presence::Nudges::off(),
         );
         artefacto::server::state_dir::write_server_file(
             &path,
@@ -283,7 +327,14 @@ impl InProcess {
         secret: String,
         idle: std::time::Duration,
     ) -> InProcess {
-        InProcess::boot_on(path, owned, secret, idle, 0)
+        InProcess::boot_on(
+            path,
+            owned,
+            secret,
+            idle,
+            0,
+            artefacto::server::presence::Nudges::off(),
+        )
     }
 
     fn boot_on(
@@ -292,10 +343,11 @@ impl InProcess {
         secret: String,
         idle: std::time::Duration,
         port: u16,
+        nudges: artefacto::server::presence::Nudges,
     ) -> InProcess {
         let server = Arc::new(bind_retrying(port));
         let port = server.server_addr().to_ip().expect("ip").port();
-        let shared = Arc::new(Shared::new(&path, secret, port).expect("shared"));
+        let shared = Arc::new(Shared::with_nudges(&path, secret, port, nudges).expect("shared"));
         let s = Arc::clone(&server);
         let sh = Arc::clone(&shared);
         let thread = std::thread::spawn(move || run(sh, s, idle));
@@ -315,8 +367,16 @@ impl InProcess {
         let owned = self.owned.take();
         let path = self.path.clone();
         let secret = self.shared.secret.clone();
+        let nudges = self.shared.nudges;
         self.shutdown();
-        InProcess::boot(path, owned, secret, std::time::Duration::from_secs(3600))
+        InProcess::boot_on(
+            path,
+            owned,
+            secret,
+            std::time::Duration::from_secs(3600),
+            0,
+            nudges,
+        )
     }
 
     /// Restart on the **same** port, the way `serve` does. A client that is
@@ -327,6 +387,7 @@ impl InProcess {
         let path = self.path.clone();
         let secret = self.shared.secret.clone();
         let port = self.port;
+        let nudges = self.shared.nudges;
         self.shutdown();
         // The listener lives in `self`, and it has to be closed before the
         // next one can take the port. Dropping the harness after booting the
@@ -338,6 +399,7 @@ impl InProcess {
             secret,
             std::time::Duration::from_secs(3600),
             port,
+            nudges,
         )
     }
 
@@ -604,12 +666,27 @@ impl InProcess {
     }
 
     pub fn reviewer_idle_for(&self) -> std::time::Duration {
-        self.shared
-            .core
-            .lock()
-            .unwrap()
-            .last_reviewer_activity_at
-            .elapsed()
+        let quiet =
+            self.shared.now_ms() - self.shared.core.lock().unwrap().last_reviewer_activity_ms;
+        std::time::Duration::from_millis(quiet.max(0) as u64)
+    }
+
+    /// Drive the reviewer's activity clock directly, for the nudge timers.
+    /// `at_ms` is milliseconds since the server started, the same clock
+    /// `presence::tick` reads.
+    pub fn mark_reviewer_activity_at(&self, at_ms: i64) {
+        let mut core = self.shared.core.lock().unwrap();
+        core.last_reviewer_activity_ms = at_ms;
+        core.idle_fired = false;
+    }
+
+    pub fn count_events(&self, kind: &str) -> usize {
+        self.events_of_type(kind).len()
+    }
+
+    /// Pretend a page has been here, so the away clock is allowed to start.
+    pub fn mark_page_seen(&self) {
+        self.shared.core.lock().unwrap().page_seen = true;
     }
 
     /// POST a command the way the page will, with the cookie and a strict
