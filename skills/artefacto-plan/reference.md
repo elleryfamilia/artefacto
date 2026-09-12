@@ -469,7 +469,7 @@ comment text is free text written by the reviewer.
 | `format` | string | always `"artefacto.feedback/1"` |
 | `plan_id` | string | the plan's `meta.id` |
 | `plan_hash` | string | `sha256:…` of the revision reviewed |
-| `verdict` | `"approve"` \| `"comment"` \| `"request_changes"` | the reviewer's choice; `comment` becomes `request_changes` while any open comment blocks |
+| `verdict` | `"approve"` \| `"comment"` \| `"request_changes"` | the served page sends `approve` or `request_changes` (its two buttons); the static export sends `approve` or `comment`, and `comment` becomes `request_changes` while any open comment blocks |
 | `base_revision` | integer | the revision the review was made against |
 | `comments` | array\<Comment\> | every thread on the artifact, whatever its status |
 | `answers` | array | `{question, text}` for each answered open question |

@@ -77,6 +77,10 @@ pub struct Message {
     pub actor: String,
     pub text: String,
     pub ts: String,
+    /// The agent's closing note on a resolved thread, as distinct from a
+    /// turn of the conversation: the page renders it as the resolution.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub note: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -3752,3 +3752,344 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
         "the snapshot carries the verdict"
     );
 }
+
+/// Open a question on `target` with `text` and wait for its thread `c-N`.
+fn ask(page: &mut support::browser::Page, target: &str, text: &str, thread: &str) {
+    page.click(&format!("[data-plan-ref=\"{target}\"] .ask-btn"));
+    page.type_into(
+        &format!(
+            "[data-plan-ref=\"{target}\"] .pv-composers .composer[data-kind=\"ask\"] textarea"
+        ),
+        text,
+    );
+    page.click(&format!(
+        "[data-plan-ref=\"{target}\"] .pv-composers .composer[data-kind=\"ask\"] .composer-send"
+    ));
+    page.wait_until(
+        &format!("document.querySelectorAll('.thread[data-thread=\"{thread}\"] .thread-msg').length === 1"),
+        "the question to open its thread",
+    );
+}
+
+#[test]
+fn the_working_state_follows_the_servers_state() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    ask(&mut page, "task:t-a", "is this the whole plan?", "c-1");
+    assert_eq!(
+        page.eval("!!document.querySelector('.thread[data-thread=\"c-1\"] .thread-working')"),
+        true
+    );
+
+    // A reload shows the question still waiting: the state says so.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.eval("!!document.querySelector('.thread[data-thread=\"c-1\"] .thread-working')"),
+        true,
+        "the working row is derived from the state, not from this page's memory"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-presence').dataset.mode"),
+        "working"
+    );
+
+    // The answer arrives while the page is offline, so it comes back in a
+    // snapshot rather than as a frame: the working state ends all the same.
+    page.set_offline(true);
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--thread",
+            "c-1",
+            "yes, all of it",
+        ])
+        .success();
+    page.set_offline(false);
+    page.wait_until(
+        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
+        "the answer to arrive in the snapshot",
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.thread[data-thread=\"c-1\"] .thread-working')"),
+        false,
+        "an answer carried by a snapshot ends the working row"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-presence').dataset.mode"),
+        "waiting"
+    );
+
+    // A second question, resolved by the agent without an answer: resolving
+    // it ends the working state too, and no no-agent notice follows.
+    ask(&mut page, "phase:p-one", "how long?", "c-2");
+    assert_eq!(
+        page.eval("!!document.querySelector('.thread[data-thread=\"c-2\"] .thread-working')"),
+        true
+    );
+    s.repo
+        .run(&[
+            "resolve",
+            "c-2",
+            "--session",
+            &s.session,
+            "--declined",
+            "--note",
+            "Answered in the summary.",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelector('.thread[data-thread=\"c-2\"]').dataset.status === 'declined'",
+        "the resolution to land",
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.thread[data-thread=\"c-2\"] .thread-working')"),
+        false
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-presence').dataset.mode"),
+        "waiting"
+    );
+    s.server()
+        .age_lease(artefacto::server::lease::TTL + std::time::Duration::from_secs(1));
+    page.wait_until(
+        "document.querySelector('.pv-presence').dataset.mode === 'off'",
+        "the lease to expire",
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"noagent\"]')"),
+        false,
+        "nothing is waiting"
+    );
+}
+
+#[test]
+fn a_resolution_stays_the_resolution_after_a_reply() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    comment(&mut page, "task:t-a", "needs a rollback step");
+    s.repo
+        .run(&[
+            "resolve",
+            "c-1",
+            "--session",
+            &s.session,
+            "--changed",
+            "--note",
+            "Added t-rollback.",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelector('.thread[data-thread=\"c-1\"]').dataset.status === 'changed'",
+        "the resolution",
+    );
+    // The reviewer replies after the resolution; the agent replies again.
+    reply(&mut page, "c-1", "thanks");
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--thread",
+            "c-1",
+            "any time",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 3",
+        "comment, thanks, any time",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .thread-resolution .thread-text').textContent"),
+        "Added t-rollback.",
+        "the note is the resolution because the server marked it, not because it was last"
+    );
+    // And after a reload, from the snapshot.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .thread-resolution .thread-text').textContent"),
+        "Added t-rollback."
+    );
+    let status = s.repo.json(&["status", "--json"]);
+    let notes: Vec<bool> = status["artifacts"][0]["threads"][0]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["note"].as_bool().unwrap_or(false))
+        .collect();
+    assert_eq!(
+        notes,
+        vec![false, true, false, false],
+        "only the note is a note"
+    );
+}
+
+#[test]
+fn a_follow_up_sends_once_and_keeps_its_place() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    ask(&mut page, "task:t-a", "is this the whole plan?", "c-1");
+    s.repo
+        .run(&["reply", "--session", &s.session, "--thread", "c-1", "yes"])
+        .success();
+    page.wait_until(
+        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
+        "the answer",
+    );
+    let input = ".thread[data-thread=\"c-1\"] .thread-composer textarea";
+
+    // Focus and caret survive a swap, and the draft survives a reload. The
+    // phase is opened first: a closed disclosure cannot hold focus.
+    page.click("#phases-actions .pv-btn");
+    page.type_into(input, "and the CLI layer?");
+    page.eval(&format!(
+        "document.querySelector('{input}').setSelectionRange(4, 7)"
+    ));
+    let plan = s.repo.path().join("plan.json");
+    s.repo
+        .run(&[
+            "plan",
+            "push",
+            plan.to_str().unwrap(),
+            "--json",
+            "--session",
+            &s.session,
+            "--base-revision",
+            "1",
+        ])
+        .success();
+    page.wait_until(
+        "window.artefactoPlan.debug().revision === 2 && !window.artefactoPlan.debug().syncing",
+        "revision 2",
+    );
+    assert_eq!(
+        page.eval(&format!("document.activeElement === document.querySelector('{input}') && document.activeElement.selectionStart === 4 && document.activeElement.selectionEnd === 7")),
+        true,
+        "focus and caret came back after the swap"
+    );
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.text(&format!("document.querySelector('{input}').value")),
+        "and the CLI layer?",
+        "the draft survived a reload"
+    );
+
+    // A swap while the send is in flight: the input sends once, the live
+    // input is cleared and re-enabled when the reply lands.
+    shape_fetch(&mut page, "/cmd", "hold-response", 1200);
+    page.eval(&format!("document.querySelector('{input}').dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', bubbles: true }}))"));
+    assert_eq!(
+        page.eval(
+            "document.querySelector('.thread[data-thread=\"c-1\"] .thread-composer-send').disabled"
+        ),
+        true,
+        "disabled in flight"
+    );
+    s.repo
+        .run(&[
+            "plan",
+            "push",
+            plan.to_str().unwrap(),
+            "--json",
+            "--session",
+            &s.session,
+            "--base-revision",
+            "2",
+        ])
+        .success();
+    page.wait_until(
+        "window.artefactoPlan.debug().revision === 3 && !window.artefactoPlan.debug().syncing",
+        "revision 3",
+    );
+    assert_eq!(
+        page.eval(
+            "document.querySelector('.thread[data-thread=\"c-1\"] .thread-composer-send').disabled"
+        ),
+        true,
+        "still disabled after the swap"
+    );
+    page.eval(&format!("document.querySelector('{input}').dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', bubbles: true }}))"));
+    page.wait_until(
+        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 3",
+        "the follow-up to land",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(
+        s.server().count_events("chat.sent"),
+        2,
+        "the question and one follow-up, not two"
+    );
+    assert_eq!(
+        page.text(&format!("document.querySelector('{input}').value")),
+        "",
+        "the live input was cleared"
+    );
+    assert_eq!(
+        page.eval(
+            "document.querySelector('.thread[data-thread=\"c-1\"] .thread-composer-send').disabled"
+        ),
+        false
+    );
+
+    // A half-written follow-up outlives a resolution, and is listed when
+    // its thread is deleted.
+    page.type_into(input, "one more thing");
+    s.repo
+        .run(&[
+            "resolve",
+            "c-1",
+            "--session",
+            &s.session,
+            "--declined",
+            "--note",
+            "Enough.",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelector('.thread[data-thread=\"c-1\"]').dataset.status === 'declined'",
+        "declined",
+    );
+    assert_eq!(
+        page.eval(
+            "!document.querySelector('.thread[data-thread=\"c-1\"] .thread-composer').hidden"
+        ),
+        true,
+        "the input stays while it holds text"
+    );
+    assert_eq!(
+        page.text(&format!("document.querySelector('{input}').value")),
+        "one more thing"
+    );
+    page.click(".thread[data-thread=\"c-1\"] .thread-delete");
+    page.click(".thread[data-thread=\"c-1\"] .thread-delete");
+    page.wait_until(
+        "!document.querySelector('.thread[data-thread=\"c-1\"]')",
+        "the thread to go",
+    );
+    assert_eq!(
+        page.text(
+            "document.querySelector('.pv-recovery .pv-orphan-draft .thread-text').textContent"
+        ),
+        "one more thing",
+        "the follow-up is in the recovery panel"
+    );
+}

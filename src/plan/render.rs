@@ -997,25 +997,39 @@ mod tests {
         (hi + 0.05) / (lo + 0.05)
     }
 
-    /// The hex tokens of one theme block, by name.
-    fn tokens_of(block_start: &str) -> std::collections::HashMap<String, String> {
+    /// Every token block in the stylesheet (`:root {`, the dark media copy,
+    /// and each explicit theme), as (selector line, hex tokens by name).
+    fn token_blocks() -> Vec<(String, std::collections::HashMap<String, String>)> {
+        let mut blocks = Vec::new();
+        let mut current: Option<(String, std::collections::HashMap<String, String>)> = None;
+        // The print palette re-declares the light tokens; it is a copy by
+        // construction, not a theme of its own.
         let css = stylesheet();
-        let start = css
-            .find(block_start)
-            .unwrap_or_else(|| panic!("no block {block_start}"));
-        let body = &css[start..];
-        let end = body.find("\n}\n").unwrap();
-        body[..end]
-            .lines()
-            .filter_map(|l| {
-                let l = l.trim();
-                let (name, value) = l.strip_prefix("--")?.split_once(':')?;
-                let value = value.trim().trim_end_matches(';');
-                value
-                    .starts_with('#')
-                    .then(|| (name.trim().to_string(), value.to_string()))
-            })
-            .collect()
+        let css = &css[..css.find("@media print").unwrap_or(css.len())];
+        for line in css.lines() {
+            let t = line.trim();
+            if current.is_none() && t.starts_with(":root") && t.ends_with('{') {
+                current = Some((t.to_string(), Default::default()));
+                continue;
+            }
+            if let Some((sel, map)) = current.as_mut() {
+                if t == "}" {
+                    let done = (sel.clone(), std::mem::take(map));
+                    current = None;
+                    if done.1.contains_key("page") {
+                        blocks.push(done);
+                    }
+                    continue;
+                }
+                if let Some((name, value)) = t.strip_prefix("--").and_then(|l| l.split_once(':')) {
+                    let value = value.trim().trim_end_matches(';');
+                    if value.starts_with('#') {
+                        map.insert(name.trim().to_string(), value.to_string());
+                    }
+                }
+            }
+        }
+        blocks
     }
 
     /// The colour roles read at 4.5:1 in both themes: every ink on the page,
@@ -1024,18 +1038,25 @@ mod tests {
     /// a taste.
     #[test]
     fn tokens_meet_contrast_in_every_theme() {
-        for block in [
-            ":root {",
-            ":root[data-theme=\"dark\"] {",
-            ":root[data-theme=\"vibe\"] {",
-        ] {
-            let t = tokens_of(block);
-            let page = &t["page"];
-            for fg in [
-                "ink", "ink-2", "ink-3", "muted", "alarm", "warn", "ok", "action", "agent",
-            ] {
-                let ratio = contrast(&t[fg], page);
-                assert!(ratio >= 4.5, "{block}: --{fg} on --page is {ratio:.2}:1");
+        let blocks = token_blocks();
+        assert_eq!(
+            blocks.len(),
+            5,
+            "the light root, the dark media copy, and three explicit themes: {:?}",
+            blocks.iter().map(|b| b.0.clone()).collect::<Vec<_>>()
+        );
+        for (block, t) in &blocks {
+            // On the page, and on the surface a thread card or a note sits on.
+            for ground in ["page", "surface"] {
+                for fg in [
+                    "ink", "ink-2", "ink-3", "muted", "alarm", "warn", "ok", "action", "agent",
+                ] {
+                    let ratio = contrast(&t[fg], &t[ground]);
+                    assert!(
+                        ratio >= 4.5,
+                        "{block}: --{fg} on --{ground} is {ratio:.2}:1"
+                    );
+                }
             }
             for role in ["alarm", "action", "agent"] {
                 let ratio = contrast(&t[&format!("{role}-ink")], &t[role]);
@@ -1046,7 +1067,7 @@ mod tests {
             }
             assert!(
                 !t.contains_key("focus"),
-                "--focus is an alias of a role, not a colour of its own"
+                "{block}: --focus is an alias of a role, not a colour of its own"
             );
         }
     }

@@ -116,7 +116,7 @@
             id: t.id, target: t.target, quote: t.quote || "", blocking: !!t.blocking,
             asked: !!t.asked, status: t.status || "open",
             messages: (t.messages || []).map(function (m) {
-              return { actor: m.actor, text: m.text, ts: m.ts };
+              return { actor: m.actor, text: m.text, ts: m.ts, note: !!m.note };
             }),
           };
         }),
@@ -178,7 +178,7 @@
           const t = find(d.thread);
           if (!t || (d.status !== "changed" && d.status !== "declined")) return false;
           t.status = d.status;
-          if (d.note) t.messages.push({ actor: "agent", text: d.note, ts: e.ts || "" });
+          if (d.note) t.messages.push({ actor: "agent", text: d.note, ts: e.ts || "", note: true });
           return true;
         }
         case "question.answered": {
@@ -1675,8 +1675,11 @@
          { since }. Page-side, so a body swap keeps the working row. */
       pending: {},
       /* What is typed into a question thread's persistent input, by
-         thread id, so a swap re-creates the input with its text. */
+         thread id, so a swap re-creates the input with its text. Mirrored
+         to session storage so a reload keeps it too. */
       threadDrafts: {},
+      /* Threads with a follow-up send in flight: the input sends once. */
+      threadSending: {},
       lastPing: 0,
       previousTitle: null,
       own: {},
@@ -1714,6 +1717,21 @@
        revision 3 never arrives labelled revision 4, and the same client
        id, so a send repeated after a reload is not a second comment. */
     const DRAFTS_KEY = "artefacto:drafts:" + artifact;
+    const FOLLOWUPS_KEY = "artefacto:followups:" + artifact;
+    function loadFollowups() {
+      try {
+        const raw = window.sessionStorage.getItem(FOLLOWUPS_KEY);
+        const map = raw ? JSON.parse(raw) : {};
+        return map && typeof map === "object" ? map : {};
+      } catch (e) { return {}; }
+    }
+    function saveFollowups() {
+      try { window.sessionStorage.setItem(FOLLOWUPS_KEY, JSON.stringify(S.threadDrafts)); } catch (e) { /* best effort */ }
+    }
+    function setFollowup(thread, text) {
+      if (text) S.threadDrafts[thread] = text; else delete S.threadDrafts[thread];
+      saveFollowups();
+    }
     function loadDraftMap() {
       try {
         const raw = window.sessionStorage.getItem(DRAFTS_KEY);
@@ -1726,6 +1744,7 @@
     }
     function saveDraft(d) { const m = loadDraftMap(); m[d.id] = d; saveDraftMap(m); }
     function dropDraft(id) { const m = loadDraftMap(); delete m[id]; saveDraftMap(m); }
+    S.threadDrafts = loadFollowups();
 
     /* ---- transport ------------------------------------------------- */
 
@@ -1846,9 +1865,39 @@
       });
     }
 
-    function pendingSet(key) {
-      S.pending[key] = { since: Date.now() };
-      window.setTimeout(function () { if (S.pending[key]) renderAll(); }, core.settings.stillWaitingMs + 50);
+    function pendingSet(key, since) {
+      if (S.pending[key]) return;
+      S.pending[key] = { since: since || Date.now() };
+      const left = Math.max(0, core.settings.stillWaitingMs - (Date.now() - S.pending[key].since));
+      window.setTimeout(function () { if (S.pending[key]) renderAll(); }, left + 50);
+    }
+
+    /* The event stream says when a question was asked; the state says
+       whether it has been answered. Reconciled before every render, so a
+       snapshot that carried the answer, a reload, a second tab, and a
+       resolution all end (or start) the working state the same way. A
+       question thread's last turn by the reviewer is a question waiting;
+       an ask inside a comment thread is only known from the event, and is
+       cleared the same way once the agent has written after it. */
+    function reconcilePending() {
+      const seen = {};
+      S.state.threads.forEach(function (t) {
+        const open = t.status === "open" || t.status === "unanchored";
+        const last = t.messages[t.messages.length - 1];
+        const waiting = !!last && last.actor === "reviewer" && open;
+        if (t.asked && waiting) {
+          pendingSet(t.id, Date.parse(last.ts) || Date.now());
+        } else if (!waiting) {
+          delete S.pending[t.id];
+        }
+        seen[t.id] = true;
+      });
+      Object.keys(S.pending).forEach(function (key) {
+        if (key !== "page" && !seen[key]) delete S.pending[key];
+      });
+      const chat = S.state.chat[S.state.chat.length - 1];
+      if (chat && chat.actor === "reviewer") pendingSet("page", Date.parse(chat.ts) || Date.now());
+      else delete S.pending.page;
     }
 
     /* What the working row says: the mark's state and a line. */
@@ -2130,8 +2179,11 @@
       const active = document.activeElement;
       if (active && (active.tagName === "TEXTAREA" || active.tagName === "INPUT")) {
         const composer = active.closest("[data-composer]");
+        const thread = active.closest(".thread-composer") ? active.closest(".thread[data-thread]") : null;
         if (composer) {
           focus = { composer: composer.getAttribute("data-composer"), start: active.selectionStart, end: active.selectionEnd };
+        } else if (thread) {
+          focus = { thread: thread.getAttribute("data-thread"), start: active.selectionStart, end: active.selectionEnd };
         }
       }
       const anchors = [];
@@ -2159,13 +2211,20 @@
         placed = true;
       }
       if (!placed) window.scrollTo({ top: view.scrollY, left: 0, behavior: "instant" });
-      if (view.focus) {
-        const box = document.querySelector('[data-composer="' + view.focus.composer + '"] textarea');
-        if (box) {
-          box.focus({ preventScroll: true });
-          try { box.setSelectionRange(view.focus.start, view.focus.end); } catch (e) { /* ignore */ }
-        }
-      }
+      /* A thread's input is created by the render that follows the mount,
+         which may wait on a snapshot; if the box is not here yet the focus
+         is kept and applied by the next render. */
+      if (view.focus && !applyFocus(view.focus)) S.ui.pendingFocus = view.focus;
+    }
+
+    function applyFocus(f) {
+      const box = f.thread
+        ? document.querySelector('.thread[data-thread="' + f.thread + '"] .thread-composer textarea')
+        : document.querySelector('[data-composer="' + f.composer + '"] textarea');
+      if (!box) return false;
+      box.focus({ preventScroll: true });
+      try { box.setSelectionRange(f.start, f.end); } catch (e) { /* ignore */ }
+      return true;
     }
 
     function swapBody(html, revision) {
@@ -2385,13 +2444,13 @@
       const when = node.querySelector(".thread-when");
       when.textContent = first ? whenLabel(first.ts) : "";
       when.title = first ? first.ts : "";
-      /* A resolved thread's closing note is the agent's last message: it is
-         shown as the resolution, with the verdict chip, not as one more
-         turn of the conversation. The server stores it as a message, so
-         this is how the page reads it back after a reload too. */
-      const last = t.messages[t.messages.length - 1];
+      /* A resolved thread's closing note is marked by the server as a
+         note, not a turn: it is shown as the resolution with the verdict
+         chip, wherever it sits, and a reply after it stays a reply. */
       const resolved = t.status === "changed" || t.status === "declined";
-      const noteAt = resolved && t.messages.length > 1 && last.actor === "agent" ? t.messages.length - 1 : -1;
+      let noteAt = -1;
+      t.messages.forEach(function (m, i) { if (m.note && resolved) noteAt = i; });
+      const last = t.messages[noteAt];
       const msgs = node.querySelector(".thread-msgs");
       msgs.replaceChildren();
       t.messages.forEach(function (m, i) {
@@ -2426,11 +2485,16 @@
          it, so the Ask button goes too. */
       node.querySelector(".thread-reply").hidden = !!t.asked;
       node.querySelector(".thread-ask").hidden = !!t.asked;
+      /* The input stays while the thread is open, and while it holds text
+         the reviewer has not sent, whatever happened to the thread: a
+         resolution must not make a half-written follow-up vanish. */
       const composer = node.querySelector(".thread-composer");
-      composer.hidden = !(t.asked && open);
+      const draft = (S.threadDrafts[t.id] || "").trim();
+      composer.hidden = !(t.asked && (open || draft));
       if (!composer.hidden) {
         composer.querySelector(".thread-composer-hint").textContent = S.state.presence ? "Enter to send" : "waits for an agent";
         setMarkState(composer.querySelector(".ag-mark"), S.state.presence ? "" : "off");
+        composer.querySelector(".thread-composer-send").disabled = !!S.threadSending[t.id];
       }
     }
 
@@ -2460,23 +2524,33 @@
       ta.value = S.threadDrafts[t.id] || "";
       const grow = function () { ta.rows = Math.min(6, ta.value.split("\n").length); };
       grow();
+      /* The send is keyed by thread, not by this node: a body swap while
+         it is in flight re-creates the input, and the reply must clear
+         and re-enable the live one, not the one that was replaced. */
+      const live = function (sel) { return document.querySelector('.thread[data-thread="' + t.id + '"] .thread-composer ' + sel); };
       const submit = function () {
         const text = ta.value.trim();
-        if (!text || sendBtn.disabled) return;
+        if (!text || S.threadSending[t.id]) return;
+        S.threadSending[t.id] = true;
         sendBtn.disabled = true;
         send({ cmd: "chat.send", thread: t.id, text: text, opened_revision: S.state.revision })
           .then(function () {
-            ta.value = "";
-            delete S.threadDrafts[t.id];
-            grow();
-            sendBtn.disabled = false;
+            delete S.threadSending[t.id];
+            setFollowup(t.id, "");
+            const box = live("textarea");
+            if (box) { box.value = ""; box.rows = 1; box.focus({ preventScroll: true }); }
+            const btn = live(".thread-composer-send");
+            if (btn) { btn.disabled = false; cleared(btn); }
             markAsked();
-            cleared(sendBtn);
-            ta.focus({ preventScroll: true });
           })
-          .catch(function (e) { sendBtn.disabled = false; failed(sendBtn, e); });
+          .catch(function (e) {
+            delete S.threadSending[t.id];
+            const btn = live(".thread-composer-send") || sendBtn;
+            btn.disabled = false;
+            failed(btn, e);
+          });
       };
-      ta.addEventListener("input", function () { S.threadDrafts[t.id] = ta.value; grow(); });
+      ta.addEventListener("input", function () { setFollowup(t.id, ta.value); grow(); });
       ta.addEventListener("keydown", function (ev) {
         if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); submit(); }
       });
@@ -2824,10 +2898,10 @@
       list.replaceChildren();
       drafts.forEach(function (d) {
         const row = el("div", { class: "pv-orphan-draft", dataset: { composer: d.id } });
-        row.appendChild(el("span", { class: "pv-orphan-draft-what", text: draftLabel(d) + " — its element is gone" }));
+        row.appendChild(el("span", { class: "pv-orphan-draft-what", text: draftLabel(d) + (d.kind === "followup" ? " \u2014 its thread is gone" : " \u2014 its element is gone") }));
         row.appendChild(el("p", { class: "thread-text", text: d.text }));
         row.appendChild(el("button", { type: "button", class: "pv-btn is-quiet", text: "Discard", onclick: function () {
-          dropDraft(d.id);
+          if (d.kind === "followup") setFollowup(d.thread, ""); else dropDraft(d.id);
           renderRecovery();
         } }));
         list.appendChild(row);
@@ -2840,6 +2914,7 @@
         case "answer": return "Answer to " + d.ref;
         case "reply": return "Reply on " + d.thread;
         case "ask": return "Question on " + (d.thread || d.ref);
+        case "followup": return "Follow-up on a question";
         case "edit": return "Edit of " + d.thread;
         default: return "Message to the agent";
       }
@@ -2853,6 +2928,13 @@
         const d = map[id];
         if (!draftTarget(d)) out.push(d);
       }
+      /* A follow-up typed into a question thread that is no longer here. */
+      Object.keys(S.threadDrafts).forEach(function (thread) {
+        const text = (S.threadDrafts[thread] || "").trim();
+        if (!text) return;
+        if (S.state.threads.some(function (t) { return t.id === thread; })) return;
+        out.push({ id: "followup:" + thread, kind: "followup", thread: thread, text: text });
+      });
       return out;
     }
 
@@ -3182,6 +3264,7 @@
     }
 
     function renderAll() {
+      reconcilePending();
       renderPresence();
       renderThreads();
       renderAskMarks();
@@ -3194,6 +3277,7 @@
       restoreDrafts();
       ensureChatComposer();
       renderRecovery();
+      if (S.ui.pendingFocus && applyFocus(S.ui.pendingFocus)) S.ui.pendingFocus = null;
     }
 
     /* The render's orientation banner describes the static flow, which

@@ -83,6 +83,7 @@ fn message(event: &Event) -> Message {
         }
         .to_string(),
         text: str_field(event, "text"),
+        note: false,
         ts: event.ts.clone(),
     }
 }
@@ -206,6 +207,7 @@ fn thread_resolved(review: &mut Review, event: &Event) {
                     actor: "agent".to_string(),
                     text: note,
                     ts,
+                    note: true,
                 });
             }
         }

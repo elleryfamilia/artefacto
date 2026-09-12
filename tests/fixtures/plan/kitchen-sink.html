@@ -541,7 +541,7 @@ code {
 
 /* Set by plan.js once the page is scrolled past the top: the bar lifts off the
    content instead of sitting in it. */
-.pv-topbar.is-stuck { box-shadow: 0 4px 16px -8px rgba(0, 0, 0, 0.35); }
+.pv-topbar.is-stuck { box-shadow: var(--shadow-float); }
 
 .pv-brand {
   display: flex;
@@ -2131,24 +2131,9 @@ pre code { font-size: 1em; }
 .feedback-bar-count,
 .feedback-bar-reviewed { color: var(--ink); font-weight: 500; }
 
-.feedback-bar-copy {
-  flex: none;
-  border: 1px solid var(--ok);
-  background: var(--ok);
-  color: var(--page);
-  border-radius: 4px;
-  padding: 0.5rem 0.9375rem;
-  font-family: var(--font-mono);
-  font-size: 0.781rem;
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: opacity var(--t-fast) var(--ease), filter var(--t-fast) var(--ease);
-}
-
-.feedback-bar-copy:hover:not(:disabled) { filter: brightness(1.08); }
-.feedback-bar-copy:disabled { opacity: 0.4; cursor: default; }
+/* The static export's clipboard button is a primary pv-btn; only its copied
+   pulse is its own. */
+.feedback-bar-copy { flex: none; }
 
 /* Fires once when the copy lands -- the only confirmation the reader gets that
    their review made it to the clipboard. */
@@ -2247,6 +2232,8 @@ pre code { font-size: 1em; }
 .ag-mark.is-working .ag-core { animation: ag-breathe 1.1s var(--ease) infinite; }
 .ag-mark.is-off { color: var(--muted); }
 .ag-mark.is-off .ag-core { fill: none; stroke: currentColor; stroke-width: 1.5; }
+/* Waiting is the one place the mark borrows the status family: an agent
+   polling is a state of the review, and amber is what the pill said before. */
 .ag-mark.is-waiting { color: var(--warn); }
 .ag-mark-lg { width: 1.5em; height: 1.5em; }
 
@@ -2444,8 +2431,6 @@ pre code { font-size: 1em; }
   line-height: 1.375rem;
 }
 .thread-msg[data-actor="agent"] .thread-actor { color: var(--agent); }
-.thread-msg.is-working .thread-text { color: var(--ink-3); font-style: italic; }
-.thread-msg.is-working .thread-actor { color: var(--agent); }
 
 /* The agent's resolution note on a comment: changed or declined, with why. */
 .thread-resolution {
@@ -2595,10 +2580,47 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
 .pv-chat-log { display: flex; flex-direction: column; gap: 0.375rem; margin-bottom: 0.5rem; }
 .pv-chat-log[hidden] { display: none; }
 .pv-chat-msg { display: grid; grid-template-columns: 3.25rem 1fr; gap: 0.5rem; align-items: baseline; }
-.pv-chat-msg[data-actor="agent"] .thread-actor { color: var(--ok); }
+.pv-chat-msg[data-actor="agent"] .thread-actor { color: var(--agent); }
 .pv-chat .composer { margin-top: 0; }
 
 @media print {
+  /* Paper is white whatever theme is on: the light palette, re-declared. */
+  :root,
+  :root[data-theme] {
+  --canvas: #e8e6e1;
+  --page: #f7f4ef;
+  --surface: #efeadf;
+  --ink: #1c1a15;
+  --ink-2: #4a453b;
+  --ink-3: #5c5749;
+  --muted: #6b6558;
+  --rule: #ddd6c9;
+  --rule-soft: #e7e0d4;
+  --numeral: #8f8674;
+  --brand: #9b3d20;
+  --alarm: #9b3d20;
+  --alarm-ink: #f7f4ef;
+  --alarm-wash: rgba(155, 61, 32, 0.08);
+  --warn: #7a5c2f;
+  --warn-rule: #c8b8a0;
+  --warn-wash: rgba(122, 92, 47, 0.09);
+  --ok: #2f6b3d;
+  --ok-wash: rgba(47, 107, 61, 0.09);
+  --action: #2f4bb0;
+  --action-ink: #f7f4ef;
+  --action-wash: rgba(47, 75, 176, 0.08);
+  --action-rule: rgba(47, 75, 176, 0.35);
+  --agent: #0f6e78;
+  --agent-ink: #f7f4ef;
+  --agent-wash: rgba(15, 110, 120, 0.09);
+  --agent-rule: rgba(15, 110, 120, 0.4);
+  --radius: 5px;
+  --radius-lg: 6px;
+  --rule-w: 1px;
+  --font-serif: Newsreader, Georgia, "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-display: var(--font-serif);
+  }
   body { background: #fff; padding: 0; }
   .pv-sheet { box-shadow: none; max-width: none; }
   .pv-topbar { position: static; }
@@ -2750,7 +2772,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
             id: t.id, target: t.target, quote: t.quote || "", blocking: !!t.blocking,
             asked: !!t.asked, status: t.status || "open",
             messages: (t.messages || []).map(function (m) {
-              return { actor: m.actor, text: m.text, ts: m.ts };
+              return { actor: m.actor, text: m.text, ts: m.ts, note: !!m.note };
             }),
           };
         }),
@@ -2812,7 +2834,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
           const t = find(d.thread);
           if (!t || (d.status !== "changed" && d.status !== "declined")) return false;
           t.status = d.status;
-          if (d.note) t.messages.push({ actor: "agent", text: d.note, ts: e.ts || "" });
+          if (d.note) t.messages.push({ actor: "agent", text: d.note, ts: e.ts || "", note: true });
           return true;
         }
         case "question.answered": {
@@ -4309,8 +4331,11 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
          { since }. Page-side, so a body swap keeps the working row. */
       pending: {},
       /* What is typed into a question thread's persistent input, by
-         thread id, so a swap re-creates the input with its text. */
+         thread id, so a swap re-creates the input with its text. Mirrored
+         to session storage so a reload keeps it too. */
       threadDrafts: {},
+      /* Threads with a follow-up send in flight: the input sends once. */
+      threadSending: {},
       lastPing: 0,
       previousTitle: null,
       own: {},
@@ -4348,6 +4373,21 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
        revision 3 never arrives labelled revision 4, and the same client
        id, so a send repeated after a reload is not a second comment. */
     const DRAFTS_KEY = "artefacto:drafts:" + artifact;
+    const FOLLOWUPS_KEY = "artefacto:followups:" + artifact;
+    function loadFollowups() {
+      try {
+        const raw = window.sessionStorage.getItem(FOLLOWUPS_KEY);
+        const map = raw ? JSON.parse(raw) : {};
+        return map && typeof map === "object" ? map : {};
+      } catch (e) { return {}; }
+    }
+    function saveFollowups() {
+      try { window.sessionStorage.setItem(FOLLOWUPS_KEY, JSON.stringify(S.threadDrafts)); } catch (e) { /* best effort */ }
+    }
+    function setFollowup(thread, text) {
+      if (text) S.threadDrafts[thread] = text; else delete S.threadDrafts[thread];
+      saveFollowups();
+    }
     function loadDraftMap() {
       try {
         const raw = window.sessionStorage.getItem(DRAFTS_KEY);
@@ -4360,6 +4400,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
     }
     function saveDraft(d) { const m = loadDraftMap(); m[d.id] = d; saveDraftMap(m); }
     function dropDraft(id) { const m = loadDraftMap(); delete m[id]; saveDraftMap(m); }
+    S.threadDrafts = loadFollowups();
 
     /* ---- transport ------------------------------------------------- */
 
@@ -4480,9 +4521,39 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       });
     }
 
-    function pendingSet(key) {
-      S.pending[key] = { since: Date.now() };
-      window.setTimeout(function () { if (S.pending[key]) renderAll(); }, core.settings.stillWaitingMs + 50);
+    function pendingSet(key, since) {
+      if (S.pending[key]) return;
+      S.pending[key] = { since: since || Date.now() };
+      const left = Math.max(0, core.settings.stillWaitingMs - (Date.now() - S.pending[key].since));
+      window.setTimeout(function () { if (S.pending[key]) renderAll(); }, left + 50);
+    }
+
+    /* The event stream says when a question was asked; the state says
+       whether it has been answered. Reconciled before every render, so a
+       snapshot that carried the answer, a reload, a second tab, and a
+       resolution all end (or start) the working state the same way. A
+       question thread's last turn by the reviewer is a question waiting;
+       an ask inside a comment thread is only known from the event, and is
+       cleared the same way once the agent has written after it. */
+    function reconcilePending() {
+      const seen = {};
+      S.state.threads.forEach(function (t) {
+        const open = t.status === "open" || t.status === "unanchored";
+        const last = t.messages[t.messages.length - 1];
+        const waiting = !!last && last.actor === "reviewer" && open;
+        if (t.asked && waiting) {
+          pendingSet(t.id, Date.parse(last.ts) || Date.now());
+        } else if (!waiting) {
+          delete S.pending[t.id];
+        }
+        seen[t.id] = true;
+      });
+      Object.keys(S.pending).forEach(function (key) {
+        if (key !== "page" && !seen[key]) delete S.pending[key];
+      });
+      const chat = S.state.chat[S.state.chat.length - 1];
+      if (chat && chat.actor === "reviewer") pendingSet("page", Date.parse(chat.ts) || Date.now());
+      else delete S.pending.page;
     }
 
     /* What the working row says: the mark's state and a line. */
@@ -4764,8 +4835,11 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       const active = document.activeElement;
       if (active && (active.tagName === "TEXTAREA" || active.tagName === "INPUT")) {
         const composer = active.closest("[data-composer]");
+        const thread = active.closest(".thread-composer") ? active.closest(".thread[data-thread]") : null;
         if (composer) {
           focus = { composer: composer.getAttribute("data-composer"), start: active.selectionStart, end: active.selectionEnd };
+        } else if (thread) {
+          focus = { thread: thread.getAttribute("data-thread"), start: active.selectionStart, end: active.selectionEnd };
         }
       }
       const anchors = [];
@@ -4793,13 +4867,20 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
         placed = true;
       }
       if (!placed) window.scrollTo({ top: view.scrollY, left: 0, behavior: "instant" });
-      if (view.focus) {
-        const box = document.querySelector('[data-composer="' + view.focus.composer + '"] textarea');
-        if (box) {
-          box.focus({ preventScroll: true });
-          try { box.setSelectionRange(view.focus.start, view.focus.end); } catch (e) { /* ignore */ }
-        }
-      }
+      /* A thread's input is created by the render that follows the mount,
+         which may wait on a snapshot; if the box is not here yet the focus
+         is kept and applied by the next render. */
+      if (view.focus && !applyFocus(view.focus)) S.ui.pendingFocus = view.focus;
+    }
+
+    function applyFocus(f) {
+      const box = f.thread
+        ? document.querySelector('.thread[data-thread="' + f.thread + '"] .thread-composer textarea')
+        : document.querySelector('[data-composer="' + f.composer + '"] textarea');
+      if (!box) return false;
+      box.focus({ preventScroll: true });
+      try { box.setSelectionRange(f.start, f.end); } catch (e) { /* ignore */ }
+      return true;
     }
 
     function swapBody(html, revision) {
@@ -5019,13 +5100,13 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       const when = node.querySelector(".thread-when");
       when.textContent = first ? whenLabel(first.ts) : "";
       when.title = first ? first.ts : "";
-      /* A resolved thread's closing note is the agent's last message: it is
-         shown as the resolution, with the verdict chip, not as one more
-         turn of the conversation. The server stores it as a message, so
-         this is how the page reads it back after a reload too. */
-      const last = t.messages[t.messages.length - 1];
+      /* A resolved thread's closing note is marked by the server as a
+         note, not a turn: it is shown as the resolution with the verdict
+         chip, wherever it sits, and a reply after it stays a reply. */
       const resolved = t.status === "changed" || t.status === "declined";
-      const noteAt = resolved && t.messages.length > 1 && last.actor === "agent" ? t.messages.length - 1 : -1;
+      let noteAt = -1;
+      t.messages.forEach(function (m, i) { if (m.note && resolved) noteAt = i; });
+      const last = t.messages[noteAt];
       const msgs = node.querySelector(".thread-msgs");
       msgs.replaceChildren();
       t.messages.forEach(function (m, i) {
@@ -5060,11 +5141,16 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
          it, so the Ask button goes too. */
       node.querySelector(".thread-reply").hidden = !!t.asked;
       node.querySelector(".thread-ask").hidden = !!t.asked;
+      /* The input stays while the thread is open, and while it holds text
+         the reviewer has not sent, whatever happened to the thread: a
+         resolution must not make a half-written follow-up vanish. */
       const composer = node.querySelector(".thread-composer");
-      composer.hidden = !(t.asked && open);
+      const draft = (S.threadDrafts[t.id] || "").trim();
+      composer.hidden = !(t.asked && (open || draft));
       if (!composer.hidden) {
         composer.querySelector(".thread-composer-hint").textContent = S.state.presence ? "Enter to send" : "waits for an agent";
         setMarkState(composer.querySelector(".ag-mark"), S.state.presence ? "" : "off");
+        composer.querySelector(".thread-composer-send").disabled = !!S.threadSending[t.id];
       }
     }
 
@@ -5094,23 +5180,33 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       ta.value = S.threadDrafts[t.id] || "";
       const grow = function () { ta.rows = Math.min(6, ta.value.split("\n").length); };
       grow();
+      /* The send is keyed by thread, not by this node: a body swap while
+         it is in flight re-creates the input, and the reply must clear
+         and re-enable the live one, not the one that was replaced. */
+      const live = function (sel) { return document.querySelector('.thread[data-thread="' + t.id + '"] .thread-composer ' + sel); };
       const submit = function () {
         const text = ta.value.trim();
-        if (!text || sendBtn.disabled) return;
+        if (!text || S.threadSending[t.id]) return;
+        S.threadSending[t.id] = true;
         sendBtn.disabled = true;
         send({ cmd: "chat.send", thread: t.id, text: text, opened_revision: S.state.revision })
           .then(function () {
-            ta.value = "";
-            delete S.threadDrafts[t.id];
-            grow();
-            sendBtn.disabled = false;
+            delete S.threadSending[t.id];
+            setFollowup(t.id, "");
+            const box = live("textarea");
+            if (box) { box.value = ""; box.rows = 1; box.focus({ preventScroll: true }); }
+            const btn = live(".thread-composer-send");
+            if (btn) { btn.disabled = false; cleared(btn); }
             markAsked();
-            cleared(sendBtn);
-            ta.focus({ preventScroll: true });
           })
-          .catch(function (e) { sendBtn.disabled = false; failed(sendBtn, e); });
+          .catch(function (e) {
+            delete S.threadSending[t.id];
+            const btn = live(".thread-composer-send") || sendBtn;
+            btn.disabled = false;
+            failed(btn, e);
+          });
       };
-      ta.addEventListener("input", function () { S.threadDrafts[t.id] = ta.value; grow(); });
+      ta.addEventListener("input", function () { setFollowup(t.id, ta.value); grow(); });
       ta.addEventListener("keydown", function (ev) {
         if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); submit(); }
       });
@@ -5458,10 +5554,10 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       list.replaceChildren();
       drafts.forEach(function (d) {
         const row = el("div", { class: "pv-orphan-draft", dataset: { composer: d.id } });
-        row.appendChild(el("span", { class: "pv-orphan-draft-what", text: draftLabel(d) + " — its element is gone" }));
+        row.appendChild(el("span", { class: "pv-orphan-draft-what", text: draftLabel(d) + (d.kind === "followup" ? " \u2014 its thread is gone" : " \u2014 its element is gone") }));
         row.appendChild(el("p", { class: "thread-text", text: d.text }));
         row.appendChild(el("button", { type: "button", class: "pv-btn is-quiet", text: "Discard", onclick: function () {
-          dropDraft(d.id);
+          if (d.kind === "followup") setFollowup(d.thread, ""); else dropDraft(d.id);
           renderRecovery();
         } }));
         list.appendChild(row);
@@ -5474,6 +5570,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
         case "answer": return "Answer to " + d.ref;
         case "reply": return "Reply on " + d.thread;
         case "ask": return "Question on " + (d.thread || d.ref);
+        case "followup": return "Follow-up on a question";
         case "edit": return "Edit of " + d.thread;
         default: return "Message to the agent";
       }
@@ -5487,6 +5584,13 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
         const d = map[id];
         if (!draftTarget(d)) out.push(d);
       }
+      /* A follow-up typed into a question thread that is no longer here. */
+      Object.keys(S.threadDrafts).forEach(function (thread) {
+        const text = (S.threadDrafts[thread] || "").trim();
+        if (!text) return;
+        if (S.state.threads.some(function (t) { return t.id === thread; })) return;
+        out.push({ id: "followup:" + thread, kind: "followup", thread: thread, text: text });
+      });
       return out;
     }
 
@@ -5816,6 +5920,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
     }
 
     function renderAll() {
+      reconcilePending();
       renderPresence();
       renderThreads();
       renderAskMarks();
@@ -5828,6 +5933,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       restoreDrafts();
       ensureChatComposer();
       renderRecovery();
+      if (S.ui.pendingFocus && applyFocus(S.ui.pendingFocus)) S.ui.pendingFocus = null;
     }
 
     /* The render's orientation banner describes the static flow, which

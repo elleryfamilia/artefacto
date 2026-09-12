@@ -42,7 +42,7 @@ const CSS: &str = r#"
 .ix-poster a { display: block; }
 .ix-poster .ap-bg { fill: var(--page); stroke: var(--rule); }
 .ix-poster .ap-kind { fill: var(--brand); }
-.ix-poster .ap-kind-text { fill: var(--alarm-ink); }
+.ix-poster .ap-kind-text { fill: var(--page); }
 .ix-poster .ap-title { fill: var(--ink); }
 .ix-poster .ap-rev, .ix-poster .ap-counts, .ix-poster .ap-state { fill: var(--muted); }
 .ix-poster .ap-phase { fill: var(--rule); }
