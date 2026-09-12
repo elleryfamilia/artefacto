@@ -710,7 +710,7 @@ Every reverse dependency in section 2 gets a home:
 | dependency | what happens |
 |---|---|
 | `load clean` | keeps removing marker-gated plan.html and the feedback file; needs only the marker prefix, not the plan module |
-| `load plan status` | stays, as `artefacto plan status`; the dispatcher forwards it |
+| `load plan status` | loadout never had a `status` verb: bare `load plan` prints status. It now asks `artefacto plan status --json` for the plan and the render's state and prints loadout's own lines from the answer, exit 0 either way (plan 6) |
 | studio Recents badge | **one** batched `artefacto plan check --json --lenient` call for all rows, not one subprocess per row; result cached with a short TTL; no badge at all when artefacto is absent |
 | `run.rs` description string | stays; it is one string |
 | skill files | removed from rosita; the lifecycle consumes the **manifest** from `artefacto skill --print` (a package of paths and contents, not one text stream) and installs a two-line pointer skill when the binary is missing |
