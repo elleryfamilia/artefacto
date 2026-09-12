@@ -1421,6 +1421,51 @@ wrong occurrence of a repeated line (`let target = str_field(event,
 occurrence was corrected and the mutation then bit. A mutation script must
 name the occurrence, not the first match.
 
+### Review round eighteen: the slice, reviewed fresh
+
+A fresh session reviewed `d9dd628` and `8de51bb` in a detached worktree with
+its own build cache, wrote probes (three server, five browser, all passing,
+kept only in the worktree), and found no correctness defect in the server
+path or the page: the fold invariant holds across ask, reply, resolve,
+delete, a question on a phase, and a push that removes the element; a
+restart rebuilds the same threads and the next id; a retried `client_id`
+assigns the same thread once, also after a restart; a second tab sees the
+question thread once; an ask draft with a ref survives a reload, lands in
+the recovery panel when its element goes, and sends after a restore; the
+twin rule holds; the reviewed toggle still follows the actions row; the
+static page is untouched. Five findings:
+
+1. **Reply on a question thread was a trap** (fixed, `eb4b5b9`). It sent a
+   passive `thread.replied`, so the follow-up waited for the sent review,
+   the exact confusion this thread kind exists to remove. A question thread
+   offers *Ask the agent* only; the browser test asks a follow-up from it
+   and sees the agent woken.
+2. **A question composer never said the question would wait when no agent
+   held the lease** (fixed). The chat panel had that line; the element and
+   thread composers did not, while the hint and the banner promised
+   "reaches the agent now" without qualification. Every question composer
+   carries the presence line, updated on change. The test expires the
+   lease under an open composer and watches the line change, opens a second
+   composer in the no-agent state, then brings an agent back.
+3. **The spec's feedback-document bullet omitted `asked`** (fixed).
+4. **Keyboard focus inside an element no longer lit its comment button on
+   a served page**, because the button moved into the actions row and the
+   rule used a child combinator (fixed with a second selector; not tested,
+   since a computed-style probe for a `:focus-within` rule is more harness
+   than rule).
+5. **`dechunk` drops a partial final chunk on a short read.** Only the
+   failure message of a timed-out read changes; left as is.
+
+The reviewer also noted that `applyEvent`'s header says every case is safe
+to run twice while the question branch, like `thread.replied`, would append
+the message again; the page never hands it the same event twice (its own
+client id is filtered, the snapshot cursor skips logged events, and a
+reply with seq 0 resyncs), so the comment overstates and the code is fine.
+
+Mutations on the fixes: Reply left on a question thread, the composer line
+not updated on a presence change, never added, and ignoring presence; all
+four caught. Gate: 514 tests, fmt and clippy clean.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
