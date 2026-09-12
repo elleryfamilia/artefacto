@@ -2208,9 +2208,19 @@
       pill.setAttribute("data-mode", l.mode);
       pill.title = l.agent ? l.agent + " holds the lease" : "";
       const hint = document.querySelector(".pv-chat-hint");
-      if (hint) hint.textContent = S.state.presence
+      if (hint) hint.textContent = presenceLine("message");
+      document.querySelectorAll(".composer-presence").forEach(function (n) {
+        n.textContent = presenceLine("question");
+      });
+    }
+
+    /* What a question composer says about who will hear it. The hint and
+       the banner promise the agent hears a question now; this is where
+       the promise is qualified when no agent holds the lease. */
+    function presenceLine(what) {
+      return S.state.presence
         ? "The agent hears this at once."
-        : "No agent is attached. Your message will wait for one.";
+        : "No agent is attached. Your " + what + " will wait for one.";
     }
 
     function mountPresence(root) {
@@ -2245,6 +2255,10 @@
       const open = t.status === "open" || t.status === "unanchored";
       node.querySelector(".thread-edit").hidden = !open;
       node.querySelector(".thread-delete").hidden = !open;
+      /* On a question thread every follow-up is for the agent, and a Reply
+         there would wait for the sent review: the trap this thread kind
+         exists to remove. Ask the agent is the one way to write in it. */
+      node.querySelector(".thread-reply").hidden = !!t.asked;
     }
 
     function threadNode(t) {
@@ -2635,6 +2649,7 @@
       ta.value = d.text;
       ta.addEventListener("input", function () { d.text = ta.value; saveDraft(d); });
       box.appendChild(ta);
+      if (d.kind === "ask") box.appendChild(el("span", { class: "composer-presence", text: presenceLine("question") }));
       let blockingBox = null;
       if (d.kind === "comment") {
         blockingBox = el("input", { type: "checkbox" });

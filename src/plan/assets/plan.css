@@ -1609,7 +1609,8 @@ pre code { font-size: 1em; }
    two rules were written to assume. */
 :where(.task:hover, .pv-row:hover) .comment-btn,
 .comment-btn:focus-visible,
-:where([data-plan-ref]:focus-within) > .comment-btn {
+:where([data-plan-ref]:focus-within) > .comment-btn,
+:where([data-plan-ref]:focus-within) .el-actions > .comment-btn {
   color: var(--accent);
   border-color: var(--accent);
 }
@@ -1703,6 +1704,13 @@ pre code { font-size: 1em; }
 }
 
 .ask-btn-icon { width: 13px; height: 13px; flex: none; }
+
+/* The line under a question composer: who hears it, and when. */
+.composer-presence {
+  font-family: var(--font-mono);
+  font-size: 0.688rem;
+  color: var(--ink-3);
+}
 
 /* Inside a thread the same distinction: Reply is quiet text, Ask is outlined
    in the accent and fills on hover. */

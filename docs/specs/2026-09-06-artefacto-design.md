@@ -588,7 +588,8 @@ finds all of them under the new name:
 - `base_revision`: the revision the review was made against
 - `comments[]` keep their v1 fields; ids are server-assigned and stable
   (`c-<n>` per artifact, never renumbered); each gains `status`
-  (`open | changed | declined | unanchored`) and `replies[]`
+  (`open | changed | declined | unanchored`), `replies[]`, and `asked`
+  (opened by a question to the agent rather than by a comment)
 - `answers[]`: `{question, text}`
 - `reviewed[]`: refs marked reviewed
 
