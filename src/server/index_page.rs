@@ -41,26 +41,26 @@ const CSS: &str = r#"
 .ix-poster svg { width: 100%; height: auto; display: block; border-radius: 6px; box-shadow: var(--shadow-float); }
 .ix-poster a { display: block; }
 .ix-poster .ap-bg { fill: var(--page); stroke: var(--rule); }
-.ix-poster .ap-kind { fill: var(--accent); }
-.ix-poster .ap-kind-text { fill: var(--accent-ink); }
+.ix-poster .ap-kind { fill: var(--brand); }
+.ix-poster .ap-kind-text { fill: var(--alarm-ink); }
 .ix-poster .ap-title { fill: var(--ink); }
 .ix-poster .ap-rev, .ix-poster .ap-counts, .ix-poster .ap-state { fill: var(--muted); }
 .ix-poster .ap-phase { fill: var(--rule); }
 .ix-poster .ap-phase-done { fill: var(--ok); }
-.ix-poster .ap-risk-high { fill: var(--accent); }
+.ix-poster .ap-risk-high { fill: var(--alarm); }
 .ix-poster .ap-risk-medium { fill: var(--warn); }
 .ix-poster .ap-risk-low { fill: var(--ok); }
 .ix-poster-empty { aspect-ratio: 16 / 9; border: 1px dashed var(--rule); border-radius: 6px; display: grid; place-items: center; color: var(--muted); font-family: var(--font-mono); font-size: 0.719rem; }
 .ix-head { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin: 0 0 0.5rem; }
 .ix-title { margin: 0; font-size: 1.375rem; font-weight: 500; line-height: 1.25; }
 .ix-title a { color: inherit; text-decoration: none; }
-.ix-title a:hover { color: var(--accent); }
+.ix-title a:hover { color: var(--action); }
 .ix-facts, .ix-source, .ix-where { margin: 0.25rem 0; }
 .ix-facts time { color: var(--ink); }
-.ix-missing { color: var(--accent); }
+.ix-missing { color: var(--alarm); }
 .is-missing .ix-title, .is-missing .ix-poster { opacity: 0.55; }
 .ix-remove { appearance: none; border: 1px solid var(--rule); background: transparent; color: var(--muted); font-family: var(--font-mono); font-size: 0.719rem; letter-spacing: 0.14em; text-transform: uppercase; padding: 0.375rem 0.75rem; border-radius: 999px; cursor: pointer; margin-top: 0.75rem; }
-.ix-remove:hover { color: var(--accent); border-color: var(--accent); }
+.ix-remove:hover { color: var(--action); border-color: var(--action); }
 .ix-remove:disabled { cursor: default; opacity: 0.6; }
 @media (max-width: 640px) { .ix-row { grid-template-columns: 1fr; } }
 "#;

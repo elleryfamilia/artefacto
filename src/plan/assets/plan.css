@@ -43,7 +43,7 @@
 /* ---------------------------------------------------------------------------
    Tokens
    ---------------------------------------------------------------------------
-   Light and dark are the same twelve roles with two value sets -- no selector
+   Light and dark are the same roles with two value sets -- no selector
    below ever names a literal colour, so a theme swap is this block alone.
 
    Both maps are declared three times over, and the order matters:
@@ -57,44 +57,51 @@
    --------------------------------------------------------------------------- */
 
 :root {
-  /* Surfaces. --canvas is the desk the page sits on, --page is the sheet,
-     --surface is anything inset INTO the sheet (code blocks, notes, graph
-     nodes). Three levels, no more. */
+  /* Four colour families, never mixed. Neutral (canvas, page, surface, ink,
+     rule, numeral) is the document. Status (--alarm, --warn, --ok, and
+     --muted for cut and declined) is what the PLAN says, and a reader never
+     clicks it. Action (--action) is what the REVIEWER clicks. Agent (--agent)
+     is who is on the other side: the mark, its replies, its presence. The
+     brand square keeps the rust as --brand, and no interactive element uses
+     it, so rust on this page only ever means attention: blocking, high,
+     blocked. Each family has an -ink for text on its fill, a -wash for a
+     tint, and where it draws outlines a -rule. --focus is the focus ring. */
   --canvas: #e8e6e1;
   --page: #f7f4ef;
   --surface: #efeadf;
-
-  /* Ink, darkest to lightest. --ink is body copy, --ink-2 is secondary prose,
-     --ink-3 is small mono metadata, --muted is labels and eyebrows. */
   --ink: #1c1a15;
   --ink-2: #4a453b;
   --ink-3: #5c5749;
   --muted: #6b6558;
-
-  /* Rules. --rule is every visible hairline; --rule-soft is the fainter one
-     used INSIDE a block (between acceptance criteria) so nested lists don't
-     read as loud as the section divisions above them. */
   --rule: #ddd6c9;
   --rule-soft: #e7e0d4;
-
-  /* The big phase numerals: quiet enough to be scenery, dark enough to count. */
   --numeral: #8f8674;
-
-  /* Status. --accent doubles as "high severity" -- in this palette the brand
-     colour IS the alarm colour, which is why the page uses so little of it. */
-  --accent: #9b3d20;
-  --accent-ink: #f7f4ef;
-  --accent-wash: rgba(155, 61, 32, 0.07);
-  --ok: #2f6b3d;
+  --brand: #9b3d20;
+  --alarm: #9b3d20;
+  --alarm-ink: #f7f4ef;
+  --alarm-wash: rgba(155, 61, 32, 0.08);
   --warn: #7a5c2f;
   --warn-rule: #c8b8a0;
-
+  --warn-wash: rgba(122, 92, 47, 0.09);
+  --ok: #2f6b3d;
+  --ok-wash: rgba(47, 107, 61, 0.09);
+  --action: #2f4bb0;
+  --action-ink: #f7f4ef;
+  --action-wash: rgba(47, 75, 176, 0.08);
+  --action-rule: rgba(47, 75, 176, 0.35);
+  --agent: #0f6e78;
+  --agent-ink: #f7f4ef;
+  --agent-wash: rgba(15, 110, 120, 0.09);
+  --agent-rule: rgba(15, 110, 120, 0.4);
   --shadow-page: 0 1px 3px rgba(28, 26, 21, 0.1), 0 12px 40px -12px rgba(28, 26, 21, 0.18);
-  --shadow-float: 0 8px 24px -10px rgba(28, 26, 21, 0.18);
-
-  --font-serif: Newsreader, Georgia, "Times New Roman", serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-
+  --shadow-float: 0 8px 24px -10px rgba(28, 26, 21, 0.22);
+  --radius: 5px;
+  --radius-lg: 6px;
+  --rule-w: 1px;
+  --focus: var(--action);
+  color-scheme: light;
+  /* The corner radii and the rule weight are tokens so a theme can change
+     them: vibe squares every corner and doubles every rule. */
   /* The sheet's inner margin. Every full-bleed band (topbar, banner) pads to
      this, so their contents line up with the body column exactly. The sheet is
      a visible object -- its own background, its own shadow -- so this has to
@@ -120,30 +127,40 @@
   --rail-col: 13.75rem;
   --rail-gap: 2.5rem;
 }
-
 @media (prefers-color-scheme: dark) {
   :root {
-    --canvas: #0a0d11;
-    --page: #0f1216;
-    --surface: #161b23;
-    --ink: #e3e8ee;
-    --ink-2: #a7b1bd;
-    --ink-3: #8b96a3;
-    --muted: #939eaa;
-    --rule: #242c36;
-    --rule-soft: #1d242d;
-    --numeral: #63707f;
-    --accent: #e0805e;
-    --accent-ink: #0f1216;
-    --accent-wash: rgba(224, 128, 94, 0.12);
-    --ok: #7fd39b;
+    --canvas: #0d0f16;
+    --page: #14161f;
+    --surface: #1c1f2b;
+    --ink: #e6e6ea;
+    --ink-2: #aeb0bd;
+    --ink-3: #9295a4;
+    --muted: #8a8d9c;
+    --rule: #2a2d3a;
+    --rule-soft: #22252f;
+    --numeral: #626676;
+    --brand: #e0805e;
+    --alarm: #e0805e;
+    --alarm-ink: #14161f;
+    --alarm-wash: rgba(224, 128, 94, 0.13);
     --warn: #d8b06a;
     --warn-rule: #4a4433;
+    --warn-wash: rgba(216, 176, 106, 0.12);
+    --ok: #7fd39b;
+    --ok-wash: rgba(127, 211, 155, 0.12);
+    --action: #a3b0ff;
+    --action-ink: #14161f;
+    --action-wash: rgba(163, 176, 255, 0.12);
+    --action-rule: rgba(163, 176, 255, 0.4);
+    --agent: #62d2d8;
+    --agent-ink: #14161f;
+    --agent-wash: rgba(98, 210, 216, 0.12);
+    --agent-rule: rgba(98, 210, 216, 0.45);
     --shadow-page: 0 1px 3px rgba(0, 0, 0, 0.4), 0 12px 40px -12px rgba(0, 0, 0, 0.55);
-    --shadow-float: 0 8px 24px -10px rgba(0, 0, 0, 0.55);
+    --shadow-float: 0 0 0 1px #2a2d3a, 0 8px 24px -10px rgba(0, 0, 0, 0.7);
+    color-scheme: dark;
   }
 }
-
 :root[data-theme="light"] {
   --canvas: #e8e6e1;
   --page: #f7f4ef;
@@ -155,35 +172,65 @@
   --rule: #ddd6c9;
   --rule-soft: #e7e0d4;
   --numeral: #8f8674;
-  --accent: #9b3d20;
-  --accent-ink: #f7f4ef;
-  --accent-wash: rgba(155, 61, 32, 0.07);
-  --ok: #2f6b3d;
+  --brand: #9b3d20;
+  --alarm: #9b3d20;
+  --alarm-ink: #f7f4ef;
+  --alarm-wash: rgba(155, 61, 32, 0.08);
   --warn: #7a5c2f;
   --warn-rule: #c8b8a0;
+  --warn-wash: rgba(122, 92, 47, 0.09);
+  --ok: #2f6b3d;
+  --ok-wash: rgba(47, 107, 61, 0.09);
+  --action: #2f4bb0;
+  --action-ink: #f7f4ef;
+  --action-wash: rgba(47, 75, 176, 0.08);
+  --action-rule: rgba(47, 75, 176, 0.35);
+  --agent: #0f6e78;
+  --agent-ink: #f7f4ef;
+  --agent-wash: rgba(15, 110, 120, 0.09);
+  --agent-rule: rgba(15, 110, 120, 0.4);
   --shadow-page: 0 1px 3px rgba(28, 26, 21, 0.1), 0 12px 40px -12px rgba(28, 26, 21, 0.18);
-  --shadow-float: 0 8px 24px -10px rgba(28, 26, 21, 0.18);
+  --shadow-float: 0 8px 24px -10px rgba(28, 26, 21, 0.22);
+  --radius: 5px;
+  --radius-lg: 6px;
+  --rule-w: 1px;
+  --focus: var(--action);
+  color-scheme: light;
 }
-
 :root[data-theme="dark"] {
-  --canvas: #0a0d11;
-  --page: #0f1216;
-  --surface: #161b23;
-  --ink: #e3e8ee;
-  --ink-2: #a7b1bd;
-  --ink-3: #8b96a3;
-  --muted: #939eaa;
-  --rule: #242c36;
-  --rule-soft: #1d242d;
-  --numeral: #63707f;
-  --accent: #e0805e;
-  --accent-ink: #0f1216;
-  --accent-wash: rgba(224, 128, 94, 0.12);
-  --ok: #7fd39b;
+  --canvas: #0d0f16;
+  --page: #14161f;
+  --surface: #1c1f2b;
+  --ink: #e6e6ea;
+  --ink-2: #aeb0bd;
+  --ink-3: #9295a4;
+  --muted: #8a8d9c;
+  --rule: #2a2d3a;
+  --rule-soft: #22252f;
+  --numeral: #626676;
+  --brand: #e0805e;
+  --alarm: #e0805e;
+  --alarm-ink: #14161f;
+  --alarm-wash: rgba(224, 128, 94, 0.13);
   --warn: #d8b06a;
   --warn-rule: #4a4433;
+  --warn-wash: rgba(216, 176, 106, 0.12);
+  --ok: #7fd39b;
+  --ok-wash: rgba(127, 211, 155, 0.12);
+  --action: #a3b0ff;
+  --action-ink: #14161f;
+  --action-wash: rgba(163, 176, 255, 0.12);
+  --action-rule: rgba(163, 176, 255, 0.4);
+  --agent: #62d2d8;
+  --agent-ink: #14161f;
+  --agent-wash: rgba(98, 210, 216, 0.12);
+  --agent-rule: rgba(98, 210, 216, 0.45);
   --shadow-page: 0 1px 3px rgba(0, 0, 0, 0.4), 0 12px 40px -12px rgba(0, 0, 0, 0.55);
-  --shadow-float: 0 8px 24px -10px rgba(0, 0, 0, 0.55);
+  --shadow-float: 0 0 0 1px #2a2d3a, 0 8px 24px -10px rgba(0, 0, 0, 0.7);
+  color-scheme: dark;
+  --radius: 5px;
+  --radius-lg: 6px;
+  --rule-w: 1px;
 }
 
 /* ---------------------------------------------------------------------------
@@ -216,7 +263,7 @@
 }
 
 @keyframes pv-flash {
-  from { background: var(--accent-wash); box-shadow: inset 3px 0 0 var(--accent); }
+  from { background: var(--action-wash); box-shadow: inset 3px 0 0 var(--action); }
   to { background: transparent; box-shadow: inset 3px 0 0 transparent; }
 }
 
@@ -329,14 +376,14 @@ h3 { font-size: 1.1875rem; line-height: 1.3; }
 
 p { margin: 0; }
 
-a { color: var(--accent); }
+a { color: var(--action); }
 
 a:focus-visible,
 button:focus-visible,
 summary:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 2px;
 }
@@ -413,7 +460,7 @@ code {
   width: 9px;
   height: 9px;
   flex: none;
-  background: var(--accent);
+  background: var(--brand);
 }
 
 .pv-brand-name {
@@ -463,7 +510,7 @@ code {
   white-space: nowrap;
 }
 
-.pv-topbar-link:hover { color: var(--accent); }
+.pv-topbar-link:hover { color: var(--action); }
 
 /* Theme toggle -- injected by plan.js, because a control that does nothing
    without scripting should not be in the served markup. */
@@ -493,8 +540,8 @@ code {
 }
 
 .pv-theme button[aria-pressed="true"] {
-  background: var(--accent);
-  color: var(--accent-ink);
+  background: var(--ink);
+  color: var(--page);
 }
 
 /* Colour changes are instant on load and animated only while the toggle is
@@ -523,7 +570,7 @@ code {
   gap: 1.25rem 2.5rem;
   flex-wrap: wrap;
   padding: 1.125rem var(--gutter);
-  background: var(--accent-wash);
+  background: var(--action-wash);
   border-bottom: 1px solid var(--rule);
 }
 
@@ -545,7 +592,7 @@ code {
 }
 
 .pv-banner-steps b {
-  color: var(--accent);
+  color: var(--action);
   font-weight: 400;
 }
 
@@ -636,7 +683,7 @@ code {
 
 /* The one cell allowed to shout: a plan with high-severity risks says so in
    the accent, everything else stays ink. */
-.pv-stat.is-hot .pv-stat-n { color: var(--accent); }
+.pv-stat.is-hot .pv-stat-n { color: var(--alarm); }
 
 .pv-stat-l {
   font-family: var(--font-mono);
@@ -697,7 +744,7 @@ code {
   transition: color var(--t-fast) var(--ease);
 }
 
-.pv-textbtn:hover { color: var(--accent); }
+.pv-textbtn:hover { color: var(--action); }
 
 /* ---------------------------------------------------------------------------
    Chips, pills, dots
@@ -723,10 +770,11 @@ code {
 
 .pv-chip-high,
 .pv-chip-blocked,
+.pv-chip-blocking,
 .pv-chip-solid {
-  background: var(--accent);
-  color: var(--accent-ink);
-  border-color: var(--accent);
+  background: var(--alarm);
+  color: var(--alarm-ink);
+  border-color: var(--alarm);
 }
 
 .pv-chip-medium,
@@ -741,10 +789,10 @@ code {
 .pv-pill {
   display: inline-block;
   padding: 0.25rem 0.5625rem;
-  border: 1px solid var(--accent);
+  border: 1px solid var(--alarm);
   border-radius: 999px;
   background: var(--page);
-  color: var(--accent);
+  color: var(--alarm);
   font-family: var(--font-mono);
   font-size: 0.688rem;
   font-weight: 500;
@@ -771,8 +819,8 @@ code {
 .pv-dot-low { background: var(--ok); }
 .pv-dot-in_progress { background: var(--warn); }
 .pv-dot-medium { background: var(--warn); }
-.pv-dot-blocked { background: var(--accent); }
-.pv-dot-high { background: var(--accent); }
+.pv-dot-blocked { background: var(--alarm); }
+.pv-dot-high { background: var(--alarm); }
 .pv-dot-planned { background: transparent; border: 1px solid var(--ink-3); }
 .pv-dot-cut { background: transparent; border: 1px solid var(--muted); }
 
@@ -790,7 +838,7 @@ code {
   max-width: 70ch;
 }
 
-.pv-note-accent { border-left-color: var(--accent); }
+.pv-note-accent { border-left-color: var(--alarm); }
 .pv-note-ok { border-left-color: var(--ok); }
 .pv-note-warn { border-left-color: var(--warn); }
 
@@ -808,7 +856,7 @@ code {
   color: var(--muted);
 }
 
-.pv-note-accent .pv-note-head { color: var(--accent); }
+.pv-note-accent .pv-note-head { color: var(--alarm); }
 .pv-note-ok .pv-note-head { color: var(--ok); }
 .pv-note-warn .pv-note-head { color: var(--warn); }
 
@@ -919,7 +967,7 @@ code {
   top: 0.6em;
   width: 6px;
   height: 6px;
-  background: var(--accent);
+  background: var(--ink-3);
 }
 
 /* render_markdown wraps each bullet's text in <p> -- un-block it so a one-line
@@ -991,7 +1039,7 @@ code {
   transition: color var(--t-fast) var(--ease);
 }
 
-.pv-ledger td a:hover { color: var(--accent); }
+.pv-ledger td a:hover { color: var(--action); }
 
 /* The right-hand cell is always mono metadata (estimate + risk heat). */
 .pv-ledger-fig {
@@ -1001,12 +1049,12 @@ code {
   white-space: nowrap;
 }
 
-.pv-ledger-fig.is-hot { color: var(--accent); }
+.pv-ledger-fig.is-hot { color: var(--alarm); }
 
 /* Set by plan.js as the reader scrolls: the ledger row for the phase currently
    on screen. A quiet position indicator on a long plan. */
 .pv-ledger tr.is-current td { background: var(--surface); }
-.pv-ledger tr.is-current td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+.pv-ledger tr.is-current td:first-child { box-shadow: inset 2px 0 0 var(--action); }
 .pv-ledger tr td { transition: background var(--t-mid) var(--ease); }
 
 /* --- the ask ------------------------------------------------------------ */
@@ -1027,7 +1075,7 @@ code {
 
 .summary-ask .pv-dot { position: relative; top: -0.1em; }
 
-.summary-ask.has-blocking { color: var(--accent); }
+.summary-ask.has-blocking { color: var(--alarm); }
 .summary-ask a { color: inherit; }
 
 /* ---------------------------------------------------------------------------
@@ -1151,7 +1199,7 @@ details.phase > summary {
   details.phase > summary .phase-marker { justify-self: end; }
 }
 
-details.phase > summary:hover { background: var(--accent-wash); }
+details.phase > summary:hover { background: var(--action-wash); }
 
 /* Open phases give the numeral more room and top-align it with the title,
    because the content below it is now several blocks tall.
@@ -1184,7 +1232,7 @@ details.phase[open]:not(.is-closing) > summary {
 }
 
 details.phase[open]:not(.is-closing) > summary .phase-numeral { font-size: 3.5rem; }
-details.phase > summary:hover .phase-numeral { color: var(--accent); }
+details.phase > summary:hover .phase-numeral { color: var(--action); }
 
 .phase-head {
   display: flex;
@@ -1229,7 +1277,7 @@ details.phase > summary:hover .phase-numeral { color: var(--accent); }
 }
 
 details.phase[open]:not(.is-closing) > summary .phase-marker { transform: rotate(90deg); }
-details.phase > summary:hover .phase-marker { color: var(--accent); }
+details.phase > summary:hover .phase-marker { color: var(--action); }
 
 /* The expanded body, indented to sit under the phase's content column.
 
@@ -1308,7 +1356,7 @@ details.phase > .phase-body {
   transition: background var(--t-fast) var(--ease);
 }
 
-.task:hover { background: var(--accent-wash); }
+.task:hover { background: var(--action-wash); }
 
 /* Below the breakpoint the rail moves under the body and lays its lines out
    in a row, so it stays one glance rather than becoming a second column of
@@ -1525,10 +1573,10 @@ pre code { font-size: 1em; }
 .plan-graph .node-stripe { stroke: none; fill: var(--muted); }
 .plan-graph .status-done .node-stripe { fill: var(--ok); }
 .plan-graph .status-in_progress .node-stripe { fill: var(--warn); }
-.plan-graph .status-blocked .node-stripe { fill: var(--accent); }
+.plan-graph .status-blocked .node-stripe { fill: var(--alarm); }
 .plan-graph .status-planned .node-stripe { fill: var(--ink-3); }
 .plan-graph .status-cut .node-stripe { fill: var(--muted); }
-.plan-graph .has-high .node-stripe { fill: var(--accent); }
+.plan-graph .has-high .node-stripe { fill: var(--alarm); }
 
 /* A stub is a cross-phase dependency drawn for context -- dashed, so it is
    visibly not one of this phase's own tasks. */
@@ -1553,7 +1601,7 @@ pre code { font-size: 1em; }
 }
 
 .plan-graph .node { transition: stroke var(--t-fast) var(--ease); }
-.plan-graph a:hover .node { stroke: var(--accent); }
+.plan-graph a:hover .node { stroke: var(--action); }
 .plan-graph .status-cut text { text-decoration: line-through; }
 
 /* ---------------------------------------------------------------------------
@@ -1611,16 +1659,16 @@ pre code { font-size: 1em; }
 .comment-btn:focus-visible,
 :where([data-plan-ref]:focus-within) > .comment-btn,
 :where([data-plan-ref]:focus-within) .el-actions > .comment-btn {
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--action);
+  border-color: var(--action);
 }
 
 /* Hovering the BUTTON fills it: the label flips to the page colour so it
    stays legible against the accent ground. */
 .comment-btn:hover {
-  color: var(--accent-ink);
-  background: var(--accent);
-  border-color: var(--accent);
+  color: var(--action-ink);
+  background: var(--action);
+  border-color: var(--action);
 }
 
 /* Per-criterion anchors: a persistent labelled button on a one-line row would
@@ -1680,11 +1728,11 @@ pre code { font-size: 1em; }
   align-items: center;
   gap: 0.4375rem;
   flex: none;
-  border: 1px solid var(--accent);
+  border: 1px solid var(--agent);
   border-radius: 5px;
   padding: 0.3125rem 0.625rem;
   background: var(--page);
-  color: var(--accent);
+  color: var(--agent);
   font-family: var(--font-mono);
   font-size: 0.688rem;
   font-weight: 500;
@@ -1699,8 +1747,8 @@ pre code { font-size: 1em; }
 
 .ask-btn:hover,
 .ask-btn:focus-visible {
-  color: var(--accent-ink);
-  background: var(--accent);
+  color: var(--agent-ink);
+  background: var(--agent);
 }
 
 .ask-btn-icon { width: 13px; height: 13px; flex: none; }
@@ -1715,20 +1763,20 @@ pre code { font-size: 1em; }
 /* Inside a thread the same distinction: Reply is quiet text, Ask is outlined
    in the accent and fills on hover. */
 .thread-actions .thread-ask {
-  border: 1px solid var(--accent);
+  border: 1px solid var(--agent);
   border-radius: 4px;
   padding: 0.25rem 0.5rem;
-  color: var(--accent);
+  color: var(--agent);
   transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
 }
 
 .thread-actions .thread-ask:hover {
-  color: var(--accent-ink);
-  background: var(--accent);
+  color: var(--agent-ink);
+  background: var(--agent);
 }
 
 /* A thread opened by a question says so. */
-.thread.is-asked .thread-label { color: var(--accent); }
+.thread.is-asked .thread-label { color: var(--agent); }
 
 /* The draft comment editor, and the saved drafts it produces, are both notes
    (see .pv-note) -- a reader's words sit in the page the same way an author's
@@ -1818,7 +1866,7 @@ pre code { font-size: 1em; }
   transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 
-.comment-box-actions button:hover { border-color: var(--accent); color: var(--accent); }
+.comment-box-actions button:hover { border-color: var(--action); color: var(--action); }
 
 .blocking-icon { width: 13px; height: 13px; flex: none; }
 
@@ -1838,13 +1886,13 @@ pre code { font-size: 1em; }
   transition: color var(--t-fast) var(--ease);
 }
 
-.reviewed-toggle:hover { color: var(--accent); }
+.reviewed-toggle:hover { color: var(--action); }
 
 .reviewed-box {
   width: 0.875rem;
   height: 0.875rem;
   margin: 0;
-  accent-color: var(--accent);
+  accent-color: var(--action);
   cursor: pointer;
 }
 
@@ -1904,7 +1952,7 @@ pre code { font-size: 1em; }
 
 .feedback-bar-hint .pv-textbtn { margin-left: auto; flex: none; }
 
-.feedback-bar-restored { color: var(--accent); }
+.feedback-bar-restored { color: var(--action); }
 .feedback-bar-blocking { color: var(--warn); font-weight: 500; }
 .feedback-bar-count,
 .feedback-bar-reviewed { color: var(--ink); font-weight: 500; }
@@ -2031,8 +2079,8 @@ pre code { font-size: 1em; }
 .pv-presence[data-mode="live"]::before { background: var(--ok); }
 .pv-presence[data-mode="waiting"] { color: var(--warn); }
 .pv-presence[data-mode="waiting"]::before { background: var(--warn); }
-.pv-presence[data-mode="off"] { color: var(--accent); }
-.pv-presence[data-mode="off"]::before { background: var(--accent); }
+.pv-presence[data-mode="off"] { color: var(--muted); }
+.pv-presence[data-mode="off"]::before { background: var(--muted); }
 
 .pv-notices { display: flex; flex-direction: column; gap: 0.5rem; padding: 0 var(--gutter); }
 .pv-notices:empty { display: none; }
@@ -2044,7 +2092,7 @@ pre code { font-size: 1em; }
   margin: 0.75rem 0 0;
   padding: 0.625rem 0.875rem;
   border: 1px solid var(--rule);
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid var(--agent);
   border-radius: 4px;
   background: var(--surface);
   font-family: var(--font-serif);
@@ -2058,7 +2106,7 @@ pre code { font-size: 1em; }
 .pv-notice[data-kind="nudge"] { border-left-color: var(--warn); }
 .pv-notice[data-kind="stopping"],
 .pv-notice[data-kind="gone"],
-.pv-notice[data-kind="lost"] { border-left-color: var(--accent); }
+.pv-notice[data-kind="lost"] { border-left-color: var(--alarm); }
 .pv-notice-text { flex: 1 1 auto; }
 .pv-notice-text code { font-family: var(--font-mono); font-size: 0.85em; }
 
@@ -2067,7 +2115,7 @@ pre code { font-size: 1em; }
   padding: 0.875rem 1rem;
   border: 1px dashed var(--warn-rule);
   border-radius: 4px;
-  background: var(--accent-wash);
+  background: var(--warn-wash);
 }
 
 .pv-recovery-title {
@@ -2114,7 +2162,7 @@ pre code { font-size: 1em; }
   animation: pv-rise var(--t-mid) var(--ease) both;
 }
 
-.thread[data-status="open"] { border-left-color: var(--accent); }
+.thread[data-status="open"] { border-left-color: var(--ink-3); }
 .thread[data-status="changed"] { border-left-color: var(--ok); }
 .thread[data-status="declined"] { border-left-color: var(--muted); }
 .thread[data-status="unanchored"] { border-left-color: var(--warn); }
@@ -2133,14 +2181,14 @@ pre code { font-size: 1em; }
   font-weight: 500;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--ink-3);
 }
 .thread-id { color: var(--muted); }
 .thread-status.pv-chip { font-size: 0.625rem; }
-.thread-status.pv-chip-open { color: var(--accent); border-color: var(--accent); }
+.thread-status.pv-chip-open { color: var(--ink-2); border-color: var(--ink-3); }
 .thread-status.pv-chip-changed { color: var(--ok); border-color: var(--ok); }
-.thread-status.pv-chip-declined { color: var(--muted); border-color: var(--rule); }
-.thread-status.pv-chip-unanchored { color: var(--warn); border-color: var(--warn-rule); }
+.thread-status.pv-chip-declined { color: var(--muted); border-color: var(--rule); text-decoration: line-through; }
+.thread-status.pv-chip-unanchored { color: var(--warn); border-color: var(--warn-rule); border-style: dashed; }
 .thread-blocking { color: var(--warn); font-weight: 500; }
 .thread-blocking[hidden] { display: none; }
 .thread-target { color: var(--warn); }
@@ -2184,7 +2232,7 @@ pre code { font-size: 1em; }
 .pv-error {
   font-family: var(--font-mono);
   font-size: 0.688rem;
-  color: var(--accent);
+  color: var(--alarm);
 }
 
 .pv-answer {

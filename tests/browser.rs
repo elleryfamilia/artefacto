@@ -3307,6 +3307,15 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
     );
     page.eval("document.querySelector('.thread[data-thread=\"c-1\"]').scrollIntoView({ block: 'center' })");
     page.screenshot(&screenshot_path("ask-on-kitchen-sink"));
+    // The same page in the dark theme, from the toggle, so both palettes are
+    // looked at whenever the page changes.
+    page.click("[data-theme-set=\"dark\"]");
+    page.wait_until(
+        "document.documentElement.getAttribute('data-theme') === 'dark' && !document.documentElement.classList.contains('theme-anim')",
+        "the dark theme to apply and its crossfade to end",
+    );
+    page.screenshot(&screenshot_path("ask-on-kitchen-sink-dark"));
+    page.click("[data-theme-set=\"\"]");
 }
 
 #[test]

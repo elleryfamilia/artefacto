@@ -978,6 +978,85 @@ mod tests {
         assert_eq!(v["meta"]["id"], "auth-refactor");
     }
 
+    /// Relative luminance and contrast ratio as WCAG 2 defines them.
+    fn luminance(hex: &str) -> f64 {
+        let v = |i: usize| {
+            let c = u8::from_str_radix(&hex[i..i + 2], 16).unwrap() as f64 / 255.0;
+            if c <= 0.03928 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * v(1) + 0.7152 * v(3) + 0.0722 * v(5)
+    }
+
+    fn contrast(a: &str, b: &str) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// The hex tokens of one theme block, by name.
+    fn tokens_of(block_start: &str) -> std::collections::HashMap<String, String> {
+        let css = stylesheet();
+        let start = css
+            .find(block_start)
+            .unwrap_or_else(|| panic!("no block {block_start}"));
+        let body = &css[start..];
+        let end = body.find("\n}\n").unwrap();
+        body[..end]
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim();
+                let (name, value) = l.strip_prefix("--")?.split_once(':')?;
+                let value = value.trim().trim_end_matches(';');
+                value
+                    .starts_with('#')
+                    .then(|| (name.trim().to_string(), value.to_string()))
+            })
+            .collect()
+    }
+
+    /// The colour roles read at 4.5:1 in both themes: every ink on the page,
+    /// every role colour as text on the page, and every role's -ink on its
+    /// own fill. A palette change that breaks this is a readability bug, not
+    /// a taste.
+    #[test]
+    fn tokens_meet_contrast_in_both_themes() {
+        for block in [":root {", ":root[data-theme=\"dark\"] {"] {
+            let t = tokens_of(block);
+            let page = &t["page"];
+            for fg in [
+                "ink", "ink-2", "ink-3", "muted", "alarm", "warn", "ok", "action", "agent",
+            ] {
+                let ratio = contrast(&t[fg], page);
+                assert!(ratio >= 4.5, "{block}: --{fg} on --page is {ratio:.2}:1");
+            }
+            for role in ["alarm", "action", "agent"] {
+                let ratio = contrast(&t[&format!("{role}-ink")], &t[role]);
+                assert!(
+                    ratio >= 4.5,
+                    "{block}: --{role}-ink on --{role} is {ratio:.2}:1"
+                );
+            }
+            assert!(
+                !t.contains_key("focus"),
+                "--focus is an alias of a role, not a colour of its own"
+            );
+        }
+    }
+
+    /// Every colour on the page belongs to a family (neutral, status, action,
+    /// agent); the old one-accent-for-everything token is gone for good.
+    #[test]
+    fn no_rule_uses_the_old_accent_token() {
+        assert!(
+            !stylesheet().contains("--accent"),
+            "a rule still names --accent; point it at a role instead"
+        );
+    }
+
     #[test]
     fn document_structure() {
         let plan = plan_from("kitchen-sink.json");
