@@ -1557,6 +1557,62 @@ test never checked the other button after Approve; and a mutation aimed at
 `chat()` hit the first of three identical lines in `fold.rs` (the memory
 note from the ask slice, applied again).
 
+### Review round nineteen: the port, reviewed fresh
+
+A fresh session reviewed the twelve commits in a detached worktree, ran
+the lib, clippy, and the full browser suite in headless Chrome, wrote five
+probing browser tests, and confirmed four real defects with them. Twelve
+findings; fixed in `ea5c0a8` unless noted:
+
+1. **The working state never cleared when the answer arrived in a
+   snapshot** (an offline page, a resync), and **a reload or a second tab
+   showed no working state at all**, because the state lived in the page's
+   memory and was only moved by events. It is now reconciled from the
+   server's state before every render: a question thread whose last turn
+   is the reviewer's is waiting; anything else is not. The event stream
+   only says when a question was asked.
+2. **Resolving a question thread did not end its working state**, and the
+   derived no-agent notice then reported a waiting question for a resolved
+   thread. Same fix: a resolved thread is not open, so nothing waits.
+3. **A reviewer reply on a resolved thread erased the resolution line**,
+   because the line was the last agent message by guess. The server now
+   marks the closing note (`Message.note`) in the fold, the snapshot,
+   `status --json`, and the feedback document's replies, and the page
+   renders that message as the resolution wherever it sits.
+4. **A body swap during an in-flight follow-up kept the sent text and
+   Enter sent it again.** The send is keyed by thread now; the live input
+   is the one cleared and re-enabled when the reply lands.
+5. **Focus and caret in the persistent input were lost on a swap, and its
+   draft on a reload.** The view capture knows the input by its thread, the
+   render that creates the input applies a kept focus when the mount waits
+   on a snapshot, and drafts live in session storage.
+6. **A follow-up half-written when its thread was resolved vanished**, and
+   one whose thread was deleted was listed nowhere. The input stays while
+   it holds text, and an orphaned follow-up sits in the recovery panel.
+7. Three colour-family mixes: the page-level chat's agent label in `--ok`,
+   the static clipboard button filled `--ok`, a literal shadow on the
+   stuck topbar. Fixed. The mark's amber *waiting* state keeps borrowing
+   the status family on purpose and says so in the stylesheet.
+8. The contrast test read three of the five token blocks and only against
+   the page. It now finds every block by scanning and checks the surface
+   too; the print palette is excluded as a copy by construction.
+9. Print under dark or vibe put light ink on white paper. The print block
+   re-declares the light palette for every theme.
+10. Two dead rules for the working row, the ask label hidden on criterion
+    rows (kept: a one-line row has no room for a tooltip), and the poster's
+    kind chip borrowing the alarm ink for a brand fill. Fixed except the
+    criterion rows.
+11. Docs: the reference's verdict row listed `comment` as a page verdict.
+    Fixed; the served page sends `approve` or `request_changes`, the static
+    export `approve` or `comment`.
+
+Three new browser tests hold the fixes (`the_working_state_follows_the_servers_state`,
+`a_resolution_stays_the_resolution_after_a_reply`,
+`a_follow_up_sends_once_and_keeps_its_place`); ten mutations on them, all
+caught. One more thing the tests found on the way: a closed phase cannot
+hold focus, so a test that types into a thread's input opens the phases
+first, as a reviewer would have to. Gate: 522 tests, green.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
