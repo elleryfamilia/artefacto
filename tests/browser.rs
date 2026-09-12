@@ -470,12 +470,7 @@ fn the_reviewer_approves_and_the_agent_receives_the_document() {
     connected(&mut page);
     comment(&mut page, "task:t-a", "fine by me");
 
-    page.click(".feedback-bar-approve input");
-    assert_eq!(
-        page.text("document.querySelector('.feedback-bar-send').textContent"),
-        "Send approval"
-    );
-    page.click(".feedback-bar-send");
+    page.click(".feedback-bar-approve");
     page.wait_until(
         "document.querySelector('.feedback-bar-sent').textContent.indexOf('review sent') === 0",
         "the bar to confirm the review was sent",
@@ -1792,7 +1787,7 @@ fn send_review_cannot_be_sent_twice_while_in_flight() {
         "and only one"
     );
     page.wait_until(
-        "document.querySelector('.feedback-bar-send').textContent === 'Send again'",
+        "document.querySelector('.feedback-bar-send').classList.contains('is-filled')",
         "the button to settle after its pulse",
     );
 }
@@ -2903,7 +2898,7 @@ fn a_sent_review_is_unmistakable() {
     );
     assert!(text.contains("The agent has it"), "{text}");
     page.wait_until(
-        "document.querySelector('.feedback-bar-send').textContent === 'Send again'",
+        "document.querySelector('.feedback-bar-send').classList.contains('is-filled')",
         "the button to say a second click is a second send",
     );
     assert!(page
@@ -2923,8 +2918,9 @@ fn a_sent_review_is_unmistakable() {
         false
     );
     assert_eq!(
-        page.text("document.querySelector('.feedback-bar-send').textContent"),
-        "Send review"
+        page.eval("document.querySelector('.feedback-bar-send').classList.contains('is-filled') || document.querySelector('.feedback-bar').classList.contains('is-sent')"),
+        false,
+        "a new revision reopens the review: no verdict is filled"
     );
 }
 
@@ -3513,5 +3509,111 @@ fn a_question_composer_says_when_no_agent_will_hear_it() {
     assert_eq!(
         page.eval("Array.from(document.querySelectorAll('.composer-presence')).every(function (n) { return n.textContent === 'The agent hears this at once.'; })"),
         true
+    );
+}
+
+#[test]
+fn two_verdicts_one_filled_and_leaving_is_not_losing() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    let banner = page.text("document.querySelector('.pv-banner-steps').textContent");
+    assert!(banner.contains("come back later"), "{banner}");
+
+    // While a write is on its way the line says Saving; once answered, Saved.
+    shape_fetch(&mut page, "/cmd", "hold-response", 900);
+    page.click("[data-plan-ref=\"task:t-a\"] .comment-btn");
+    page.type_into(
+        "[data-plan-ref=\"task:t-a\"] .pv-composers .composer textarea",
+        "needs a rollback step",
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .pv-composers .composer .composer-send");
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-state-text').textContent"),
+        "Saving\u{2026}"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.feedback-bar-state').classList.contains('is-saving')"),
+        true
+    );
+    page.wait_until(
+        "!document.querySelector('[data-plan-ref=\"task:t-a\"] .pv-composers .composer')",
+        "the comment to be accepted",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-state-text').textContent"),
+        "Saved \u{b7} rev 1"
+    );
+    // Leaving with unsent work: the line says nothing is lost, for a moment.
+    page.eval("window.dispatchEvent(new Event('pagehide'))");
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-state-text').textContent"),
+        "Saved. The agent sees your notes when you send them."
+    );
+
+    // Request changes is one verdict, Approve the other; the sent one fills.
+    page.click(".feedback-bar-send");
+    page.wait_until(
+        "document.querySelector('.feedback-bar').classList.contains('is-sent')",
+        "the bar to show the review as sent",
+    );
+    assert_eq!(
+        s.server().last_event_of_type("review.submitted")["data"]["verdict"],
+        "request_changes"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.feedback-bar-send').classList.contains('is-filled') && !document.querySelector('.feedback-bar-approve').classList.contains('is-filled')"),
+        true,
+        "Request changes is the filled control"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-btn.is-filled').length"),
+        1,
+        "and the only one"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.feedback-bar-approve input')"),
+        false,
+        "no Approve checkbox"
+    );
+
+    // A new revision reopens the review; Approve sends the other verdict.
+    s.edit_plan("Demo plan", "Demo plan, revised");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2' && !document.querySelector('.feedback-bar').classList.contains('is-sent')",
+        "revision 2 to reopen the review",
+    );
+    page.click(".feedback-bar-approve");
+    page.wait_until(
+        "document.querySelector('.feedback-bar-approve').classList.contains('is-filled')",
+        "Approve to be the filled control",
+    );
+    assert_eq!(
+        s.server().last_event_of_type("review.submitted")["data"]["verdict"],
+        "approve"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-btn.is-filled').length === 1 && !document.querySelector('.feedback-bar-send').classList.contains('is-filled')"),
+        true,
+        "the other verdict is not filled"
+    );
+    assert!(page
+        .text("document.querySelector('.pv-notice[data-kind=\"sent\"]').textContent")
+        .starts_with("Approval sent for revision 2"),);
+
+    // The verdict survives a reload: it comes from the server's snapshot.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.eval(
+            "document.querySelector('.feedback-bar-approve').classList.contains('is-filled')"
+        ),
+        true,
+        "the snapshot carries the verdict"
     );
 }

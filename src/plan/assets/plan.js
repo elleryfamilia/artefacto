@@ -102,7 +102,8 @@
     emptyState(artifact) {
       return {
         artifact: artifact, revision: 0, planHash: "", plan: null, threads: [],
-        answers: {}, reviewed: [], chat: [], submitted: false, presence: null, lastSeq: 0,
+        answers: {}, reviewed: [], chat: [], submitted: false,
+        verdict: null, presence: null, lastSeq: 0,
       };
     },
     /* What `GET /a/<artifact>/state` returns, as page state. */
@@ -123,6 +124,7 @@
         reviewed: (s.reviewed || []).slice(),
         chat: (s.chat || []).slice(),
         submitted: !!s.submitted,
+        verdict: s.verdict || null,
         presence: s.presence || null,
         lastSeq: s.last_seq || 0,
       };
@@ -143,6 +145,7 @@
           if (d.plan_hash) state.planHash = d.plan_hash;
           /* A new revision reopens the review. */
           state.submitted = false;
+          state.verdict = null;
           core.reanchor(state.threads, core.planRefs(state.plan));
           return true;
         }
@@ -213,6 +216,7 @@
         }
         case "review.submitted":
           state.submitted = true;
+          state.verdict = d.verdict || null;
           return true;
         case "agent.attached":
           state.presence = { agent: d.agent || "", mode: d.mode || "waiting" };
@@ -1653,7 +1657,8 @@
       gone: false,
       lost: false,
       stopping: false,
-      approve: false,
+      /* Writes the server has not answered yet; the bar says Saving. */
+      inflight: 0,
       submitting: false,
       /* Questions the agent has not answered yet: thread id (or "page") ->
          { since }. Page-side, so a body swap keeps the working row. */
@@ -1750,7 +1755,10 @@
     function send(cmd) {
       if (!cmd.client_id) cmd.client_id = newId("cid");
       S.own[cmd.client_id] = true;
-      return post(cmd).then(function (reply) {
+      S.inflight++;
+      renderBar();
+      const settle = function () { S.inflight = Math.max(0, S.inflight - 1); renderBar(); };
+      return post(cmd).then(function (reply) { settle(); return reply; }, function (e) { settle(); throw e; }).then(function (reply) {
         if (!reply || !reply.ok) throw new Error((reply && reply.error) || "refused");
         if (reply.seq === 0) {
           resync();
@@ -2223,7 +2231,7 @@
       S.state.reviewed.forEach(function (r) { if (r.indexOf("task:") === 0) k++; });
       parts.push(k + " of " + tasks + " tasks reviewed");
       notice("sent",
-        (S.approve ? "Approval sent" : "Review sent") + " for revision " + S.state.revision + ": "
+        (S.state.verdict === "approve" ? "Approval sent" : "Review sent") + " for revision " + S.state.revision + ": "
           + parts.join(", ") + ". The agent has it."
           + (S.state.presence ? "" : " No agent is attached; it will be delivered when one is."),
         { dismiss: true });
@@ -2518,31 +2526,94 @@
 
     /* ---- the bar and the chat ---------------------------------------- */
 
+    function clock(d) {
+      return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    }
+
+    /* Whether closing the page now would leave something the agent has not
+       been sent: threads, answers, or marks on an unsent review. */
+    function unsentWork() {
+      if (S.state.submitted) return false;
+      return S.state.threads.some(function (t) { return t.status !== "unanchored"; })
+        || Object.keys(S.state.answers).some(function (q) { return S.state.answers[q]; })
+        || S.state.reviewed.length > 0;
+    }
+
     function renderBar() {
       const bar = document.querySelector(".feedback-bar");
       if (!bar) return;
       const threads = S.state.threads.filter(function (t) { return t.status !== "unanchored"; });
       const open = threads.filter(function (t) { return t.status === "open"; });
       const blocking = open.filter(function (t) { return t.blocking; }).length;
-      bar.querySelector(".feedback-bar-banner").textContent = "live review · rev " + S.state.revision;
-      bar.querySelector(".feedback-bar-blocking").textContent = blocking ? blocking + " blocking" : "";
-      bar.querySelector(".feedback-bar-count").textContent = threads.length + (threads.length === 1 ? " thread" : " threads");
       const taskEls = S.root ? S.root.querySelectorAll('.task[data-plan-ref^="task:"]') : [];
       let k = 0;
       taskEls.forEach(function (t) { if (S.state.reviewed.indexOf(t.getAttribute("data-plan-ref")) >= 0) k++; });
+      bar.querySelector(".feedback-bar-count").textContent = threads.length + (threads.length === 1 ? " thread" : " threads");
       bar.querySelector(".feedback-bar-reviewed").textContent = k + "/" + taskEls.length + " reviewed";
-      bar.querySelector(".feedback-bar-approve input").checked = S.approve;
-      const when = S.ui.sentAt
-        ? " · " + String(S.ui.sentAt.getHours()).padStart(2, "0") + ":" + String(S.ui.sentAt.getMinutes()).padStart(2, "0")
-        : "";
-      bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent · rev " + S.state.revision + when : "";
-      const send = bar.querySelector(".feedback-bar-send");
-      send.disabled = S.lost || S.submitting;
-      if (!send.classList.contains("is-sent")) {
-        send.textContent = S.submitting ? "Sending…"
-          : S.state.submitted ? (S.approve ? "Send approval again" : "Send again")
-            : S.approve ? "Send approval" : "Send review";
-      }
+      bar.querySelector(".feedback-bar-blocking").textContent = blocking ? blocking + " blocking" : "";
+      /* The state line: everything written is on the server the moment it
+         is accepted, and the line says so. Leaving is not losing. */
+      const state = bar.querySelector(".feedback-bar-state");
+      const leaving = S.ui.leftAt && Date.now() - S.ui.leftAt < 4000;
+      state.classList.toggle("is-saving", S.inflight > 0);
+      state.querySelector(".feedback-bar-state-text").textContent = S.inflight > 0
+        ? "Saving\u2026"
+        : leaving
+          ? "Saved. The agent sees your notes when you send them."
+          : "Saved \u00b7 rev " + S.state.revision;
+      const when = S.ui.sentAt ? " \u00b7 " + clock(S.ui.sentAt) : "";
+      bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent \u00b7 rev " + S.state.revision + when : "";
+      bar.classList.toggle("is-sent", !!S.state.submitted);
+      /* Two verdicts, one group; the one that was sent is the filled control. */
+      const request = bar.querySelector(".feedback-bar-send");
+      const approve = bar.querySelector(".feedback-bar-approve");
+      request.disabled = S.lost || S.submitting;
+      approve.disabled = S.lost || S.submitting;
+      request.classList.toggle("is-filled", !!S.state.submitted && S.state.verdict !== "approve");
+      approve.classList.toggle("is-filled", !!S.state.submitted && S.state.verdict === "approve");
+    }
+
+    function submitReview(verdict) {
+      if (S.submitting) return;
+      S.submitting = true;
+      renderBar();
+      const button = function () {
+        return document.querySelector(verdict === "approve" ? ".feedback-bar-approve" : ".feedback-bar-send");
+      };
+      send({ cmd: "review.submit", verdict: verdict, base_revision: S.state.revision })
+        .then(function () {
+          S.submitting = false;
+          S.ui.sentAt = new Date();
+          sentNotice();
+          renderBar();
+          const btn = button();
+          if (btn) {
+            cleared(btn);
+            /* One short pulse on the button the reviewer is looking at. */
+            btn.classList.add("is-sent");
+            setTimeout(function () { btn.classList.remove("is-sent"); }, 2000);
+          }
+        })
+        .catch(function (e) {
+          S.submitting = false;
+          renderBar();
+          failed(button(), e);
+        });
+    }
+
+    /* Leaving with unsent work: say once that nothing is lost. No dialog,
+       nothing blocks; the line in the bar changes for a few seconds. */
+    function wireLeaving() {
+      if (S.ui.leaveWired) return;
+      S.ui.leaveWired = true;
+      const note = function () {
+        if (!unsentWork()) return;
+        S.ui.leftAt = Date.now();
+        renderBar();
+        window.setTimeout(renderBar, 4200);
+      };
+      document.addEventListener("visibilitychange", function () { if (document.visibilityState === "hidden") note(); });
+      window.addEventListener("pagehide", note);
     }
 
     function renderChat() {
@@ -2628,12 +2699,16 @@
           } }));
         bar.appendChild(hint);
       }
-      bar.appendChild(el("span", { class: "feedback-bar-banner" }));
-      bar.appendChild(el("span", { class: "feedback-bar-blocking" }));
-      bar.appendChild(el("span", { class: "feedback-bar-count" }));
-      bar.appendChild(el("span", { class: "feedback-bar-reviewed" }));
-      bar.appendChild(el("span", { class: "feedback-bar-sent" }));
-      bar.appendChild(el("button", { type: "button", class: "ask-btn is-labelled feedback-bar-chat",
+      const main = el("div", { class: "feedback-bar-main" });
+      main.appendChild(el("span", { class: "feedback-bar-state" },
+        el("span", { class: "pv-dot" }), el("span", { class: "feedback-bar-state-text" })));
+      main.appendChild(el("span", { class: "feedback-bar-counts" },
+        el("span", { class: "feedback-bar-count" }),
+        el("span", { class: "feedback-bar-reviewed" }),
+        el("span", { class: "feedback-bar-blocking is-alarm" })));
+      main.appendChild(el("span", { class: "feedback-bar-sent" }));
+      const actions = el("div", { class: "feedback-bar-actions" });
+      const askBar = el("button", { type: "button", class: "ask-btn is-labelled feedback-bar-chat",
         dataset: { label: "Ask the agent" }, "aria-label": "Ask the agent about the plan", onclick: function () {
         S.ui.chatOpen = !S.ui.chatOpen;
         /* The reviewer has seen the panel; a draft in it no longer opens
@@ -2650,40 +2725,21 @@
           });
           renderChat();
         }
-      } }));
-      const askBar = bar.querySelector(".feedback-bar-chat");
-      askBar.appendChild(agentMark(""));
-      askBar.appendChild(el("span", { class: "ask-btn-label", text: "Ask the agent" }));
-      const approve = el("input", { type: "checkbox" });
-      approve.addEventListener("change", function () { S.approve = approve.checked; renderBar(); });
-      bar.appendChild(el("label", { class: "feedback-bar-approve" }, approve, el("span", { text: "Approve" })));
-      const sendBtn = el("button", { type: "button", class: "feedback-bar-send", text: "Send review", onclick: function () {
-        if (S.submitting) return;
-        S.submitting = true;
-        renderBar();
-        send({ cmd: "review.submit", verdict: S.approve ? "approve" : "comment", base_revision: S.state.revision })
-          .then(function () {
-            S.submitting = false;
-            S.ui.sentAt = new Date();
-            sentNotice();
-            renderBar();
-            const btn = document.querySelector(".feedback-bar-send");
-            cleared(btn);
-            /* One short pulse on the button the reviewer is looking at. */
-            if (btn) {
-              btn.classList.add("is-sent");
-              btn.textContent = "Sent ✓";
-              setTimeout(function () { btn.classList.remove("is-sent"); renderBar(); }, 2000);
-            }
-          })
-          .catch(function (e) {
-            S.submitting = false;
-            renderBar();
-            failed(document.querySelector(".feedback-bar-send") || sendBtn, e);
-          });
-      } });
-      bar.appendChild(sendBtn);
+      } },
+        agentMark(""), el("span", { class: "ask-btn-label", text: "Ask the agent" }));
+      actions.appendChild(askBar);
+      /* Two verdicts on the plan, one group. Request changes is enabled with
+         nothing written: it is a verdict on the plan, not on the comments. */
+      const verdict = el("div", { class: "feedback-bar-verdict", role: "group", "aria-label": "Your verdict" });
+      verdict.appendChild(el("button", { type: "button", class: "pv-btn is-lg is-alarm feedback-bar-send", text: "Request changes",
+        onclick: function () { submitReview("request_changes"); } }));
+      verdict.appendChild(el("button", { type: "button", class: "pv-btn is-lg feedback-bar-approve", text: "Approve",
+        onclick: function () { submitReview("approve"); } }));
+      actions.appendChild(verdict);
+      main.appendChild(actions);
+      bar.appendChild(main);
       root.appendChild(bar);
+      wireLeaving();
 
       const chat = el("div", { class: "pv-chat", hidden: !S.ui.chatOpen });
       chat.appendChild(el("div", { class: "pv-chat-head" },
@@ -3116,7 +3172,7 @@
         steps.replaceChildren(
           el("b", { text: "01" }), document.createTextNode(" skim  "),
           el("b", { text: "02" }), document.createTextNode(" comment  "),
-          el("b", { text: "03" }), document.createTextNode(" send review"));
+          el("b", { text: "03" }), document.createTextNode(" send, or come back later"));
       }
     }
 
