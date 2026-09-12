@@ -3112,13 +3112,19 @@ fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
     // Every element that offers Comment offers Ask beside it.
     assert_eq!(
         page.eval(
-            "document.querySelectorAll('.ask-btn').length > 0 && \
-             document.querySelectorAll('.ask-btn').length === document.querySelectorAll('.comment-btn').length"
+            "document.querySelectorAll('.el-actions .ask-btn').length > 0 && \
+             document.querySelectorAll('.el-actions .ask-btn').length === document.querySelectorAll('.comment-btn').length"
         ),
         true,
         "one ask button per comment button"
     );
 
+    // Until the first question on this browser, the mark carries its label.
+    assert_eq!(
+        page.eval("document.querySelectorAll('[data-plan-ref] .ask-btn.is-labelled').length > 0"),
+        true,
+        "the ask control is labelled before the first ask"
+    );
     page.click("[data-plan-ref=\"task:t-a\"] .ask-btn");
     page.type_into(
         "[data-plan-ref=\"task:t-a\"] .pv-composers .composer[data-kind=\"ask\"] textarea",
@@ -3143,6 +3149,34 @@ fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
         ),
         true,
         "the composer closed once the server accepted the question"
+    );
+    // From the question until the answer: the working row, the pill at work,
+    // the control tinted, and the labels gone from the element rows.
+    assert_eq!(
+        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .thread-working .thread-text').textContent"),
+        "thinking\u{2026}"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.thread[data-thread=\"c-1\"] .thread-working .ag-mark').classList.contains('is-working')"),
+        true
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-presence').dataset.mode"),
+        "working"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-btn').classList.contains('has-thread')"),
+        true
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('[data-plan-ref] .ask-btn.is-labelled').length"),
+        0,
+        "after the first ask the mark alone is the control"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.feedback-bar-chat').classList.contains('is-labelled')"),
+        true,
+        "the bar keeps its label"
     );
 
     let out = s
@@ -3169,6 +3203,15 @@ fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
     page.wait_until(
         "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
         "the answer to join the thread",
+    );
+    assert_eq!(
+        page.eval("!document.querySelector('.thread[data-thread=\"c-1\"] .thread-working')"),
+        true,
+        "the answer ends the working row"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-presence').dataset.mode"),
+        "waiting"
     );
     page.screenshot(&screenshot_path("ask-on-a-task"));
 
@@ -3212,24 +3255,53 @@ fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
         2
     );
 
-    // On a question thread every follow-up is a question: there is no Reply,
-    // which would wait for the sent review, and Ask the agent wakes it again.
+    // On a question thread every follow-up is a question: no Reply, which
+    // would wait for the sent review, no second Ask button, one input that
+    // stays, says who hears it, and sends on Enter.
     assert_eq!(
         page.eval("document.querySelector('.thread[data-thread=\"c-1\"] .thread-reply').hidden"),
         true,
         "no passive Reply on a question thread"
     );
-    page.click(".thread[data-thread=\"c-1\"] .thread-ask");
     assert_eq!(
-        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .composer .composer-presence').textContent"),
-        "The agent hears this at once.",
-        "the composer says who hears it"
+        page.eval("document.querySelector('.thread[data-thread=\"c-1\"] .thread-ask').hidden"),
+        true,
+        "the persistent input replaces the Ask button"
     );
+    assert_eq!(
+        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .thread-composer-hint').textContent"),
+        "Enter to send"
+    );
+    // A draft in the input survives a push: the input is re-created with it.
     page.type_into(
-        ".thread[data-thread=\"c-1\"] .composer textarea",
+        ".thread[data-thread=\"c-1\"] .thread-composer textarea",
         "and the CLI layer?",
     );
-    page.click(".thread[data-thread=\"c-1\"] .composer .composer-send");
+    let plan = s.repo.path().join("plan.json");
+    s.repo
+        .run(&[
+            "plan",
+            "push",
+            plan.to_str().unwrap(),
+            "--json",
+            "--session",
+            &s.session,
+            "--base-revision",
+            "1",
+        ])
+        .success();
+    page.wait_until(
+        "window.artefactoPlan.debug().revision === 2 && !window.artefactoPlan.debug().syncing",
+        "revision 2 to land",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .thread-composer textarea').value"),
+        "and the CLI layer?",
+        "the draft survived the swap"
+    );
+    page.eval(
+        "document.querySelector('.thread[data-thread=\"c-1\"] .thread-composer textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))",
+    );
     page.wait_until(
         "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 3",
         "the follow-up to join the thread",
@@ -3323,7 +3395,8 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
            const c = row.querySelector('.comment-btn'), a = row.querySelector('.ask-btn'); \
            if (!c || !a) return true; \
            const cb = c.getBoundingClientRect(), ab = a.getBoundingClientRect(); \
-           return Math.abs(cb.top - ab.top) > 1 || ab.left <= cb.right; \
+           const mid = function (r) { return (r.top + r.bottom) / 2; }; \
+           return Math.abs(mid(cb) - mid(ab)) > 2 || ab.left <= cb.right; \
          }).map(function (row) { return row.closest('[data-plan-ref]').getAttribute('data-plan-ref'); })",
     );
     assert_eq!(

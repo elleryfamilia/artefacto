@@ -705,15 +705,6 @@
     svg.setAttribute("class", "ag-mark" + (state ? " is-" + state : ""));
   }
 
-  /* Speech bubble with a question mark: the ask button. */
-  function askIcon() {
-    return svgIcon("ask-btn-icon", [
-      "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
-      "M9.6 9a2.4 2.4 0 1 1 3.4 2.2c-.6.3-1 .9-1 1.6",
-      "M12 15.5h.01",
-    ]);
-  }
-
   /* Warning-triangle icon for the "Blocks approval" checkbox: triangle
      outline plus an exclamation mark (stem + dot as one path). */
   function warningIcon() {
@@ -1617,6 +1608,9 @@
      fetch that has not answered in ten seconds is treated as failed. */
   core.settings = {
     pingEveryMs: 30000,
+      /* How long a question may go unanswered before the working row says
+         "still waiting" and the bead stops. */
+      stillWaitingMs: 120000,
     backoffMs: [500, 1000, 2000, 4000, 8000, 8000, 8000, 8000],
     fetchTimeoutMs: 10000,
     /* How long a socket must stay open before the retry budget resets. */
@@ -1661,6 +1655,12 @@
       stopping: false,
       approve: false,
       submitting: false,
+      /* Questions the agent has not answered yet: thread id (or "page") ->
+         { since }. Page-side, so a body swap keeps the working row. */
+      pending: {},
+      /* What is typed into a question thread's persistent input, by
+         thread id, so a swap re-creates the input with its text. */
+      threadDrafts: {},
       lastPing: 0,
       previousTitle: null,
       own: {},
@@ -1807,7 +1807,38 @@
       const seq = events.length ? events[events.length - 1].seq : 0;
       const applied = core.applyFrame(S.state, { seq: seq, events: kept }, cursor);
       S.applied += applied.length;
+      trackPending(applied);
       return applied;
+    }
+
+    /* A question is pending from the moment the server accepted it until
+       the agent writes into the same thread (or the page-level panel),
+       whichever tab asked. */
+    function trackPending(events) {
+      events.forEach(function (e) {
+        const d = e.data || {};
+        if (e.type === "chat.sent" && e.actor === "reviewer") {
+          pendingSet(d.thread || "page");
+        } else if ((e.type === "chat.sent" || e.type === "thread.replied") && e.actor === "agent") {
+          delete S.pending[d.thread || "page"];
+        } else if (e.type === "thread.deleted") {
+          delete S.pending[d.thread];
+        }
+      });
+    }
+
+    function pendingSet(key) {
+      S.pending[key] = { since: Date.now() };
+      window.setTimeout(function () { if (S.pending[key]) renderAll(); }, core.settings.stillWaitingMs + 50);
+    }
+
+    /* What the working row says: the mark's state and a line. */
+    function pendingLabel(key) {
+      const p = S.pending[key];
+      if (!p) return null;
+      if (!S.state.presence) return { state: "off", text: "waiting for an agent\u2026" };
+      if (Date.now() - p.since > core.settings.stillWaitingMs) return { state: "waiting", text: "still waiting\u2026" };
+      return { state: "working", text: "thinking\u2026" };
     }
 
     function ping() {
@@ -2223,6 +2254,7 @@
       if (!S.connected) return { mode: "off", text: "reconnecting" };
       const p = S.state.presence;
       if (!p) return { mode: "off", text: "no agent" };
+      if (Object.keys(S.pending).length) return { mode: "working", text: "agent working", agent: p.agent };
       return { mode: p.mode, text: "agent " + (p.mode === "live" ? "live" : "waiting"), agent: p.agent };
     }
 
@@ -2316,6 +2348,16 @@
       t.messages.forEach(function (m, i) {
         if (i !== noteAt) msgs.appendChild(messageNode(m, i));
       });
+      /* From the question until the answer: the mark at work, or what it
+         is waiting for. Not a message, so counts of messages stay true. */
+      const pending = pendingLabel(t.id);
+      if (pending) {
+        msgs.appendChild(el("div", { class: "thread-working", dataset: { actor: "agent" } },
+          el("span", { class: "pv-avatar" }, agentMark(pending.state)),
+          el("div", { class: "thread-msg-body" },
+            el("span", { class: "thread-actor", text: "agent" }),
+            el("p", { class: "thread-text", text: pending.text }))));
+      }
       const resolution = node.querySelector(".thread-resolution");
       resolution.hidden = noteAt < 0;
       if (noteAt >= 0) {
@@ -2331,8 +2373,16 @@
       node.querySelector(".thread-delete").hidden = !open;
       /* On a question thread every follow-up is for the agent, and a Reply
          there would wait for the sent review: the trap this thread kind
-         exists to remove. Ask the agent is the one way to write in it. */
+         exists to remove. The persistent input is the one way to write in
+         it, so the Ask button goes too. */
       node.querySelector(".thread-reply").hidden = !!t.asked;
+      node.querySelector(".thread-ask").hidden = !!t.asked;
+      const composer = node.querySelector(".thread-composer");
+      composer.hidden = !(t.asked && open);
+      if (!composer.hidden) {
+        composer.querySelector(".thread-composer-hint").textContent = S.state.presence ? "Enter to send" : "waits for an agent";
+        setMarkState(composer.querySelector(".ag-mark"), S.state.presence ? "" : "off");
+      }
     }
 
     function threadNode(t) {
@@ -2347,6 +2397,42 @@
         el("span", { class: "thread-when" })));
       node.appendChild(el("div", { class: "thread-msgs" }));
       node.appendChild(el("div", { class: "thread-resolution", hidden: true }));
+      /* A question thread is a conversation: one line that stays, Enter
+         sends, Shift+Enter breaks a line. The text lives in S.threadDrafts
+         so a body swap re-creates the input with it. */
+      const composer = el("div", { class: "thread-composer", hidden: true });
+      const ta = el("textarea", { rows: "1", placeholder: "Ask a follow-up\u2026", "aria-label": "Ask the agent a follow-up" });
+      const hint = el("span", { class: "thread-composer-hint" });
+      const sendBtn = el("button", { type: "button", class: "pv-btn is-agent thread-composer-send", text: "Send" });
+      composer.appendChild(agentMark(""));
+      composer.appendChild(ta);
+      composer.appendChild(hint);
+      composer.appendChild(sendBtn);
+      ta.value = S.threadDrafts[t.id] || "";
+      const grow = function () { ta.rows = Math.min(6, ta.value.split("\n").length); };
+      grow();
+      const submit = function () {
+        const text = ta.value.trim();
+        if (!text || sendBtn.disabled) return;
+        sendBtn.disabled = true;
+        send({ cmd: "chat.send", thread: t.id, text: text, opened_revision: S.state.revision })
+          .then(function () {
+            ta.value = "";
+            delete S.threadDrafts[t.id];
+            grow();
+            sendBtn.disabled = false;
+            markAsked();
+            cleared(sendBtn);
+            ta.focus({ preventScroll: true });
+          })
+          .catch(function (e) { sendBtn.disabled = false; failed(sendBtn, e); });
+      };
+      ta.addEventListener("input", function () { S.threadDrafts[t.id] = ta.value; grow(); });
+      ta.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); submit(); }
+      });
+      sendBtn.addEventListener("click", submit);
+      node.appendChild(composer);
       const actions = el("div", { class: "thread-actions" });
       actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-reply", text: "Reply", onclick: function () {
         openComposer({ kind: "reply", thread: t.id, ref: t.target });
@@ -2468,7 +2554,14 @@
           el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
           el("p", { class: "thread-text", text: m.text })));
       });
-      log.hidden = S.state.chat.length === 0;
+      const pending = pendingLabel("page");
+      if (pending) {
+        log.appendChild(el("div", { class: "pv-chat-working", dataset: { actor: "agent" } },
+          el("span", { class: "pv-avatar" }, agentMark(pending.state)),
+          el("span", { class: "thread-actor", text: "agent" }),
+          el("p", { class: "thread-text", text: pending.text })));
+      }
+      log.hidden = S.state.chat.length === 0 && !pending;
       const panel = document.querySelector(".pv-chat");
       if (panel) panel.hidden = !S.ui.chatOpen;
     }
@@ -2491,6 +2584,33 @@
        between a comment and a question is the one thing the page cannot
        show by layout alone. Stored only on dismissal, so a page nobody
        dismissed writes nothing. */
+    /* The ask control carries its label until the reviewer has asked once
+       on this browser; after that the mark alone is the control, with the
+       label in its tooltip and in the bar. Stored on the first ask. */
+    const ASKED_KEY = "artefacto.asked";
+    function askedOnce() {
+      try { return window.localStorage.getItem(ASKED_KEY) === "1"; } catch (e) { return false; }
+    }
+    function markAsked() {
+      try { window.localStorage.setItem(ASKED_KEY, "1"); } catch (e) { /* an opaque origin; the label stays */ }
+      document.querySelectorAll("[data-plan-ref] .ask-btn.is-labelled").forEach(function (b) { b.classList.remove("is-labelled"); });
+    }
+
+    /* The ask control on an element that already has a question is tinted,
+       and a click there goes to that thread's input rather than opening a
+       second question. */
+    function askedThreadOn(ref) {
+      return S.state.threads.find(function (t) {
+        return t.asked && t.target === ref && (t.status === "open" || t.status === "unanchored");
+      });
+    }
+    function renderAskMarks() {
+      if (!S.root) return;
+      S.root.querySelectorAll(".ask-btn[data-ask-for]").forEach(function (b) {
+        b.classList.toggle("has-thread", !!askedThreadOn(b.getAttribute("data-ask-for")));
+      });
+    }
+
     const HINT_KEY = "artefacto.hint.ask";
     function hintDismissed() {
       try { return window.localStorage.getItem(HINT_KEY) === "1"; } catch (e) { return false; }
@@ -2513,7 +2633,8 @@
       bar.appendChild(el("span", { class: "feedback-bar-count" }));
       bar.appendChild(el("span", { class: "feedback-bar-reviewed" }));
       bar.appendChild(el("span", { class: "feedback-bar-sent" }));
-      bar.appendChild(el("button", { type: "button", class: "pv-textbtn feedback-bar-chat", text: "Ask the agent", onclick: function () {
+      bar.appendChild(el("button", { type: "button", class: "ask-btn is-labelled feedback-bar-chat",
+        dataset: { label: "Ask the agent" }, "aria-label": "Ask the agent about the plan", onclick: function () {
         S.ui.chatOpen = !S.ui.chatOpen;
         /* The reviewer has seen the panel; a draft in it no longer opens
            it on their behalf. */
@@ -2530,6 +2651,9 @@
           renderChat();
         }
       } }));
+      const askBar = bar.querySelector(".feedback-bar-chat");
+      askBar.appendChild(agentMark(""));
+      askBar.appendChild(el("span", { class: "ask-btn-label", text: "Ask the agent" }));
       const approve = el("input", { type: "checkbox" });
       approve.addEventListener("change", function () { S.approve = approve.checked; renderBar(); });
       bar.appendChild(el("label", { class: "feedback-bar-approve" }, approve, el("span", { text: "Approve" })));
@@ -2753,6 +2877,7 @@
          write the next one. */
       const afterSend = function () {
         close();
+        if (d.kind === "ask" || d.kind === "chat") markAsked();
         if (d.kind === "chat") ensureChatComposer();
       };
       cancelBtn.addEventListener("click", function () {
@@ -2860,13 +2985,20 @@
         /* Asking is offered wherever commenting is, and looks different:
            a comment waits for the sent review, a question reaches the
            agent now. The two share one row. */
-        const ask = el("button", { type: "button", class: "ask-btn", title: "Ask the agent",
-          "aria-label": "Ask the agent about this" });
-        ask.appendChild(askIcon());
+        const ask = el("button", { type: "button", class: "ask-btn" + (askedOnce() ? "" : " is-labelled"),
+          "aria-label": "Ask the agent about this", dataset: { label: "Ask the agent", askFor: ref } });
+        ask.appendChild(agentMark(""));
         ask.appendChild(el("span", { class: "ask-btn-label", text: "Ask the agent" }));
         ask.addEventListener("click", function (e) {
           e.stopPropagation();
           if (target.tagName === "DETAILS" && phaseIsShut(target)) setPhaseOpen(target, true, true);
+          const existing = askedThreadOn(ref);
+          const input = existing && S.root.querySelector('.thread[data-thread="' + existing.id + '"] .thread-composer textarea');
+          if (input) {
+            input.scrollIntoView({ block: "center" });
+            input.focus({ preventScroll: true });
+            return;
+          }
           openComposer({ kind: "ask", ref: ref, quote: quote });
         });
         (slots.btn || target).appendChild(el("span", { class: "el-actions" }, btn, ask));
@@ -2951,6 +3083,7 @@
     function renderAll() {
       renderPresence();
       renderThreads();
+      renderAskMarks();
       renderAnswers();
       renderReviewed();
       renderBar();

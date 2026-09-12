@@ -1724,22 +1724,81 @@ pre code { font-size: 1em; }
 .summary-exec > .el-actions,
 .pv-row-body > .el-actions { align-self: flex-start; margin-top: 0.25rem; }
 
-/* The ask button sits beside the comment button wherever one is offered and
-   must not look like it: a comment waits for the sent review, a question
-   reaches the agent now. Accent outline at rest -- the comment button is grey
-   until its row is hovered -- and filled on hover. Not filled at rest: the
-   blocking and high-risk chips are filled accent, and a page with a dozen
-   ask buttons would read as a dozen warnings. */
+/* The ask control is the agent's mark in the agent's colour, with its label
+   on hover and focus, so it can sit on every element and still be one thing.
+   Until the reviewer has asked once it also carries the label (is-labelled),
+   as the bar's copy always does. Filled on hover; tinted when the element
+   already has a question. */
 .ask-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid var(--agent-rule);
+  border-radius: var(--radius);
+  background: var(--page);
+  color: var(--agent);
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: background var(--t-fast) var(--ease),
+              border-color var(--t-fast) var(--ease),
+              color var(--t-fast) var(--ease);
+}
+.ask-btn .ag-mark { font-size: 0.875rem; }
+.ask-btn:hover,
+.ask-btn:focus-visible { background: var(--agent); border-color: var(--agent); color: var(--agent-ink); }
+.ask-btn::after {
+  content: attr(data-label);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translate(-50%, 2px);
+  padding: 0.3125rem 0.5rem;
+  border-radius: 3px;
+  background: var(--ink);
+  color: var(--page);
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.ask-btn:hover::after,
+.ask-btn:focus-visible::after { opacity: 1; transform: translate(-50%, 0); }
+.ask-btn.has-thread { background: var(--agent-wash); }
+.ask-btn:not(.is-labelled) .ask-btn-label { display: none; }
+.ask-btn.is-labelled {
+  width: auto;
+  padding: 0 0.625rem 0 0.5rem;
+  gap: 0.4375rem;
+  font-family: var(--font-mono);
+  font-size: 0.688rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.ask-btn.is-labelled::after { display: none; }
+.acceptance .ask-btn::after { display: none; }
+
+/* Buttons in the action colour, outlined; the agent's variant for a send to
+   the agent. Only one control on the page is ever filled: the verdict. */
+.pv-btn {
   display: inline-flex;
   align-items: center;
   gap: 0.4375rem;
   flex: none;
-  border: 1px solid var(--agent);
-  border-radius: 5px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
   padding: 0.3125rem 0.625rem;
+  min-height: 1.75rem;
   background: var(--page);
-  color: var(--agent);
+  color: var(--ink-3);
   font-family: var(--font-mono);
   font-size: 0.688rem;
   font-weight: 500;
@@ -1747,18 +1806,16 @@ pre code { font-size: 1em; }
   letter-spacing: 0.06em;
   text-transform: uppercase;
   cursor: pointer;
+  white-space: nowrap;
   transition: color var(--t-fast) var(--ease),
-              background var(--t-fast) var(--ease),
-              opacity var(--t-fast) var(--ease);
+              border-color var(--t-fast) var(--ease),
+              background var(--t-fast) var(--ease);
 }
-
-.ask-btn:hover,
-.ask-btn:focus-visible {
-  color: var(--agent-ink);
-  background: var(--agent);
-}
-
-.ask-btn-icon { width: 13px; height: 13px; flex: none; }
+.pv-btn svg { width: 13px; height: 13px; flex: none; }
+.pv-btn:hover { color: var(--action); border-color: var(--action); background: var(--action-wash); }
+.pv-btn:disabled { opacity: 0.45; cursor: default; }
+.pv-btn.is-agent { color: var(--agent); border-color: var(--agent-rule); }
+.pv-btn.is-agent:hover { background: var(--agent); color: var(--agent-ink); border-color: var(--agent); }
 
 /* The line under a question composer: who hears it, and when. */
 .composer-presence {
@@ -1784,6 +1841,56 @@ pre code { font-size: 1em; }
 
 /* A thread opened by a question says so. */
 .thread.is-asked .thread-label { color: var(--agent); }
+
+/* The working row: the mark at work while a question waits for its answer. */
+.thread-working {
+  display: grid;
+  grid-template-columns: 1.375rem minmax(0, 1fr);
+  gap: 0.625rem;
+  align-items: start;
+}
+.thread-working .thread-text { color: var(--ink-3); font-style: italic; }
+.thread-working .thread-actor { color: var(--agent); }
+.pv-chat-working { display: grid; grid-template-columns: 1.375rem auto minmax(0, 1fr); gap: 0.5rem; align-items: baseline; }
+.pv-chat-working .thread-text { color: var(--ink-3); font-style: italic; }
+
+/* The persistent input of a question thread: one line, grows, Enter sends. */
+.thread-composer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  padding: 0.25rem 0.25rem 0.25rem 0.75rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--page);
+  transition: border-color var(--t-fast) var(--ease);
+}
+.thread-composer[hidden] { display: none; }
+.thread-composer:focus-within { border-color: var(--agent); }
+.thread-composer .ag-mark { font-size: 0.875rem; }
+.thread-composer textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 0.375rem 0;
+  font-family: var(--font-serif);
+  font-size: 1rem;
+  line-height: 1.4;
+  color: var(--ink);
+  resize: none;
+}
+.thread-composer textarea:focus-visible { outline: none; }
+.thread-composer textarea::placeholder { color: var(--muted); font-style: italic; }
+.thread-composer .pv-btn { min-height: 1.625rem; }
+.thread-composer-hint {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  color: var(--muted);
+  padding-right: 0.25rem;
+  white-space: nowrap;
+}
 
 /* The draft comment editor, and the saved drafts it produces, are both notes
    (see .pv-note) -- a reader's words sit in the page the same way an author's
