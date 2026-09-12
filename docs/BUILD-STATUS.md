@@ -1613,6 +1613,18 @@ caught. One more thing the tests found on the way: a closed phase cannot
 hold focus, so a test that types into a thread's input opens the phases
 first, as a reviewer would have to. Gate: 522 tests, green.
 
+### Found live, after the port
+
+The reviewer asked a question on the design-port plan while three
+artifacts sat on the server, each with its own `c-1`. The skill's thread
+reply, `reply --thread c-1`, was refused with "c-1 exists on three
+artifacts; name one with --artifact", and the CLI then refused
+`--artifact` next to `--thread`, which it had declared as conflicting.
+The server already resolved the pair; only the flag rule stood in the
+way. Fixed: the two go together, a server test holds it with two
+artifacts that both own a `c-1`, and the skill says to add `--artifact`
+to a thread reply when the id is on more than one artifact.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
