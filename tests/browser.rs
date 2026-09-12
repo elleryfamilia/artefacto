@@ -3399,12 +3399,6 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
         true,
         "every comment button is in an actions row with its ask button"
     );
-    // Before a verdict is sent, nothing on the page is a filled control.
-    assert_eq!(
-        page.eval("document.querySelectorAll('.pv-btn.is-filled').length"),
-        0,
-        "only the chosen verdict is ever filled"
-    );
     let misaligned = page.eval(
         "Array.from(document.querySelectorAll('.el-actions')).filter(function (row) { \
            const c = row.querySelector('.comment-btn'), a = row.querySelector('.ask-btn'); \
@@ -3445,6 +3439,13 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
     page.wait_until(
         "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
         "the answer to join the thread",
+    );
+    // With threads, composers, and the bar all on the page and no verdict
+    // sent, nothing is a filled control.
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-btn.is-filled').length"),
+        0,
+        "only the chosen verdict is ever filled"
     );
     page.eval("document.querySelector('.thread[data-thread=\"c-1\"]').scrollIntoView({ block: 'center' })");
     page.screenshot(&screenshot_path("ask-on-kitchen-sink"));
