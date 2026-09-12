@@ -3189,9 +3189,13 @@ fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
         "question"
     );
     assert_eq!(
-        page.eval("/\\bc-[0-9]+\\b/.test(document.body.innerText)"),
+        page.eval(
+            "Array.from(document.querySelectorAll('.thread *')).some(function (n) { \
+               return n.children.length === 0 && /c-[0-9]+/.test(n.textContent); })"
+        ),
         false,
-        "no thread id is visible on the page"
+        "no leaf inside a thread card shows a thread id (textContent, because innerText \
+         reads as empty inside a content-visibility region)"
     );
 
     // A reload shows the same thread from the server's state.
