@@ -69,15 +69,19 @@ fn candidates() -> Vec<PathBuf> {
             }
         }
     }
+    // On Linux, Google Chrome before the distribution's `chromium-browser`:
+    // on Ubuntu that name is a shell script that hands off to snap, which
+    // is not there on a CI runner, so it exits without ever opening a port.
+    // `is_browser` rejects such a shim by its contents whatever the order.
     for fixed in [
         "/Applications/Chromium.app/Contents/MacOS/Chromium",
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
         "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
         "/usr/bin/google-chrome",
         "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
         "/snap/bin/chromium",
     ] {
         out.push(PathBuf::from(fixed));
@@ -85,8 +89,24 @@ fn candidates() -> Vec<PathBuf> {
     out
 }
 
+/// A file that is a browser, not a shell script standing in for one. A
+/// script whose first bytes are `#!` and that mentions snap is Ubuntu's
+/// transitional `chromium-browser`, which starts nothing here.
+fn is_browser(path: &std::path::Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; 512];
+    let n = file.read(&mut head).unwrap_or(0);
+    let head = &head[..n];
+    !(head.starts_with(b"#!") && String::from_utf8_lossy(head).contains("snap"))
+}
+
 pub fn find_chromium() -> Option<PathBuf> {
-    candidates().into_iter().find(|p| p.is_file())
+    candidates().into_iter().find(|p| is_browser(p))
 }
 
 pub struct Browser {
@@ -115,19 +135,28 @@ impl Browser {
         } else {
             "--headless=new"
         };
+        let mut args = vec![
+            headless.to_string(),
+            "--remote-debugging-port=0".to_string(),
+            format!("--user-data-dir={}", user_data.path().display()),
+            "--no-first-run".to_string(),
+            "--no-default-browser-check".to_string(),
+            "--disable-background-networking".to_string(),
+            "--disable-extensions".to_string(),
+            "--disable-gpu".to_string(),
+            "--window-size=1280,900".to_string(),
+        ];
+        // A CI runner is a disposable machine, and recent Ubuntu images
+        // restrict the unprivileged user namespaces Chrome's sandbox needs;
+        // there, and only there, the sandbox is off. `CI` is set by GitHub
+        // Actions and most other runners.
+        if std::env::var("CI").is_ok() {
+            args.push("--no-sandbox".to_string());
+            args.push("--disable-dev-shm-usage".to_string());
+        }
+        args.push("about:blank".to_string());
         let child = Command::new(&binary)
-            .args([
-                headless,
-                "--remote-debugging-port=0",
-                &format!("--user-data-dir={}", user_data.path().display()),
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-background-networking",
-                "--disable-extensions",
-                "--disable-gpu",
-                "--window-size=1280,900",
-                "about:blank",
-            ])
+            .args(&args)
             .stdout(Stdio::null())
             .stderr(log)
             .spawn()
@@ -144,11 +173,19 @@ impl Browser {
                     break port;
                 }
             }
-            assert!(
-                Instant::now() < deadline,
-                "chromium did not open a DevTools port; see {}",
-                user_data.path().join("chrome.log").display()
-            );
+            if Instant::now() >= deadline {
+                // The log is in a temp directory the job throws away, so
+                // its tail goes into the failure where a reader can see it.
+                let log_text = std::fs::read_to_string(user_data.path().join("chrome.log"))
+                    .unwrap_or_default();
+                let tail: Vec<&str> = log_text.lines().rev().take(20).collect();
+                let tail: Vec<&str> = tail.into_iter().rev().collect();
+                panic!(
+                    "{} did not open a DevTools port within 20s; the end of its log:\n{}",
+                    binary.display(),
+                    tail.join("\n")
+                );
+            }
             std::thread::sleep(Duration::from_millis(25));
         };
         Some(Browser {
