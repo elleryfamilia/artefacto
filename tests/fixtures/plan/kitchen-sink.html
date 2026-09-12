@@ -276,6 +276,13 @@
 @keyframes pv-pop {
   50% { transform: scale(1.06); }
 }
+/* The agent's mark at work: a bead orbits the ring while the point breathes. */
+@keyframes ag-orbit {
+  to { transform: rotate(360deg); }
+}
+@keyframes ag-breathe {
+  50% { opacity: 0.35; }
+}
 
 /* One switch for the whole budget. Anything animated below is either listed
    here or inherits from something that is. */
@@ -2054,34 +2061,69 @@ pre code { font-size: 1em; }
    mono for what the page says about it.
    --------------------------------------------------------------------------- */
 
+/* The agent's mark: a ring around a point, something looking back. The ring
+   is the agent; the point is the answer it holds. Working sends a bead
+   around the ring; off hollows the point out; waiting turns it amber. */
+.ag-mark {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  flex: none;
+  vertical-align: -0.12em;
+  color: var(--agent);
+  overflow: visible;
+}
+.ag-mark .ag-ring { fill: none; stroke: currentColor; stroke-width: 2.2; }
+.ag-mark .ag-core { fill: currentColor; }
+.ag-mark .ag-orbit { fill: currentColor; opacity: 0; transform-origin: 12px 12px; }
+.ag-mark.is-working .ag-ring { opacity: 0.35; }
+.ag-mark.is-working .ag-orbit { opacity: 1; animation: ag-orbit 1.1s linear infinite; }
+.ag-mark.is-working .ag-core { animation: ag-breathe 1.1s var(--ease) infinite; }
+.ag-mark.is-off { color: var(--muted); }
+.ag-mark.is-off .ag-core { fill: none; stroke: currentColor; stroke-width: 1.5; }
+.ag-mark.is-waiting { color: var(--warn); }
+.ag-mark-lg { width: 1.5em; height: 1.5em; }
+
+/* Avatar: the mark on its wash, round. The reviewer's is a square on ink:
+   circle for the machine, square for the person, same weight. */
+.pv-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.375rem;
+  height: 1.375rem;
+  flex: none;
+  border-radius: 50%;
+  background: var(--agent-wash);
+  color: var(--agent);
+  font-size: 0.875rem;
+}
+.pv-avatar.is-you { border-radius: 2px; background: var(--surface); color: var(--ink); border: 1px solid var(--rule); }
+.pv-avatar.is-you::before { content: ""; width: 7px; height: 7px; background: var(--ink); }
+
+/* Presence pill: the mark plus a word. */
 .pv-presence {
   display: inline-flex;
   align-items: center;
   gap: 0.4375rem;
   margin-right: 0.875rem;
+  padding: 0.3125rem 0.625rem 0.3125rem 0.5rem;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--page);
   font-family: var(--font-mono);
-  font-size: 0.688rem;
-  letter-spacing: 0.06em;
+  font-size: 0.656rem;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--ink-3);
   white-space: nowrap;
+  transition: color var(--t-mid) var(--ease), border-color var(--t-mid) var(--ease);
 }
-
-.pv-presence::before {
-  content: "";
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-  background: var(--rule);
-  transition: background var(--t-mid) var(--ease);
-}
-
-.pv-presence[data-mode="live"] { color: var(--ok); }
-.pv-presence[data-mode="live"]::before { background: var(--ok); }
-.pv-presence[data-mode="waiting"] { color: var(--warn); }
-.pv-presence[data-mode="waiting"]::before { background: var(--warn); }
-.pv-presence[data-mode="off"] { color: var(--muted); }
-.pv-presence[data-mode="off"]::before { background: var(--muted); }
+.pv-presence .ag-mark { font-size: 0.875rem; }
+.pv-presence[data-mode="live"] { color: var(--agent); border-color: var(--agent-rule); }
+.pv-presence[data-mode="working"] { color: var(--agent); border-color: var(--agent-rule); background: var(--agent-wash); }
+.pv-presence[data-mode="waiting"] { color: var(--warn); border-color: var(--warn-rule); }
+.pv-presence[data-mode="off"] { color: var(--muted); border-style: dashed; }
 
 .pv-notices { display: flex; flex-direction: column; gap: 0.5rem; padding: 0 var(--gutter); }
 .pv-notices:empty { display: none; }
@@ -2155,18 +2197,24 @@ pre code { font-size: 1em; }
 /* A comment and an answer are the same kind of thing on the page: the
    reviewer's words, in a card with a mono label row above and the actions
    below. Only the left border differs, by status. */
+/* One card for a comment and a question. The kind is the head label and the
+   left edge, so the edge carries the family: rule for a comment, agent for a
+   question, alarm when it blocks; a resolution recolours it. */
 .thread {
+  position: relative;
   border-left: 3px solid var(--rule);
-  padding: 0.625rem 0.875rem 0.625rem;
+  padding: 0.75rem 0.875rem 0.75rem 1rem;
   background: var(--surface);
+  border-radius: 0 var(--radius) var(--radius) 0;
   max-width: 70ch;
   animation: pv-rise var(--t-mid) var(--ease) both;
 }
 
-.thread[data-status="open"] { border-left-color: var(--ink-3); }
+.thread[data-kind="question"] { border-left-color: var(--agent); }
+.thread.is-blocking { border-left-color: var(--alarm); }
+.thread[data-status="declined"] { border-left-color: var(--rule); }
 .thread[data-status="changed"] { border-left-color: var(--ok); }
-.thread[data-status="declined"] { border-left-color: var(--muted); }
-.thread[data-status="unanchored"] { border-left-color: var(--warn); }
+.thread[data-status="unanchored"] { border-left-style: dashed; border-left-color: var(--warn); }
 
 .thread-head {
   display: flex;
@@ -2180,11 +2228,11 @@ pre code { font-size: 1em; }
 
 .thread-label {
   font-weight: 500;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--ink-3);
 }
-.thread-id { color: var(--muted); }
+.thread-head .thread-when { margin-left: auto; color: var(--muted); letter-spacing: 0; }
 .thread-status.pv-chip { font-size: 0.625rem; }
 .thread-status.pv-chip-open { color: var(--ink-2); border-color: var(--ink-3); }
 .thread-status.pv-chip-changed { color: var(--ok); border-color: var(--ok); }
@@ -2194,17 +2242,35 @@ pre code { font-size: 1em; }
 .thread-blocking[hidden] { display: none; }
 .thread-target { color: var(--warn); }
 
-.thread-msgs { display: flex; flex-direction: column; gap: 0.5rem; margin: 0.375rem 0 0; }
+.thread-msgs { display: flex; flex-direction: column; gap: 0.625rem; margin: 0.625rem 0 0; }
 
-.thread-msg { display: grid; grid-template-columns: 3.25rem 1fr; gap: 0.5rem; align-items: baseline; }
+.thread-msg { display: grid; grid-template-columns: 1.375rem minmax(0, 1fr); gap: 0.625rem; align-items: start; }
+.thread-msg-body { display: flex; flex-direction: column; gap: 0.1875rem; min-width: 0; }
 .thread-actor {
   font-family: var(--font-mono);
   font-size: 0.625rem;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
+  line-height: 1.375rem;
 }
-.thread-msg[data-actor="agent"] .thread-actor { color: var(--ok); }
+.thread-msg[data-actor="agent"] .thread-actor { color: var(--agent); }
+.thread-msg.is-working .thread-text { color: var(--ink-3); font-style: italic; }
+.thread-msg.is-working .thread-actor { color: var(--agent); }
+
+/* The agent's resolution note on a comment: changed or declined, with why. */
+.thread-resolution {
+  display: grid;
+  grid-template-columns: 1.375rem minmax(0, 1fr);
+  gap: 0.625rem;
+  align-items: start;
+  margin-top: 0.625rem;
+  padding-top: 0.625rem;
+  border-top: 1px solid var(--rule);
+}
+.thread-resolution[hidden] { display: none; }
+.thread-resolution .thread-actor { color: var(--agent); }
+.thread-resolution .pv-chip { margin-left: 0.375rem; vertical-align: 0.15em; }
 .thread-text {
   margin: 0;
   font-family: var(--font-serif);
@@ -3033,6 +3099,32 @@ pre code { font-size: 1em; }
       "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
       "M7 8h10M7 12h6",
     ]);
+  }
+
+  /* The agent's mark: a ring around a point, something looking back. One
+     SVG, four states by class: rest, is-working (a bead orbits the ring),
+     is-waiting, is-off (the point hollows out). It is the agent wherever
+     the agent appears: the presence pill, the avatar, and soon the ask
+     control and the working row. */
+  function agentMark(state) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    setMarkState(svg, state);
+    [["ag-ring", 12, 12, 8.5], ["ag-core", 12, 12, 3.2], ["ag-orbit", 12, 3.5, 2]].forEach(function (c) {
+      const circle = document.createElementNS(SVG_NS, "circle");
+      circle.setAttribute("class", c[0]);
+      circle.setAttribute("cx", String(c[1]));
+      circle.setAttribute("cy", String(c[2]));
+      circle.setAttribute("r", String(c[3]));
+      svg.appendChild(circle);
+    });
+    return svg;
+  }
+
+  function setMarkState(svg, state) {
+    svg.setAttribute("class", "ag-mark" + (state ? " is-" + state : ""));
   }
 
   /* Speech bubble with a question mark: the ask button. */
@@ -4552,16 +4644,22 @@ pre code { font-size: 1em; }
       if (S.gone) return { mode: "off", text: "server gone" };
       if (!S.connected) return { mode: "off", text: "reconnecting" };
       const p = S.state.presence;
-      if (!p) return { mode: "none", text: "no agent" };
+      if (!p) return { mode: "off", text: "no agent" };
       return { mode: p.mode, text: "agent " + (p.mode === "live" ? "live" : "waiting"), agent: p.agent };
+    }
+
+    /* The mark's state for a presence mode: live is the mark at rest. */
+    function markStateFor(mode) {
+      return mode === "live" ? "" : mode === "working" ? "working" : mode === "waiting" ? "waiting" : "off";
     }
 
     function renderPresence() {
       const pill = document.querySelector(".pv-presence");
       if (!pill) return;
       const l = presenceLabel();
-      pill.textContent = l.text;
+      pill.querySelector(".pv-presence-text").textContent = l.text;
       pill.setAttribute("data-mode", l.mode);
+      setMarkState(pill.querySelector(".ag-mark"), markStateFor(l.mode));
       pill.title = l.agent ? l.agent + " holds the lease" : "";
       const hint = document.querySelector(".pv-chat-hint");
       if (hint) hint.textContent = presenceLine("message");
@@ -4582,7 +4680,8 @@ pre code { font-size: 1em; }
     function mountPresence(root) {
       const host = root.querySelector(".pv-topbar-right");
       if (!host || host.querySelector(".pv-presence")) return;
-      host.insertBefore(el("span", { class: "pv-presence", dataset: { mode: "none" }, text: "no agent" }), host.firstChild);
+      host.insertBefore(el("span", { class: "pv-presence", dataset: { mode: "off" } },
+        agentMark("off"), el("span", { class: "pv-presence-text", text: "no agent" })), host.firstChild);
     }
 
     /* ---- threads ----------------------------------------------------- */
@@ -4591,9 +4690,31 @@ pre code { font-size: 1em; }
       return actor === "agent" ? "agent" : actor === "server" ? "server" : "you";
     }
 
+    /* Circle for the machine, square for the person, same weight. */
+    function avatar(actor) {
+      if (actor === "agent") return el("span", { class: "pv-avatar", title: "agent" }, agentMark(""));
+      return el("span", { class: "pv-avatar is-you", title: actorLabel(actor) });
+    }
+
+    function whenLabel(ts) {
+      const d = ts ? new Date(ts) : null;
+      if (!d || isNaN(d.getTime())) return "";
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function messageNode(m, i) {
+      return el("div", { class: "thread-msg", dataset: { actor: m.actor, index: String(i) }, title: m.ts },
+        avatar(m.actor),
+        el("div", { class: "thread-msg-body" },
+          el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
+          el("p", { class: "thread-text", text: m.text })));
+    }
+
     function renderThread(node, t) {
       node.setAttribute("data-status", t.status);
+      node.setAttribute("data-kind", t.asked ? "question" : "comment");
       node.classList.toggle("is-asked", !!t.asked);
+      node.classList.toggle("is-blocking", !!t.blocking);
       node.querySelector(".thread-label").textContent = t.asked ? "Question" : "Comment";
       node.querySelector(".thread-status").textContent = t.status;
       node.querySelector(".thread-status").className = "thread-status pv-chip pv-chip-" + t.status;
@@ -4601,13 +4722,32 @@ pre code { font-size: 1em; }
       const target = node.querySelector(".thread-target");
       target.hidden = t.status !== "unanchored";
       target.textContent = "was on " + t.target;
+      const first = t.messages[0];
+      const when = node.querySelector(".thread-when");
+      when.textContent = first ? whenLabel(first.ts) : "";
+      when.title = first ? first.ts : "";
+      /* A resolved thread's closing note is the agent's last message: it is
+         shown as the resolution, with the verdict chip, not as one more
+         turn of the conversation. The server stores it as a message, so
+         this is how the page reads it back after a reload too. */
+      const last = t.messages[t.messages.length - 1];
+      const resolved = t.status === "changed" || t.status === "declined";
+      const noteAt = resolved && t.messages.length > 1 && last.actor === "agent" ? t.messages.length - 1 : -1;
       const msgs = node.querySelector(".thread-msgs");
       msgs.replaceChildren();
       t.messages.forEach(function (m, i) {
-        msgs.appendChild(el("div", { class: "thread-msg", dataset: { actor: m.actor, index: String(i) }, title: m.ts },
-          el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
-          el("p", { class: "thread-text", text: m.text })));
+        if (i !== noteAt) msgs.appendChild(messageNode(m, i));
       });
+      const resolution = node.querySelector(".thread-resolution");
+      resolution.hidden = noteAt < 0;
+      if (noteAt >= 0) {
+        resolution.replaceChildren(
+          avatar("agent"),
+          el("div", { class: "thread-msg-body" },
+            el("span", { class: "thread-actor" }, document.createTextNode("agent"),
+              el("span", { class: "pv-chip pv-chip-" + t.status, text: t.status })),
+            el("p", { class: "thread-text", text: last.text })));
+      }
       const open = t.status === "open" || t.status === "unanchored";
       node.querySelector(".thread-edit").hidden = !open;
       node.querySelector(".thread-delete").hidden = !open;
@@ -4619,13 +4759,16 @@ pre code { font-size: 1em; }
 
     function threadNode(t) {
       const node = el("div", { class: "thread", dataset: { thread: t.id } });
+      /* No id in the head: `c-3` is the agent's handle for the thread, kept
+         on the node as data-thread and shown to nobody. */
       node.appendChild(el("div", { class: "thread-head" },
         el("span", { class: "thread-label", text: "Comment" }),
-        el("span", { class: "thread-id", text: t.id }),
         el("span", { class: "thread-status pv-chip", text: t.status }),
         el("span", { class: "thread-blocking", text: "blocks approval" }),
-        el("span", { class: "thread-target", hidden: true })));
+        el("span", { class: "thread-target", hidden: true }),
+        el("span", { class: "thread-when" })));
       node.appendChild(el("div", { class: "thread-msgs" }));
+      node.appendChild(el("div", { class: "thread-resolution", hidden: true }));
       const actions = el("div", { class: "thread-actions" });
       actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-reply", text: "Reply", onclick: function () {
         openComposer({ kind: "reply", thread: t.id, ref: t.target });

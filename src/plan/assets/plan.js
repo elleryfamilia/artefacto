@@ -679,6 +679,32 @@
     ]);
   }
 
+  /* The agent's mark: a ring around a point, something looking back. One
+     SVG, four states by class: rest, is-working (a bead orbits the ring),
+     is-waiting, is-off (the point hollows out). It is the agent wherever
+     the agent appears: the presence pill, the avatar, and soon the ask
+     control and the working row. */
+  function agentMark(state) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    setMarkState(svg, state);
+    [["ag-ring", 12, 12, 8.5], ["ag-core", 12, 12, 3.2], ["ag-orbit", 12, 3.5, 2]].forEach(function (c) {
+      const circle = document.createElementNS(SVG_NS, "circle");
+      circle.setAttribute("class", c[0]);
+      circle.setAttribute("cx", String(c[1]));
+      circle.setAttribute("cy", String(c[2]));
+      circle.setAttribute("r", String(c[3]));
+      svg.appendChild(circle);
+    });
+    return svg;
+  }
+
+  function setMarkState(svg, state) {
+    svg.setAttribute("class", "ag-mark" + (state ? " is-" + state : ""));
+  }
+
   /* Speech bubble with a question mark: the ask button. */
   function askIcon() {
     return svgIcon("ask-btn-icon", [
@@ -2196,16 +2222,22 @@
       if (S.gone) return { mode: "off", text: "server gone" };
       if (!S.connected) return { mode: "off", text: "reconnecting" };
       const p = S.state.presence;
-      if (!p) return { mode: "none", text: "no agent" };
+      if (!p) return { mode: "off", text: "no agent" };
       return { mode: p.mode, text: "agent " + (p.mode === "live" ? "live" : "waiting"), agent: p.agent };
+    }
+
+    /* The mark's state for a presence mode: live is the mark at rest. */
+    function markStateFor(mode) {
+      return mode === "live" ? "" : mode === "working" ? "working" : mode === "waiting" ? "waiting" : "off";
     }
 
     function renderPresence() {
       const pill = document.querySelector(".pv-presence");
       if (!pill) return;
       const l = presenceLabel();
-      pill.textContent = l.text;
+      pill.querySelector(".pv-presence-text").textContent = l.text;
       pill.setAttribute("data-mode", l.mode);
+      setMarkState(pill.querySelector(".ag-mark"), markStateFor(l.mode));
       pill.title = l.agent ? l.agent + " holds the lease" : "";
       const hint = document.querySelector(".pv-chat-hint");
       if (hint) hint.textContent = presenceLine("message");
@@ -2226,7 +2258,8 @@
     function mountPresence(root) {
       const host = root.querySelector(".pv-topbar-right");
       if (!host || host.querySelector(".pv-presence")) return;
-      host.insertBefore(el("span", { class: "pv-presence", dataset: { mode: "none" }, text: "no agent" }), host.firstChild);
+      host.insertBefore(el("span", { class: "pv-presence", dataset: { mode: "off" } },
+        agentMark("off"), el("span", { class: "pv-presence-text", text: "no agent" })), host.firstChild);
     }
 
     /* ---- threads ----------------------------------------------------- */
@@ -2235,9 +2268,31 @@
       return actor === "agent" ? "agent" : actor === "server" ? "server" : "you";
     }
 
+    /* Circle for the machine, square for the person, same weight. */
+    function avatar(actor) {
+      if (actor === "agent") return el("span", { class: "pv-avatar", title: "agent" }, agentMark(""));
+      return el("span", { class: "pv-avatar is-you", title: actorLabel(actor) });
+    }
+
+    function whenLabel(ts) {
+      const d = ts ? new Date(ts) : null;
+      if (!d || isNaN(d.getTime())) return "";
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function messageNode(m, i) {
+      return el("div", { class: "thread-msg", dataset: { actor: m.actor, index: String(i) }, title: m.ts },
+        avatar(m.actor),
+        el("div", { class: "thread-msg-body" },
+          el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
+          el("p", { class: "thread-text", text: m.text })));
+    }
+
     function renderThread(node, t) {
       node.setAttribute("data-status", t.status);
+      node.setAttribute("data-kind", t.asked ? "question" : "comment");
       node.classList.toggle("is-asked", !!t.asked);
+      node.classList.toggle("is-blocking", !!t.blocking);
       node.querySelector(".thread-label").textContent = t.asked ? "Question" : "Comment";
       node.querySelector(".thread-status").textContent = t.status;
       node.querySelector(".thread-status").className = "thread-status pv-chip pv-chip-" + t.status;
@@ -2245,13 +2300,32 @@
       const target = node.querySelector(".thread-target");
       target.hidden = t.status !== "unanchored";
       target.textContent = "was on " + t.target;
+      const first = t.messages[0];
+      const when = node.querySelector(".thread-when");
+      when.textContent = first ? whenLabel(first.ts) : "";
+      when.title = first ? first.ts : "";
+      /* A resolved thread's closing note is the agent's last message: it is
+         shown as the resolution, with the verdict chip, not as one more
+         turn of the conversation. The server stores it as a message, so
+         this is how the page reads it back after a reload too. */
+      const last = t.messages[t.messages.length - 1];
+      const resolved = t.status === "changed" || t.status === "declined";
+      const noteAt = resolved && t.messages.length > 1 && last.actor === "agent" ? t.messages.length - 1 : -1;
       const msgs = node.querySelector(".thread-msgs");
       msgs.replaceChildren();
       t.messages.forEach(function (m, i) {
-        msgs.appendChild(el("div", { class: "thread-msg", dataset: { actor: m.actor, index: String(i) }, title: m.ts },
-          el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
-          el("p", { class: "thread-text", text: m.text })));
+        if (i !== noteAt) msgs.appendChild(messageNode(m, i));
       });
+      const resolution = node.querySelector(".thread-resolution");
+      resolution.hidden = noteAt < 0;
+      if (noteAt >= 0) {
+        resolution.replaceChildren(
+          avatar("agent"),
+          el("div", { class: "thread-msg-body" },
+            el("span", { class: "thread-actor" }, document.createTextNode("agent"),
+              el("span", { class: "pv-chip pv-chip-" + t.status, text: t.status })),
+            el("p", { class: "thread-text", text: last.text })));
+      }
       const open = t.status === "open" || t.status === "unanchored";
       node.querySelector(".thread-edit").hidden = !open;
       node.querySelector(".thread-delete").hidden = !open;
@@ -2263,13 +2337,16 @@
 
     function threadNode(t) {
       const node = el("div", { class: "thread", dataset: { thread: t.id } });
+      /* No id in the head: `c-3` is the agent's handle for the thread, kept
+         on the node as data-thread and shown to nobody. */
       node.appendChild(el("div", { class: "thread-head" },
         el("span", { class: "thread-label", text: "Comment" }),
-        el("span", { class: "thread-id", text: t.id }),
         el("span", { class: "thread-status pv-chip", text: t.status }),
         el("span", { class: "thread-blocking", text: "blocks approval" }),
-        el("span", { class: "thread-target", hidden: true })));
+        el("span", { class: "thread-target", hidden: true }),
+        el("span", { class: "thread-when" })));
       node.appendChild(el("div", { class: "thread-msgs" }));
+      node.appendChild(el("div", { class: "thread-resolution", hidden: true }));
       const actions = el("div", { class: "thread-actions" });
       actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-reply", text: "Reply", onclick: function () {
         openComposer({ kind: "reply", thread: t.id, ref: t.target });

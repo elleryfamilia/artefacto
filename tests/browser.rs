@@ -192,7 +192,12 @@ fn the_page_connects_and_shows_who_holds_the_lease() {
     );
     assert_eq!(
         page.text("document.querySelector('.pv-presence').dataset.mode"),
-        "none"
+        "off"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-presence .ag-mark').classList.contains('is-off')"),
+        true,
+        "the mark hollows out when nobody holds the lease"
     );
 
     // And a new agent polling: the pill changes without the page doing anything.
@@ -217,6 +222,13 @@ fn the_page_connects_and_shows_who_holds_the_lease() {
     assert_eq!(
         page.text("document.querySelector('.pv-presence').title"),
         "claude holds the lease"
+    );
+    assert_eq!(
+        page.eval(
+            "document.querySelector('.pv-presence .ag-mark').classList.contains('is-waiting')"
+        ),
+        true,
+        "the mark turns amber for a polling agent"
     );
     let errors = page.errors();
     assert!(errors.is_empty(), "{}", errors.join("\n"));
@@ -386,8 +398,23 @@ fn an_agents_reply_appears_in_the_thread_without_a_reload() {
     );
     assert_eq!(
         page.eval("document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length"),
-        3,
-        "comment, reply, note"
+        2,
+        "comment and reply stay turns of the conversation"
+    );
+    assert_eq!(
+        page.eval(
+            "!document.querySelector('.thread[data-thread=\"c-1\"] .thread-resolution').hidden"
+        ),
+        true,
+        "the note is the resolution line"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .thread-resolution .pv-chip').textContent"),
+        "changed"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .thread-resolution .thread-text').textContent"),
+        "swapped it"
     );
 }
 
@@ -3144,6 +3171,28 @@ fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
         "the answer to join the thread",
     );
     page.screenshot(&screenshot_path("ask-on-a-task"));
+
+    // Circle for the agent, square for the reviewer; the kind on the card;
+    // and no thread id anywhere a person reads.
+    assert_eq!(
+        page.eval("!!document.querySelector('.thread[data-thread=\"c-1\"] .thread-msg[data-actor=\"agent\"] .pv-avatar .ag-mark')"),
+        true,
+        "the agent's avatar is the mark"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.thread[data-thread=\"c-1\"] .thread-msg[data-actor=\"reviewer\"] .pv-avatar.is-you')"),
+        true,
+        "the reviewer's avatar is the square"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.thread[data-thread=\"c-1\"]').dataset.kind"),
+        "question"
+    );
+    assert_eq!(
+        page.eval("/\\bc-[0-9]+\\b/.test(document.body.innerText)"),
+        false,
+        "no thread id is visible on the page"
+    );
 
     // A reload shows the same thread from the server's state.
     page.navigate(&s.page_url());
