@@ -3174,6 +3174,11 @@ fn the_hint_line_shows_until_dismissed_and_stores_nothing_before() {
         hint.contains("Comments wait") && hint.contains("Ask the agent"),
         "the hint names both behaviours: {hint}"
     );
+    let banner = page.text("document.querySelector('.pv-banner-text').textContent");
+    assert!(
+        banner.contains("reaches it now") && !banner.contains("hears you"),
+        "the banner says which of the two reaches the agent now: {banner}"
+    );
     assert_eq!(
         page.eval("window.localStorage.length"),
         0,
@@ -3214,6 +3219,14 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
 
     // Wherever a comment button is, the ask button is beside it, on the same
     // line, whether the host is a heading row or a prose column.
+    assert_eq!(
+        page.eval(
+            "document.querySelectorAll('.el-actions').length > 0 && \
+             document.querySelectorAll('.el-actions').length === document.querySelectorAll('.comment-btn').length"
+        ),
+        true,
+        "every comment button is in an actions row with its ask button"
+    );
     let misaligned = page.eval(
         "Array.from(document.querySelectorAll('.el-actions')).filter(function (row) { \
            const c = row.querySelector('.comment-btn'), a = row.querySelector('.ask-btn'); \
