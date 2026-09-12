@@ -2201,19 +2201,49 @@
       renderNotices();
     }
 
+    /* One component for everything the page says on its own. Each kind has
+       a kicker (who is speaking) and a state for the mark. */
+    const NOTICE_KINDS = {
+      sent: { kicker: "Review sent", mark: "" },
+      revision: { kicker: "New revision", mark: "" },
+      nudge: { kicker: "The agent", mark: "" },
+      noagent: { kicker: "No agent", mark: "off" },
+      stopping: { kicker: "Server stopping", mark: "off" },
+      gone: { kicker: "Server gone", mark: "off" },
+      lost: { kicker: "Signed out", mark: "off" },
+    };
+
+    function noticeNode(kind, n) {
+      const spec = NOTICE_KINDS[kind];
+      const node = el("div", { class: "pv-notice", dataset: { kind: kind }, title: n.title });
+      node.appendChild(agentMark(spec.mark));
+      /* The kicker sits beside the text, not inside it, so the text is
+         only ever what was said. */
+      const text = el("span", { class: "pv-notice-text" });
+      text.appendChild(richText(n.text));
+      node.appendChild(el("span", { class: "pv-notice-body" },
+        el("span", { class: "pv-notice-kicker", text: spec.kicker }), text));
+      const actions = el("span", { class: "pv-notice-actions" });
+      if (n.action) actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet pv-notice-action", text: n.action, onclick: n.onAction }));
+      if (n.dismiss) actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet pv-notice-dismiss", text: "Dismiss", "aria-label": "Dismiss", onclick: function () { notice(kind, null); } }));
+      if (actions.childNodes.length) node.appendChild(actions);
+      return node;
+    }
+
     function renderNotices() {
       const host = noticeHost();
       host.replaceChildren();
-      ["sent", "revision", "nudge", "stopping", "gone", "lost"].forEach(function (kind) {
-        const n = S.ui["notice:" + kind];
+      ["sent", "revision", "nudge", "noagent", "stopping", "gone", "lost"].forEach(function (kind) {
+        let n = S.ui["notice:" + kind];
+        /* Derived, not stored: a question is waiting and nobody holds the
+           lease. It goes the moment an agent attaches. */
+        if (kind === "noagent") {
+          n = S.connected && !S.state.presence && Object.keys(S.pending).length
+            ? { text: "No agent is attached. Your question waits for one." }
+            : null;
+        }
         if (!n) return;
-        const node = el("div", { class: "pv-notice", dataset: { kind: kind }, title: n.title });
-        const text = el("span", { class: "pv-notice-text" });
-        text.appendChild(richText(n.text));
-        node.appendChild(text);
-        if (n.action) node.appendChild(el("button", { type: "button", class: "pv-btn is-quiet pv-notice-action", text: n.action, onclick: n.onAction }));
-        if (n.dismiss) node.appendChild(el("button", { type: "button", class: "pv-btn is-quiet pv-notice-dismiss", text: "Dismiss", "aria-label": "Dismiss", onclick: function () { notice(kind, null); } }));
-        host.appendChild(node);
+        host.appendChild(noticeNode(kind, n));
       });
     }
 

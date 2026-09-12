@@ -639,6 +639,11 @@ fn a_nudge_and_the_stop_show_as_notices() {
         ),
         "have a look at phase one"
     );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"nudge\"] .ag-mark') && document.querySelector('.pv-notice[data-kind=\"nudge\"] .pv-notice-kicker').textContent === 'The agent'"),
+        true,
+        "a nudge speaks as the agent: the mark and the kicker"
+    );
     page.click(".pv-notice[data-kind=\"nudge\"] .pv-notice-dismiss");
     assert_eq!(
         page.eval("!!document.querySelector('.pv-notice[data-kind=\"nudge\"]')"),
@@ -729,7 +734,7 @@ fn a_push_while_typing_keeps_the_draft_and_sends_the_revision_it_opened_against(
         "the revision banner",
     );
     assert!(
-        page.text("document.querySelector('.pv-notice[data-kind=\"revision\"]').textContent")
+        page.text("document.querySelector('.pv-notice[data-kind=\"revision\"] .pv-notice-text').textContent")
             .starts_with("Revision 2 pushed"),
         "the banner names the revision"
     );
@@ -818,7 +823,7 @@ fn a_draft_and_a_thread_whose_element_was_removed_land_in_the_recovery_panel() {
         "the server agrees"
     );
     assert!(
-        page.text("document.querySelector('.pv-notice[data-kind=\"revision\"]').textContent")
+        page.text("document.querySelector('.pv-notice[data-kind=\"revision\"] .pv-notice-text').textContent")
             .contains("1 thread lost its element"),
         "the banner says so"
     );
@@ -1819,8 +1824,9 @@ fn a_revision_learned_from_a_snapshot_reports_what_it_addressed() {
         "document.body.dataset.artefactoRevision === '2'",
         "revision 2",
     );
-    let banner =
-        page.text("document.querySelector('.pv-notice[data-kind=\"revision\"]').textContent");
+    let banner = page.text(
+        "document.querySelector('.pv-notice[data-kind=\"revision\"] .pv-notice-text').textContent",
+    );
     assert!(banner.starts_with("Revision 2 pushed"), "{banner}");
     assert!(banner.contains("1 addressed"), "{banner}");
     assert_eq!(
@@ -2337,7 +2343,9 @@ fn a_gone_artifact_found_by_the_probe_reads_as_lost_everywhere() {
         true
     );
     assert!(page
-        .text("document.querySelector('.pv-notice[data-kind=\"lost\"]').textContent")
+        .text(
+            "document.querySelector('.pv-notice[data-kind=\"lost\"] .pv-notice-text').textContent"
+        )
         .contains("no longer on the server"));
     assert_eq!(
         page.eval("window.artefactoPlan.debug().syncing"),
@@ -2382,8 +2390,9 @@ fn a_thread_that_goes_from_changed_to_declined_between_snapshots_is_counted() {
         "document.body.dataset.artefactoRevision === '3'",
         "revision 3 by snapshot",
     );
-    let banner =
-        page.text("document.querySelector('.pv-notice[data-kind=\"revision\"]').textContent");
+    let banner = page.text(
+        "document.querySelector('.pv-notice[data-kind=\"revision\"] .pv-notice-text').textContent",
+    );
     assert!(banner.contains("1 declined"), "{banner}");
 }
 
@@ -2406,7 +2415,9 @@ fn a_socket_that_opens_and_closes_at_once_still_gives_up() {
     artefacto::server::socket::close_all(&s.server().shared);
     page.wait_until("window.artefactoPlan.debug().gone", "the page to give up");
     assert!(page
-        .text("document.querySelector('.pv-notice[data-kind=\"gone\"]').textContent")
+        .text(
+            "document.querySelector('.pv-notice[data-kind=\"gone\"] .pv-notice-text').textContent"
+        )
         .contains("socket will not connect"));
 }
 
@@ -2891,7 +2902,9 @@ fn a_sent_review_is_unmistakable() {
         "document.querySelector('.pv-notice[data-kind=\"sent\"]')",
         "the sent notice",
     );
-    let text = page.text("document.querySelector('.pv-notice[data-kind=\"sent\"]').textContent");
+    let text = page.text(
+        "document.querySelector('.pv-notice[data-kind=\"sent\"] .pv-notice-text').textContent",
+    );
     assert!(
         text.starts_with("Review sent for revision 1: 1 comment"),
         "{text}"
@@ -3466,6 +3479,24 @@ fn a_question_composer_says_when_no_agent_will_hear_it() {
     page.navigate(&s.url);
     connected(&mut page);
 
+    // A question already waiting when the agent goes: the page says so as
+    // a notice, and takes it back when an agent attaches.
+    page.click("[data-plan-ref=\"phase:p-one\"] .ask-btn");
+    page.type_into(
+        "[data-plan-ref=\"phase:p-one\"] .composer[data-kind=\"ask\"] textarea",
+        "how long?",
+    );
+    page.click("[data-plan-ref=\"phase:p-one\"] .composer[data-kind=\"ask\"] .composer-send");
+    page.wait_until(
+        "!!document.querySelector('.thread[data-thread=\"c-1\"] .thread-working')",
+        "the question to wait",
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"noagent\"]')"),
+        false,
+        "an agent holds the lease"
+    );
+
     page.click("[data-plan-ref=\"task:t-a\"] .ask-btn");
     let line = "document.querySelector('[data-plan-ref=\"task:t-a\"] .composer[data-kind=\"ask\"] .composer-presence').textContent";
     assert_eq!(page.text(line), "The agent hears this at once.");
@@ -3478,11 +3509,18 @@ fn a_question_composer_says_when_no_agent_will_hear_it() {
         &format!("{line} === 'No agent is attached. Your question will wait for one.'"),
         "the composer to say the question will wait",
     );
-
-    // A composer opened while no agent is attached says so from the start.
-    page.click("[data-plan-ref=\"phase:p-one\"] .ask-btn");
     assert_eq!(
-        page.text("document.querySelector('[data-plan-ref=\"phase:p-one\"] .composer[data-kind=\"ask\"] .composer-presence').textContent"),
+        page.text("document.querySelector('.pv-notice[data-kind=\"noagent\"] .pv-notice-text').textContent"),
+        "No agent is attached. Your question waits for one.",
+        "the waiting question is a notice while nobody holds the lease"
+    );
+
+    // A composer opened while no agent is attached says so from the start
+    // (on the summary, which has no question yet; the phase's mark would
+    // go to its thread's input instead).
+    page.click("[data-plan-ref=\"meta:demo\"] .ask-btn");
+    assert_eq!(
+        page.text("document.querySelector('[data-plan-ref=\"meta:demo\"] .composer[data-kind=\"ask\"] .composer-presence').textContent"),
         "No agent is attached. Your question will wait for one."
     );
 
@@ -3500,6 +3538,11 @@ fn a_question_composer_says_when_no_agent_will_hear_it() {
     page.wait_until(
         &format!("{line} === 'The agent hears this at once.'"),
         "the composer to say the agent hears it",
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"noagent\"]')"),
+        false,
+        "the notice goes with the agent's arrival"
     );
     assert_eq!(
         page.eval("document.querySelectorAll('.composer-presence').length"),
@@ -3603,7 +3646,9 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
         "the other verdict is not filled"
     );
     assert!(page
-        .text("document.querySelector('.pv-notice[data-kind=\"sent\"]').textContent")
+        .text(
+            "document.querySelector('.pv-notice[data-kind=\"sent\"] .pv-notice-text').textContent"
+        )
         .starts_with("Approval sent for revision 2"),);
 
     // The verdict survives a reload: it comes from the server's snapshot.

@@ -2205,15 +2205,19 @@ pre code { font-size: 1em; }
 .pv-notices { display: flex; flex-direction: column; gap: 0.5rem; padding: 0 var(--gutter); }
 .pv-notices:empty { display: none; }
 
+/* One component for everything the page says on its own: the mark, a
+   kicker naming who speaks, the text, and any actions. The left edge is the
+   family: agent for a nudge, action for a revision, ok for a sent review,
+   muted for a server going away, dashed for no agent. */
 .pv-notice {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.75rem;
   margin: 0.75rem 0 0;
   padding: 0.625rem 0.875rem;
   border: 1px solid var(--rule);
-  border-left: 3px solid var(--agent);
-  border-radius: 4px;
+  border-left-width: 3px;
+  border-radius: var(--radius);
   background: var(--surface);
   font-family: var(--font-serif);
   font-size: 0.9375rem;
@@ -2221,14 +2225,33 @@ pre code { font-size: 1em; }
   color: var(--ink);
   animation: pv-rise var(--t-mid) var(--ease) both;
 }
-
-.pv-notice[data-kind="revision"] { border-left-color: var(--ok); }
-.pv-notice[data-kind="nudge"] { border-left-color: var(--warn); }
-.pv-notice[data-kind="stopping"],
-.pv-notice[data-kind="gone"],
-.pv-notice[data-kind="lost"] { border-left-color: var(--alarm); }
-.pv-notice-text { flex: 1 1 auto; }
+.pv-notice .ag-mark { font-size: 1.125rem; }
+.pv-notice-body { flex: 1 1 auto; min-width: 0; }
+.pv-notice-text strong { font-weight: 600; }
 .pv-notice-text code { font-family: var(--font-mono); font-size: 0.85em; }
+.pv-notice-kicker {
+  display: block;
+  margin-bottom: 0.125rem;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--agent);
+}
+.pv-notice-actions { display: inline-flex; gap: 0.5rem; flex: none; }
+.pv-notice[data-kind="nudge"] { border-left-color: var(--agent); }
+.pv-notice[data-kind="revision"] { border-left-color: var(--action); }
+.pv-notice[data-kind="revision"] .pv-notice-kicker { color: var(--action); }
+.pv-notice[data-kind="sent"] { border-left-color: var(--ok); }
+.pv-notice[data-kind="sent"] .pv-notice-kicker { color: var(--ok); }
+.pv-notice[data-kind="noagent"] { border-style: dashed; border-left-style: solid; border-left-color: var(--rule); }
+.pv-notice[data-kind="noagent"] .pv-notice-kicker { color: var(--muted); }
+.pv-notice[data-kind="stopping"],
+.pv-notice[data-kind="gone"] { border-left-color: var(--muted); }
+.pv-notice[data-kind="stopping"] .pv-notice-kicker,
+.pv-notice[data-kind="gone"] .pv-notice-kicker { color: var(--muted); }
+.pv-notice[data-kind="lost"] { border-left-color: var(--alarm); }
+.pv-notice[data-kind="lost"] .pv-notice-kicker { color: var(--alarm); }
 
 .pv-recovery {
   margin: 1rem var(--gutter) 0;
@@ -2461,8 +2484,6 @@ label.feedback-bar-approve {
   cursor: pointer;
 }
 label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
-.pv-notice[data-kind="sent"] { border-left-color: var(--ok); }
-
 .pv-chat {
   position: fixed;
   left: 50%;
