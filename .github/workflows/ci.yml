@@ -26,4 +26,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
+        # The runner has Google Chrome; the browser suite must run there,
+        # never skip, so a broken page cannot pass unseen.
+        env:
+          ARTEFACTO_REQUIRE_BROWSER: "1"
         run: cargo test --all
