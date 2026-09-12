@@ -1307,6 +1307,120 @@ were mutated seventeen and then four ways, all caught. What remains is a
 window in `clean` that predates the slice, a note said once per daemon,
 and prose. The next real finding will come from use.
 
+## The first real review, from Claude Code
+
+After plan 4 merged, the owner asked for plan 6 to be re-planned. The
+re-plan was written as an artefacto plan (`docs/plans/2026-09-12-plan-6-replan.plan.json`),
+pushed from a Claude Code session that followed `skills/artefacto-plan/SKILL.md`
+as written, with the owner as the reviewer on the page. It is the first time
+a real agent session ran the skill. What the run found, in order:
+
+1. **The skill's nudge line fails when the server holds two artifacts.**
+   `reply --nudge` as written in the skill exits 2 with "this server has
+   several artifacts; name one with --artifact". The frame names the
+   artifact. The skill now says to add `--artifact`. Process slip on the
+   agent's side: the frame was acknowledged before the nudge had landed,
+   because the two commands were chained without `&&`.
+2. **The session token reaches the chat.** The first line of the follow is
+   the session record, and Claude Code's Monitor delivers it as a
+   notification; `ack` and `reply` echo the session in their JSON. Not
+   fixed. The token is loopback-only and the reviewer is the owner, but the
+   skill's rule is to keep it out of anything shown, and a monitor that
+   prints it is at odds with that.
+3. **The skill assumes `artefacto` is on PATH.** A build-only install needs
+   the path set inside the Monitor command.
+4. **A comment does not reach the agent, and the reviewer expected it to.**
+   The reviewer typed a comment and asked in the terminal whether the
+   agent saw it. In digest mode a `thread.opened` alone is passive; the
+   agent only found it through `status --json`. This is `--passive live`
+   (spec 6.3) in practice, and the first real evidence a reviewer wants it.
+5. **The page never says "chat".** The agent told the reviewer to use "the
+   chat box"; the reviewer asked "what chat box?". The page's control is
+   *Ask the agent*, in the bottom bar and inside a thread beside *Reply*.
+   The skill names the button now.
+6. **Asking was not obvious or universal.** The reviewer: asking the agent
+   directly on the plan "is kinda brilliant, but it feels like it should
+   visually be more obvious and universal". *Ask the agent* existed in two
+   places only, and *Reply* and *Ask the agent* inside a thread looked
+   alike although only one wakes the agent. Built as the slice below.
+7. **What worked as written.** A page-level question reached the agent in
+   seconds and was answered on the page; `reviewer.idle` produced one
+   banner, `reviewer.away` one push notification, `reviewer.back` an
+   acknowledgement only; the sent review (verdict `comment`, one thread)
+   produced one revision with the thread resolved as changed and a note;
+   the page updated live on every push.
+
+### The slice: ask the agent from any element
+
+- **Server.** `chat.send` accepts `ref` (and `quote`) instead of `thread`.
+  The server checks the ref against the current revision, mints the thread
+  id the way `thread.open` does, and appends **one** `chat.sent` whose data
+  carries `thread`, `ref`, and `quote`. The fold opens the thread from that
+  event with `asked: true` and moves `next_thread_n` past it, so a replay
+  rebuilds it identically and there is never a `thread.opened` without the
+  question that was the point of it. `thread` and `ref` together are
+  refused; so is a ref not in the plan; nothing is logged for either.
+  `asked` is carried by `status --json`, the page's state snapshot, and the
+  feedback document, so an agent at review time can tell a question it
+  answered in place from a comment.
+- **Page.** Every element that offers *Comment* offers *Ask the agent*
+  beside it, the two in one `.el-actions` row placed where the comment
+  button alone was placed on the static page. Ask is outlined in the
+  accent at rest and fills on hover; inside a thread *Ask the agent* is
+  outlined the same way next to plain-text *Reply*. A thread opened by a
+  question is labelled *Question*. The served banner no longer says "the
+  agent hears you as you go", which was false in digest mode; it says
+  comments reach the agent with the review and *Ask the agent* reaches it
+  now. The bar carries the same sentence as a one-line hint with *Got it*;
+  it is stored in localStorage only on dismissal, so a page nobody
+  dismissed writes nothing (a test already asserts the store stays empty).
+- **Tests.** Two server tests (`tests/server_loop.rs`): the whole path
+  from `chat.send` with a ref to the feedback document, and the two
+  refusals. Three browser tests (`tests/browser.rs`): asking on a task
+  with no comment, the agent's answer joining the thread, and the label
+  surviving a reload; the hint's storage rule across a reload and the
+  banner sentence; and, on the kitchen-sink plan, one actions row per
+  comment button with the ask button right of it on the same line. Two
+  screenshots: `target/screenshots/ask-on-a-task.png` and
+  `ask-on-kitchen-sink.png`. The render golden was regenerated.
+
+### What the screenshot found
+
+The first cut stacked *Comment* above *Ask the agent* in prose columns (the
+summary, a risk's body), because each button was appended on its own to a
+flex column; the row wrapper fixed it. The second cut filled every ask
+button with the accent, and a page with a dozen of them read as a dozen
+warnings, because the blocking and high-risk chips are filled accent;
+outlined at rest, filled on hover. Neither would have been found by a
+read.
+
+### What the tests found
+
+The page's snapshot mapping (`fromSnapshot`) listed every thread field by
+name and dropped `asked`, so a question thread was labelled *Comment*
+after a reload; the browser test caught it on its first run. The index
+page inlines the plan stylesheet, and the new rules pushed it past
+tiny_http's chunked threshold, so `tests/server_clean.rs` failed on a
+substring that a chunk boundary now split ("Re" / "3e2" / "move from
+index"). The test support's `raw()` de-chunks responses. That was a latent
+flake: a chunk boundary inside a multibyte character would have made
+`read_to_string` fail and the whole response read as empty.
+
+### Mutations
+
+Fifteen, all caught: the fold never opening a thread from a ref, not
+marking it asked, not moving the counter; the server accepting thread and
+ref together, not checking the ref, dropping the quote; `asked` missing
+from status and from the feedback document; the snapshot dropping `asked`,
+the page's local event ignoring the assigned thread, the hint writing
+storage before dismissal, the two buttons not wrapped in one row, a
+question thread labelled *Comment*, the row stacking (CSS), and the banner
+still claiming the agent hears you as you go. Two mutations first hit the
+wrong occurrence of a repeated line (`let target = str_field(event,
+"ref")` appears three times in `fold.rs`) and passed for that reason; the
+occurrence was corrected and the mutation then bit. A mutation script must
+name the occurrence, not the first match.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
