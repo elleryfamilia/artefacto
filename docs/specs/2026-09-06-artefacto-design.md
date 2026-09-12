@@ -232,8 +232,10 @@ Three structural changes to the existing asset:
 
 Behaviour added in server mode:
 
-- a presence pill: `agent live` (an `events --follow` holds the lease),
-  `agent waiting` (an `await` holds it), or `no agent`
+- a presence pill: the agent's mark plus a word. `agent live` (an `events
+  --follow` holds the lease), `agent waiting` (an `await` holds it), `agent
+  working` (an agent holds the lease and a question of this page's is
+  unanswered; page-side), or `no agent` (mode `off`, the mark hollowed out)
 - threads: reply, edit, delete, and an **ask the agent** button that turns a
   reply into a chat event
 - an **ask the agent** button beside every comment button, so a question can
@@ -243,11 +245,28 @@ Behaviour added in server mode:
   comments wait for the sent review, a question reaches the agent now
 - a page-level chat composer for questions about the plan as a whole; when
   the pill says `no agent`, the composer says the message will wait
+- the bar's state line: `Saving` while a write is on its way, `Saved · rev
+  N` after, and for a few seconds after the tab is hidden with unsent work,
+  *Saved. The agent sees your notes when you send them.* Nothing blocks and
+  nothing is lost: every comment, answer, and mark is on the server the
+  moment it is accepted
+- a question thread is a conversation: one input that stays, Enter sends,
+  the text survives a body swap, and from the question until the answer a
+  working row shows the mark at work (or *waiting for an agent*, or *still
+  waiting* after two minutes)
+- notices through one component (the mark, a kicker naming who speaks, the
+  text, the actions): a nudge, a new revision, a sent review, no agent with
+  a question waiting, the server stopping or gone, signed out
 - open questions rendered as inputs, so answers arrive as data. In v1 an answer
   is free text, because `artefacto.plan/1` questions have no options field
   (`model.rs:134-139`). An optional `options` list is an additive later change.
-- **Send review** with an **Approve** toggle replaces the clipboard button; the
-  clipboard button stays in static export and gains the same toggle
+- two verdicts replace the clipboard button: **Request changes** and
+  **Approve**, one group in the bar, each sending its own `review.submit`;
+  the one that was sent is the only filled control on the page, and the
+  verdict rides in the page's snapshot so a reload keeps it. Request changes
+  is enabled with nothing written: it is a verdict on the plan, not on the
+  comments. The clipboard button stays in static export with its Approve
+  toggle
 - a revision banner when the agent pushes: what changed, with the previous title
   on hover, and each thread marked addressed or declined with the agent's note
 
@@ -282,6 +301,28 @@ the top, so nothing a reviewer wrote is ever silently dropped.
 The page reconnects with backoff and shows a clear "server gone" state after a
 bounded number of retries, never a silent one. `artefacto open` mints a fresh
 one-time bootstrap URL at any time, so losing the cookie is never a lockout.
+
+**The design system (the design port, 2026-09-12).** Four colour families
+that never mix: neutral for the document; status (`--alarm`, `--warn`,
+`--ok`, muted for cut and declined) for what the plan says, which a reader
+never clicks; action (`--action`) for everything the reviewer clicks; agent
+(`--agent`) for who is on the other side. The brand square keeps the rust as
+`--brand` and no control uses it, so rust on a control is a bug. Each family
+has an ink for text on its fill, a wash, and where it draws outlines a rule.
+A render test holds every ink and role at 4.5:1 on the page in every theme.
+The agent's mark, a ring around a point, is the agent wherever the agent
+appears: the ask control beside every Comment button (labelled until the
+reviewer has asked once on this browser, by its tooltip after; tinted on an
+element that already has a question, where a click goes to that thread's
+input), the presence pill, the avatar on the agent's messages (the
+reviewer's is an ink square), the working row, and the notices. Threads
+show no ids; `c-<n>` stays on the node as `data-thread` for the agent's
+commands. One button family, `pv-btn`, outlined in the action colour; the
+only filled control on the page is the sent verdict. Three themes from one
+role set: light, dark, and vibe, which swaps the type as well (Bricolage
+Grotesque, Space Mono, Bungee, embedded like Newsreader and JetBrains Mono),
+squares every corner, and doubles every structural rule; radii and the
+rule weight are tokens for that reason.
 
 ### 4.4 The artifact index
 

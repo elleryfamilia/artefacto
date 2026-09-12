@@ -1466,6 +1466,97 @@ Mutations on the fixes: Reply left on a question thread, the composer line
 not updated on a presence change, never added, and ignoring presence; all
 four caught. Gate: 514 tests, fmt and clippy clean.
 
+## The design port
+
+After the first real review, the owner ran a design pass in claude.ai/design
+from the brief in `docs/design/2026-09-12-design-pass-brief.md`. Its
+stylesheet (`artefacto.css`, kept beside the brief's inputs in the session
+scratchpad; the tool exposes no export) was the contract. The plan for the
+port (`docs/plans/2026-09-12-design-port.plan.json`) was itself reviewed on
+the artefacto page and approved at revision 2 with three decisions: vibe
+ships with its fonts embedded, *Request changes* stays enabled with nothing
+written, thread ids leave the page. Nine slices, each built, tested,
+screenshotted in light and dark, committed, and mutated before the next.
+
+### What was built
+
+1. **Colour roles** (`1fefa6f`). Four families that never mix: neutral,
+   status, action, agent; `--brand` for the square only. Every former
+   `--accent` use re-pointed by role (the index page's borrowed uses too).
+   Two render tests: no rule names `--accent`, and every ink and role reads
+   at 4.5:1 on the page in every theme, with each role's ink on its fill.
+2. **The mark, avatars, the card** (`ea1bf28`). One SVG for the agent in
+   four states; the presence pill is the mark plus a word (`none` became
+   `off`); avatars on every message; the thread id gone from the page; the
+   card's edge by kind and status; a resolved thread's note rendered as the
+   resolution line with its chip, not as one more turn.
+3. **Ask and answer** (`aa82e5f`). The ask control is the mark, labelled
+   until the first ask on this browser; tinted on an element with a
+   question, where a click goes to that thread's input; the working row
+   from accept to answer, timeboxed; the persistent input that sends on
+   Enter and keeps its draft across a swap; the hint line under a first
+   question saying who hears it.
+4. **One button family** (`89c8d4d`). `pv-btn` and its variants; the old
+   text-button class gone and kept gone by a render test; the composer's
+   foot row; the comment button tints rather than fills; a browser test
+   holds the count of filled controls at zero before a send.
+5. **The bar** (`35d634d`). Two rows; the state line (Saving, Saved · rev
+   N, and the leaving line); two verdicts in one group, the sent one
+   filled, the verdict carried by the snapshot so a reload keeps it; the
+   Approve checkbox and the green Send button gone.
+6. **Notices** (`a522eb3`). One component with the mark and a kicker; a
+   derived `noagent` kind while a question waits with nobody attached.
+7. **The static export** (`7562344`). The static editor's foot, the
+   clipboard button in the family, a print block that hides the agent.
+8. **Vibe** (`d3ebe12`). The third theme, its three families embedded (the
+   font tool now leaves a static family's instances alone), a fourth
+   toggle position that survives a reload, radii and the structural rule
+   weight as tokens.
+9. **Screenshots** (`110bd5e`). The kitchen-sink page with a question
+   thread, a blocking comment, a changed and a declined thread, in light,
+   dark, and vibe; the static export; all under `target/screenshots/`.
+
+### What the screenshots found
+
+The first cut stacked *Comment* above the mark in prose columns, and the
+second filled every ask control with the accent so a page read as a dozen
+warnings; both were fixed before the slice was committed. The dark
+screenshot was first taken mid-crossfade and showed a blend of both
+palettes; the test now waits for the theme animation class to clear.
+
+### What the tests found, and what they did not
+
+The page's snapshot mapping dropped `asked` (caught on the first run); the
+index page grew past tiny_http's chunked threshold (fixed by de-chunking in
+the test support); the `Served` helper's page URL assumed the demo fixture
+(found when the vibe reload check ran on the kitchen-sink plan); a
+`connected()` wait that evaluated `window.artefactoPlan.debug()` before the
+script had run.
+
+**Not found for eight commits: the first token rewrite dropped `--font-serif`
+and `--font-mono`.** Every rule kept referring to them, the browser fell back
+to its own serif and mono, and the screenshots looked plausible, because a
+Times-like serif and a Courier-like mono are what a reader expects to see.
+The render tests asserted that the fonts were embedded, never that the tokens
+named them. It surfaced only when the vibe slice went to add a display token
+next to two that were not there. A render test now pins that every type
+token names an embedded family, in the root and in vibe. Lesson for the
+record: a screenshot proves layout and colour; it does not prove a typeface
+unless someone looks for that typeface.
+
+### Mutations
+
+Thirty-one across the nine slices, all caught in the end. Six survived on
+the first try and each led to a stronger test: the count of ask controls
+included the bar's (counted in rows now); the alignment check compared
+tops of buttons of different heights (centres now); the no-id check read
+`innerText`, which is empty inside the page's content-visibility region
+(leaf `textContent` now); the no-filled-control check ran before any thread
+existed (after the threads now); "both verdicts fill" passed because the
+test never checked the other button after Approve; and a mutation aimed at
+`chat()` hit the first of three identical lines in `fold.rs` (the memory
+note from the ask slice, applied again).
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart

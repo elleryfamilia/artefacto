@@ -19,7 +19,7 @@
     ],
     "agent": "claude",
     "created": "2026-09-12",
-    "revision": 2
+    "revision": 9
   },
   "phases": [
     {
@@ -31,7 +31,7 @@
           "id": "t-roles",
           "title": "The role set in light and dark",
           "summary_md": "`:root`, the `prefers-color-scheme` block, and `[data-theme=\"dark\"]` take the design's tokens: neutral (`--canvas --page --surface --ink --ink-2 --ink-3 --muted --rule --rule-soft --numeral`), status (`--alarm --warn --ok` with inks and washes), action (`--action` with ink, wash, rule), agent (`--agent` with the same), `--brand` for the square only, `--focus` on action, radii and rule width as tokens. Every `var(--accent)` in `plan.css` is then re-pointed by role: chips and risk figures to status, buttons and links and focus to action, the ask control and the agent's text to agent. A unit test parses the token blocks and checks the contrast of ink on page, action on page, agent on page, and each `*-ink` on its fill, at 4.5:1 for light and dark.",
-          "status": "planned",
+          "status": "done",
           "risk": "medium",
           "files": [
             {
@@ -65,7 +65,7 @@
           "id": "t-chips",
           "title": "Chips and dots from status only",
           "summary_md": "`.pv-chip-*` and `.pv-dot-*` per status: high, blocked, blocking filled alarm; medium and in-progress warn; low, done, changed ok; open ink; planned muted; cut and declined muted with a strike; unanchored warn, dashed. The thread status chip uses the same classes. The stat figures go hot (alarm) only for risks and blocking questions.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-roles"
@@ -89,8 +89,8 @@
         {
           "id": "t-vibe",
           "title": "The vibe theme",
-          "summary_md": "`[data-theme=\"vibe\"]`: the violet ground, pastel spray roles, 2px rules, zero radius, sticker shadows, and the three families Bricolage Grotesque, Space Mono, Bungee. The theme toggle gains a third position. Fonts are the decision in `q-vibe`: embedded like Newsreader and JetBrains Mono (about 400 KB more per page), or system fallbacks (the theme keeps its colours, loses its type), or not shipped in v1.",
-          "status": "blocked",
+          "summary_md": "`[data-theme=\"vibe\"]`: the violet ground, pastel spray roles, 2px rules, zero radius, sticker shadows, and the three families Bricolage Grotesque, Space Mono, Bungee. The theme toggle gains a third position. Decided (`q-vibe`: yes): the three families are embedded like Newsreader and JetBrains Mono. The alternatives were embedded like Newsreader and JetBrains Mono (about 400 KB more per page), or system fallbacks (the theme keeps its colours, loses its type), or not shipped in v1.",
+          "status": "done",
           "risk": "medium",
           "depends_on": [
             "t-roles"
@@ -128,7 +128,7 @@
           "id": "t-mark",
           "title": "The mark and the presence pill",
           "summary_md": "`ag-mark` (ring, core, orbit) with `is-working`, `is-waiting`, `is-off`, and `ag-mark-lg`; the orbit animates only when working and not under reduced motion. The presence pill becomes the mark plus a word: live, working, waiting, off. *Working* is a page-side state: an agent is attached and a question of this page's is unanswered. The pill's `data-mode` and title keep the tests' contract, with `none` renamed to `off`.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-roles"
@@ -161,8 +161,8 @@
         {
           "id": "t-avatars",
           "title": "Avatars, actors, and no ids",
-          "summary_md": "Each thread message gets `pv-avatar`: the mark on its wash for the agent, a small ink square for the reviewer. The actor label stays for screen readers and as the small mono caption. The thread id (`c-3`) leaves the head; it stays as `data-thread` for the agent's commands and in the head's `title` for anyone who needs it. The head shows the kind label, the status chip, blocking, and a *when* on the right.",
-          "status": "planned",
+          "summary_md": "Each thread message gets `pv-avatar`: the mark on its wash for the agent, a small ink square for the reviewer. The actor label stays for screen readers and as the small mono caption. Decided (`q-ids`: remove it): the thread id (`c-3`) leaves the page entirely; it stays as `data-thread` on the node for the agent's commands and nothing else. The head shows the kind label, the status chip, blocking, and a *when* on the right.",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-mark"
@@ -192,7 +192,7 @@
           "id": "t-thread-card",
           "title": "The thread card by kind and status",
           "summary_md": "`.thread[data-kind=comment|question]` and `[data-status]` drive the left border: agent for a question, alarm when blocking, ok when changed, rule when declined, warn dashed when unanchored. The agent's resolution note becomes `thread-resolution` with the chip inline, instead of one more message. The unanchored target line links to nothing but says where it was.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-avatars"
@@ -228,7 +228,7 @@
           "id": "t-ask-mark",
           "title": "The ask control is the mark",
           "summary_md": "`ask-btn` becomes a 1.75rem square holding the mark in the agent colour, with the label *Ask the agent* rising on hover and focus (`::after`), filled on hover. `is-labelled` keeps the text for the bar and for the first sighting on a page (the label shows until the reviewer has asked once, per browser, stored on first ask). `has-thread` tints the control on an element that already has a question. Acceptance rows use it icon-only as now.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-mark"
@@ -259,7 +259,7 @@
           "id": "t-working",
           "title": "The working state",
           "summary_md": "From the moment a question is accepted by the server until an agent message lands in that thread (or the page-level panel), the thread shows a working row (`thread-msg.is-working`: the mark orbiting, *thinking…* in italics) and the pill says working. If no agent holds the lease the row says *waiting for an agent* with the mark off. After two minutes without an answer the row says *still waiting* and stops orbiting. State is page-side and survives a body swap.",
-          "status": "planned",
+          "status": "done",
           "risk": "medium",
           "depends_on": [
             "t-ask-mark"
@@ -294,7 +294,7 @@
           "id": "t-thread-composer",
           "title": "The persistent input",
           "summary_md": "A question thread carries `thread-composer` always: the mark, a one-line input that grows, *Enter* sends, *Shift+Enter* breaks a line, a quiet Send button in the agent colour. No Ask button, no two clicks. A comment thread keeps Reply as a quiet button plus the mark to ask; asking there switches the composer into the agent colour. Drafts in the input survive a body swap the way composers do today (same draft store, kind `ask`, thread set).",
-          "status": "planned",
+          "status": "done",
           "risk": "medium",
           "depends_on": [
             "t-working"
@@ -325,7 +325,7 @@
           "id": "t-noagent",
           "title": "Who will hear it",
           "summary_md": "`composer-presence` under a first question and `thread-noagent` in a thread say, with the mark's state, whether an agent hears it now or the question waits. The bar's hint and the banner read the same presence, so *reaches the agent now* is never said when nobody holds the lease.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-thread-composer"
@@ -357,7 +357,7 @@
           "id": "t-buttons",
           "title": "The pv-btn family",
           "summary_md": "`pv-btn` with `is-primary`, `is-filled`, `is-quiet`, `is-lg`, `is-agent`, `is-alarm`; the comment button, the reviewed toggle (action when checked), the composer's Add and Cancel, the thread actions, the expand and collapse links, and the theme toggle all become instances. `pv-textbtn` goes.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-roles"
@@ -391,8 +391,8 @@
         {
           "id": "t-acceptance",
           "title": "Criterion rows",
-          "summary_md": "The actions row on an acceptance criterion: icon-only, shown on hover, focus, or when the row has a thread (`has-thread`), with room for both controls.",
-          "status": "planned",
+          "summary_md": "The actions row on an acceptance criterion: icon-only, shown on hover, focus, or when the row has a thread (`has-thread`), with room for both controls.\n\nBuilt without `has-thread` on a criterion row: threads hang on the task, not the criterion, so a row cannot know it has one. The row keeps its controls on hover and focus.",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-buttons",
@@ -418,7 +418,7 @@
           "id": "t-comment-box",
           "title": "The comment composer's foot",
           "summary_md": "`comment-box` with a foot row: the blocking toggle (alarm when checked) on the left, Add and Cancel on the right as `pv-btn`s. The answer composer is the same box without the toggle.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-buttons"
@@ -449,7 +449,7 @@
           "id": "t-bar",
           "title": "The bar's layout",
           "summary_md": "`feedback-bar` in two rows: `feedback-bar-hint` (the mark, one sentence, Got it) and `feedback-bar-main` with `feedback-bar-state` (*Saved · rev 4* with a dot; `is-saving` while a command is in flight), `feedback-bar-counts` (threads, reviewed, blocking in alarm), and `feedback-bar-actions` (the labelled ask, the verdict group). The bar wraps instead of clipping at narrow widths.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-buttons",
@@ -480,8 +480,8 @@
         {
           "id": "t-verdict",
           "title": "Request changes and Approve",
-          "summary_md": "`feedback-bar-verdict`: two `pv-btn`s in one bordered group. *Request changes* sends `review.submit` with `request_changes`; *Approve* with `approve`. The chosen one is filled after the send; the sent notice and the *Sent* dot follow. The server's `settle_verdict` keeps its rule that a blocking comment forces `request_changes`, and the static export's clipboard button gains the same two choices. `q-empty-request` decides whether *Request changes* is enabled with nothing written.",
-          "status": "planned",
+          "summary_md": "`feedback-bar-verdict`: two `pv-btn`s in one bordered group. *Request changes* sends `review.submit` with `request_changes`; *Approve* with `approve`. The chosen one is filled after the send; the sent notice and the *Sent* dot follow. The server's `settle_verdict` keeps its rule that a blocking comment forces `request_changes`, and the static export's clipboard button gains the same two choices. Decided (`q-empty-request`): *Request changes* stays enabled with nothing written; it is a verdict on the plan, not on the comments.",
+          "status": "done",
           "risk": "medium",
           "depends_on": [
             "t-bar"
@@ -517,7 +517,7 @@
           "id": "t-autosave",
           "title": "Leaving is not losing",
           "summary_md": "The first time a page has unsent work and the tab is about to be hidden or closed, the state line reads *Saved. The agent sees your notes when you send them.* for a moment; no confirm dialog, nothing blocks. The banner's three steps end with *send, or come back later*.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-bar"
@@ -544,7 +544,7 @@
           "id": "t-notice",
           "title": "pv-notice by kind",
           "summary_md": "`pv-notice[data-kind=nudge|stopped|noagent|revision|sent]` with the mark, a kicker, text, and optional actions (*Show what changed* on a revision, *Dismiss*). The nudge banner, the sent notice, the stop notice, and the reconnect notice all render through it. The revision notice is new: it names the revision and how many threads it resolved.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-mark",
@@ -583,7 +583,7 @@
           "id": "t-static",
           "title": "The static export in the same system",
           "summary_md": "The static page mounts the same buttons, chips, bar, and comment box, minus the mark (no agent): the clipboard button becomes the verdict group's static twin. The print stylesheet hides the bar, the marks, and the composers.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-verdict",
@@ -614,7 +614,7 @@
           "id": "t-tests",
           "title": "The suite and the screenshots",
           "summary_md": "Every browser test that named a class or a text the port changed is updated with the slice that changed it, never after. This task is the final pass: the full gate, three screenshots of the kitchen-sink page (light, dark, and vibe if shipped) with seeded threads of every kind and status, and a static one.",
-          "status": "planned",
+          "status": "in_progress",
           "risk": "low",
           "depends_on": [
             "t-static",
