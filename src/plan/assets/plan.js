@@ -2203,8 +2203,8 @@
         const text = el("span", { class: "pv-notice-text" });
         text.appendChild(richText(n.text));
         node.appendChild(text);
-        if (n.action) node.appendChild(el("button", { type: "button", class: "pv-textbtn pv-notice-action", text: n.action, onclick: n.onAction }));
-        if (n.dismiss) node.appendChild(el("button", { type: "button", class: "pv-textbtn pv-notice-dismiss", text: "Dismiss", "aria-label": "Dismiss", onclick: function () { notice(kind, null); } }));
+        if (n.action) node.appendChild(el("button", { type: "button", class: "pv-btn is-quiet pv-notice-action", text: n.action, onclick: n.onAction }));
+        if (n.dismiss) node.appendChild(el("button", { type: "button", class: "pv-btn is-quiet pv-notice-dismiss", text: "Dismiss", "aria-label": "Dismiss", onclick: function () { notice(kind, null); } }));
         host.appendChild(node);
       });
     }
@@ -2434,18 +2434,18 @@
       sendBtn.addEventListener("click", submit);
       node.appendChild(composer);
       const actions = el("div", { class: "thread-actions" });
-      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-reply", text: "Reply", onclick: function () {
+      actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet thread-reply", text: "Reply", onclick: function () {
         openComposer({ kind: "reply", thread: t.id, ref: t.target });
       } }));
-      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-ask", text: "Ask the agent", onclick: function () {
+      actions.appendChild(el("button", { type: "button", class: "pv-btn is-agent thread-ask", text: "Ask the agent", onclick: function () {
         openComposer({ kind: "ask", thread: t.id, ref: t.target });
       } }));
-      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-edit", text: "Edit", onclick: function () {
+      actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet thread-edit", text: "Edit", onclick: function () {
         const current = S.state.threads.find(function (x) { return x.id === t.id; });
         openComposer({ kind: "edit", thread: t.id, ref: t.target, text: current && current.messages[0] ? current.messages[0].text : "" });
       } }));
       let armed = null;
-      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-delete", text: "Delete", onclick: function (ev) {
+      actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet thread-delete", text: "Delete", onclick: function (ev) {
         const btn = ev.currentTarget;
         if (armed) {
           clearTimeout(armed);
@@ -2622,7 +2622,7 @@
       if (!hintDismissed()) {
         const hint = el("div", { class: "feedback-bar-hint" },
           el("span", { class: "feedback-bar-hint-text", text: "Comments wait for your review; \u201cAsk the agent\u201d reaches the agent now." }),
-          el("button", { type: "button", class: "pv-textbtn feedback-bar-hint-dismiss", text: "Got it", onclick: function () {
+          el("button", { type: "button", class: "pv-btn is-quiet feedback-bar-hint-dismiss", text: "Got it", onclick: function () {
             try { window.localStorage.setItem(HINT_KEY, "1"); } catch (e) { /* an opaque origin; the hint returns next time */ }
             hint.remove();
           } }));
@@ -2729,7 +2729,7 @@
         const row = el("div", { class: "pv-orphan-draft", dataset: { composer: d.id } });
         row.appendChild(el("span", { class: "pv-orphan-draft-what", text: draftLabel(d) + " — its element is gone" }));
         row.appendChild(el("p", { class: "thread-text", text: d.text }));
-        row.appendChild(el("button", { type: "button", class: "pv-textbtn", text: "Discard", onclick: function () {
+        row.appendChild(el("button", { type: "button", class: "pv-btn is-quiet", text: "Discard", onclick: function () {
           dropDraft(d.id);
           renderRecovery();
         } }));
@@ -2850,20 +2850,24 @@
       ta.value = d.text;
       ta.addEventListener("input", function () { d.text = ta.value; saveDraft(d); });
       box.appendChild(ta);
-      if (d.kind === "ask") box.appendChild(el("span", { class: "composer-presence", text: presenceLine("question") }));
+      /* One foot row: what the composer says about itself on the left (the
+         blocking toggle, or who hears a question), the actions on the right. */
+      const foot = el("div", { class: "comment-box-foot" });
+      if (d.kind === "ask") foot.appendChild(el("span", { class: "composer-presence", text: presenceLine("question") }));
       let blockingBox = null;
       if (d.kind === "comment") {
         blockingBox = el("input", { type: "checkbox" });
         blockingBox.checked = d.blocking;
         blockingBox.addEventListener("change", function () { d.blocking = blockingBox.checked; saveDraft(d); });
-        box.appendChild(el("label", { class: "comment-box-blocking" }, blockingBox, warningIcon(), "Blocks approval"));
+        foot.appendChild(el("label", { class: "comment-box-blocking" }, blockingBox, warningIcon(), "Blocks approval"));
       }
       const actions = el("div", { class: "comment-box-actions" });
-      const sendBtn = el("button", { type: "button", class: "composer-send", text: d.kind === "comment" ? "Add" : "Send" });
-      const cancelBtn = el("button", { type: "button", class: "composer-cancel", text: "Cancel" });
+      const sendBtn = el("button", { type: "button", class: "pv-btn " + (d.kind === "ask" ? "is-agent" : "is-primary") + " composer-send", text: d.kind === "comment" ? "Add" : "Send" });
+      const cancelBtn = el("button", { type: "button", class: "pv-btn is-quiet composer-cancel", text: "Cancel" });
       actions.appendChild(sendBtn);
       actions.appendChild(cancelBtn);
-      box.appendChild(actions);
+      foot.appendChild(actions);
+      box.appendChild(foot);
       /* Closed by id, not by this node: a body swap while the send is in
          flight re-creates the composer from its draft, and the reply must
          close that one. */
@@ -3010,10 +3014,10 @@
           const answer = el("div", { class: "pv-answer", dataset: { answerFor: q }, hidden: true },
             el("div", { class: "pv-answer-head" },
               el("span", { class: "pv-answer-label", text: "Your answer" }),
-              el("button", { type: "button", class: "pv-textbtn pv-answer-edit", text: "Edit", onclick: function () {
+              el("button", { type: "button", class: "pv-btn is-quiet pv-answer-edit", text: "Edit", onclick: function () {
                 openComposer({ kind: "answer", ref: ref, text: S.state.answers[q] || "" });
               } }),
-              el("button", { type: "button", class: "pv-textbtn pv-answer-remove", text: "Remove", onclick: function (ev) {
+              el("button", { type: "button", class: "pv-btn is-quiet pv-answer-remove", text: "Remove", onclick: function (ev) {
                 const btn = ev.currentTarget;
                 send({ cmd: "question.answer", question: q, text: "", opened_revision: S.state.revision })
                   .catch(function (e) { failed(btn, e); });
@@ -3227,17 +3231,17 @@
       });
     });
     const ctl = root.querySelector("#phases-actions") || document.createElement("div");
-    if (ctl.querySelector(".pv-textbtn")) return;
+    if (ctl.querySelector(".pv-btn")) return;
     const expandBtn = document.createElement("button");
     expandBtn.type = "button";
-    expandBtn.className = "pv-textbtn";
+    expandBtn.className = "pv-btn is-quiet";
     expandBtn.textContent = "expand all";
     expandBtn.addEventListener("click", function () {
       collapsibles().forEach(function (d) { setPhaseOpen(d, true, true); });
     });
     const collapseBtn = document.createElement("button");
     collapseBtn.type = "button";
-    collapseBtn.className = "pv-textbtn";
+    collapseBtn.className = "pv-btn is-quiet";
     collapseBtn.textContent = "collapse all";
     collapseBtn.addEventListener("click", function () {
       collapsibles().forEach(function (d) { setPhaseOpen(d, false, true); });

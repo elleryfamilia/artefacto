@@ -243,6 +243,15 @@ fn a_comment_typed_into_the_page_is_logged_and_shown_once() {
     let mut page = browser.new_page();
     page.navigate(&s.url);
     connected(&mut page);
+    // The composer's foot carries the blocking toggle beside the actions.
+    page.click("[data-plan-ref=\"task:t-a\"] .comment-btn");
+    assert_eq!(
+        page.eval("!!document.querySelector('[data-plan-ref=\"task:t-a\"] .composer .comment-box-foot .comment-box-blocking') && \
+                   !!document.querySelector('[data-plan-ref=\"task:t-a\"] .composer .comment-box-foot .composer-send.pv-btn')"),
+        true,
+        "one foot row: the toggle, then the actions as pv-btns"
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .composer .composer-cancel");
 
     comment(&mut page, "task:t-a", "why a trait here?");
 
@@ -3378,7 +3387,7 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
     page.navigate(&s.url);
     connected(&mut page);
     // The first control under the phases heading is "expand all".
-    page.click("#phases-actions .pv-textbtn");
+    page.click("#phases-actions .pv-btn");
 
     // Wherever a comment button is, the ask button is beside it, on the same
     // line, whether the host is a heading row or a prose column.
@@ -3389,6 +3398,12 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
         ),
         true,
         "every comment button is in an actions row with its ask button"
+    );
+    // Before a verdict is sent, nothing on the page is a filled control.
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-btn.is-filled').length"),
+        0,
+        "only the chosen verdict is ever filled"
     );
     let misaligned = page.eval(
         "Array.from(document.querySelectorAll('.el-actions')).filter(function (row) { \

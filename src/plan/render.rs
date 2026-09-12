@@ -1047,6 +1047,17 @@ mod tests {
         }
     }
 
+    /// One button family. The old text-button class is gone from the
+    /// stylesheet and from the page's script, which the render embeds.
+    #[test]
+    fn no_text_button_class_remains() {
+        let plan = plan_from("kitchen-sink.json");
+        assert!(
+            !render(&plan).contains("pv-textbtn"),
+            "a pv-textbtn survives"
+        );
+    }
+
     /// Every colour on the page belongs to a family (neutral, status, action,
     /// agent); the old one-accent-for-everything token is gone for good.
     #[test]
