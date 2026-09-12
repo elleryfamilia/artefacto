@@ -2518,11 +2518,17 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
   .pv-chat,
   .pv-presence,
   .thread-actions,
+  .thread-composer,
+  .thread-working,
   .composer,
+  .el-actions,
   .comment-btn,
+  .ask-btn,
   .reviewed-toggle,
+  .pv-notices,
   .pv-rule-actions,
   #manual-copy { display: none !important; }
+  .is-reviewed { opacity: 1; }
   .task,
   .pv-row,
   details.phase { break-inside: avoid; }

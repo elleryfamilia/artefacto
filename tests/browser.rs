@@ -687,9 +687,23 @@ fn the_static_export_selftest_passes_in_a_real_browser() {
         "the page's own harness failed:\n{result}"
     );
     assert_eq!(
-        page.eval("!!document.querySelector('.feedback-bar-copy')"),
+        page.eval("!!document.querySelector('.feedback-bar-copy.pv-btn')"),
         true,
-        "the static export keeps the clipboard flow"
+        "the static export keeps the clipboard flow, as a button of the same family"
+    );
+    // The static editor is the served composer's twin: one foot row with the
+    // toggle and the actions as pv-btns, and no mark anywhere (no agent).
+    page.click("[data-plan-ref=\"task:t-session-store\"] .comment-btn");
+    assert_eq!(
+        page.eval("!!document.querySelector('[data-plan-ref=\"task:t-session-store\"] .comment-box .comment-box-foot .comment-box-blocking') && \
+                   !!document.querySelector('[data-plan-ref=\"task:t-session-store\"] .comment-box .comment-box-foot .composer-send.pv-btn')"),
+        true,
+        "the static editor has the served composer's foot"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.ag-mark, .ask-btn, .el-actions').length"),
+        0,
+        "nothing of the agent on a static page"
     );
     assert_eq!(
         page.eval("!!document.querySelector('.pv-presence')"),

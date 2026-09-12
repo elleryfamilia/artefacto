@@ -1279,7 +1279,7 @@
 
     const copyBtn = document.createElement("button");
     copyBtn.type = "button";
-    copyBtn.className = "feedback-bar-copy";
+    copyBtn.className = "pv-btn is-lg is-primary feedback-bar-copy";
     copyBtn.textContent = "Copy feedback";
     bar.appendChild(copyBtn);
 
@@ -1364,17 +1364,24 @@
 
       const addBtn = document.createElement("button");
       addBtn.type = "button";
+      addBtn.className = "pv-btn is-primary composer-send";
       addBtn.textContent = "Add";
 
       const cancelBtn = document.createElement("button");
       cancelBtn.type = "button";
+      cancelBtn.className = "pv-btn is-quiet composer-cancel";
       cancelBtn.textContent = "Cancel";
 
       actions.appendChild(addBtn);
       actions.appendChild(cancelBtn);
+      /* The same foot row as the served composer: the toggle on the left,
+         the actions on the right. */
+      const foot = document.createElement("div");
+      foot.className = "comment-box-foot";
       box.appendChild(textarea);
-      box.appendChild(blockingRow);
-      box.appendChild(actions);
+      foot.appendChild(blockingRow);
+      foot.appendChild(actions);
+      box.appendChild(foot);
 
       btn.addEventListener("click", function (e) {
         /* The same guard the reviewed toggle carries below, for the same
