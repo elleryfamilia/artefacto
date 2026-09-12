@@ -712,6 +712,7 @@ fn the_static_export_selftest_passes_in_a_real_browser() {
         0,
         "nothing of the agent on a static page"
     );
+    page.screenshot(&screenshot_path("static-export"));
     assert_eq!(
         page.eval("!!document.querySelector('.pv-presence')"),
         false,
@@ -3469,6 +3470,60 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
     page.wait_until(
         "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
         "the answer to join the thread",
+    );
+    // Seed one thread of every other kind and status, so the screenshots
+    // show the card in each of its states: a blocking comment left open, a
+    // comment resolved as changed, one declined.
+    page.click("[data-plan-ref=\"task:t-redis\"] .comment-btn");
+    page.type_into(
+        "[data-plan-ref=\"task:t-redis\"] .pv-composers .composer textarea",
+        "This needs a rollback step before it ships.",
+    );
+    page.click(
+        "[data-plan-ref=\"task:t-redis\"] .pv-composers .composer .comment-box-blocking input",
+    );
+    page.click("[data-plan-ref=\"task:t-redis\"] .pv-composers .composer .composer-send");
+    page.wait_until(
+        "!!document.querySelector('.thread[data-thread=\"c-2\"].is-blocking')",
+        "the blocking thread",
+    );
+    comment(
+        &mut page,
+        "task:t-cleanup",
+        "Fold this into the trait task.",
+    );
+    comment(
+        &mut page,
+        "task:t-bench",
+        "Do we still need benchmarks at all?",
+    );
+    for (thread, verdict, note) in [
+        (
+            "c-3",
+            "--changed",
+            "Folded into t-session-store; this task is gone in the next revision.",
+        ),
+        (
+            "c-4",
+            "--declined",
+            "Kept: the benchmarks are what tell us the trait costs nothing.",
+        ),
+    ] {
+        s.repo
+            .run(&[
+                "resolve",
+                thread,
+                "--session",
+                &s.session,
+                verdict,
+                "--note",
+                note,
+            ])
+            .success();
+    }
+    page.wait_until(
+        "document.querySelector('.thread[data-thread=\"c-4\"]').dataset.status === 'declined' && document.querySelector('.thread[data-thread=\"c-3\"]').dataset.status === 'changed'",
+        "the resolutions to land",
     );
     // With threads, composers, and the bar all on the page and no verdict
     // sent, nothing is a filled control.
