@@ -175,8 +175,44 @@ pub fn raw(port: u16, request: &str) -> String {
     s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .expect("timeout");
     s.write_all(request.as_bytes()).expect("write");
-    let mut out = String::new();
-    let _ = s.read_to_string(&mut out);
+    let mut out = Vec::new();
+    let _ = s.read_to_end(&mut out);
+    String::from_utf8_lossy(&dechunk(out)).into_owned()
+}
+
+/// Undo chunked transfer encoding, so a test that looks for text in a body
+/// is not broken by a chunk boundary landing inside the text. tiny_http
+/// chunks any response over its threshold, and a page that grows past it
+/// would otherwise fail a substring check at a place that depends on how
+/// long the temp directory's name is.
+fn dechunk(response: Vec<u8>) -> Vec<u8> {
+    let Some(split) = response.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return response;
+    };
+    let (head, body) = response.split_at(split + 4);
+    let head_text = String::from_utf8_lossy(head).to_ascii_lowercase();
+    if !head_text.contains("transfer-encoding: chunked") {
+        return response;
+    }
+    let mut out = head.to_vec();
+    let mut rest = body;
+    while let Some(eol) = rest.windows(2).position(|w| w == b"\r\n") {
+        let size_line = String::from_utf8_lossy(&rest[..eol]);
+        let size = size_line
+            .split(';')
+            .next()
+            .and_then(|h| usize::from_str_radix(h.trim(), 16).ok())
+            .unwrap_or(0);
+        rest = &rest[eol + 2..];
+        if size == 0 || rest.len() < size {
+            break;
+        }
+        out.extend_from_slice(&rest[..size]);
+        rest = &rest[size..];
+        if rest.starts_with(b"\r\n") {
+            rest = &rest[2..];
+        }
+    }
     out
 }
 

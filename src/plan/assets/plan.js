@@ -113,7 +113,7 @@
         threads: (s.threads || []).map(function (t) {
           return {
             id: t.id, target: t.target, quote: t.quote || "", blocking: !!t.blocking,
-            status: t.status || "open",
+            asked: !!t.asked, status: t.status || "open",
             messages: (t.messages || []).map(function (m) {
               return { actor: m.actor, text: m.text, ts: m.ts };
             }),
@@ -150,7 +150,7 @@
           if (!d.thread || find(d.thread)) return false;
           state.threads.push({
             id: d.thread, target: d.ref || "", quote: d.quote || "", blocking: !!d.blocking,
-            status: "open", messages: [message()],
+            asked: false, status: "open", messages: [message()],
           });
           return true;
         }
@@ -194,8 +194,18 @@
         case "chat.sent": {
           if (d.thread) {
             const t = find(d.thread);
-            if (!t) return false;
-            t.messages.push(message());
+            if (t) {
+              t.messages.push(message());
+            } else if (d.ref) {
+              /* A question asked on an element that had no thread opens
+                 one, and the question is its opening message. */
+              state.threads.push({
+                id: d.thread, target: d.ref, quote: d.quote || "", blocking: false,
+                asked: true, status: "open", messages: [message()],
+              });
+            } else {
+              return false;
+            }
           } else {
             state.chat.push(message());
           }
@@ -261,7 +271,9 @@
         case "element.reviewed":
           return Object.assign(base, { type: "element.reviewed", data: { ref: cmd.ref, on: !!cmd.on } });
         case "chat.send":
-          return Object.assign(base, { type: "chat.sent", data: { text: cmd.text, thread: cmd.thread || null } });
+          return Object.assign(base, { type: "chat.sent", data: {
+            text: cmd.text, thread: cmd.thread || reply.assigned || null, ref: cmd.ref || null, quote: cmd.quote || "",
+          } });
         case "review.submit":
           return Object.assign(base, { type: "review.submitted", data: { verdict: cmd.verdict } });
         default:
@@ -664,6 +676,15 @@
     return svgIcon("comment-btn-icon", [
       "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
       "M7 8h10M7 12h6",
+    ]);
+  }
+
+  /* Speech bubble with a question mark: the ask button. */
+  function askIcon() {
+    return svgIcon("ask-btn-icon", [
+      "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
+      "M9.6 9a2.4 2.4 0 1 1 3.4 2.2c-.6.3-1 .9-1 1.6",
+      "M12 15.5h.01",
     ]);
   }
 
@@ -2206,6 +2227,8 @@
 
     function renderThread(node, t) {
       node.setAttribute("data-status", t.status);
+      node.classList.toggle("is-asked", !!t.asked);
+      node.querySelector(".thread-label").textContent = t.asked ? "Question" : "Comment";
       node.querySelector(".thread-status").textContent = t.status;
       node.querySelector(".thread-status").className = "thread-status pv-chip pv-chip-" + t.status;
       node.querySelector(".thread-blocking").hidden = !t.blocking;
@@ -2373,9 +2396,27 @@
       }
     }
 
+    /* One line, until the reviewer says they have read it: the difference
+       between a comment and a question is the one thing the page cannot
+       show by layout alone. Stored only on dismissal, so a page nobody
+       dismissed writes nothing. */
+    const HINT_KEY = "artefacto.hint.ask";
+    function hintDismissed() {
+      try { return window.localStorage.getItem(HINT_KEY) === "1"; } catch (e) { return false; }
+    }
+
     function mountBar(root) {
       if (root.querySelector(".feedback-bar")) return;
       const bar = el("div", { class: "feedback-bar is-served" });
+      if (!hintDismissed()) {
+        const hint = el("div", { class: "feedback-bar-hint" },
+          el("span", { class: "feedback-bar-hint-text", text: "Comments wait for your review; \u201cAsk the agent\u201d reaches the agent now." }),
+          el("button", { type: "button", class: "pv-textbtn feedback-bar-hint-dismiss", text: "Got it", onclick: function () {
+            try { window.localStorage.setItem(HINT_KEY, "1"); } catch (e) { /* an opaque origin; the hint returns next time */ }
+            hint.remove();
+          } }));
+        bar.appendChild(hint);
+      }
       bar.appendChild(el("span", { class: "feedback-bar-banner" }));
       bar.appendChild(el("span", { class: "feedback-bar-blocking" }));
       bar.appendChild(el("span", { class: "feedback-bar-count" }));
@@ -2486,7 +2527,7 @@
         case "comment": return "Comment on " + d.ref;
         case "answer": return "Answer to " + d.ref;
         case "reply": return "Reply on " + d.thread;
-        case "ask": return "Question on " + d.thread;
+        case "ask": return "Question on " + (d.thread || d.ref);
         case "edit": return "Edit of " + d.thread;
         default: return "Message to the agent";
       }
@@ -2509,7 +2550,7 @@
     function draftTarget(d) {
       if (!S.root) return null;
       if (d.kind === "chat") return document.querySelector(".pv-chat-composers");
-      if (d.kind === "comment" || d.kind === "answer") {
+      if (d.kind === "comment" || d.kind === "answer" || (d.kind === "ask" && !d.thread)) {
         /* By ref, not by descent: a phase contains its tasks, and the
            first `.pv-composers` under a phase is its first task's. */
         return findByAttr(S.root, ".pv-composers", "data-composers-for", d.ref);
@@ -2664,7 +2705,14 @@
         }
         case "answer": return Object.assign(base, { cmd: "question.answer", question: d.question, text: text, opened_revision: d.revision });
         case "reply": return Object.assign(base, { cmd: "thread.reply", thread: d.thread, text: text, opened_revision: d.revision });
-        case "ask": return Object.assign(base, { cmd: "chat.send", thread: d.thread, text: text, opened_revision: d.revision });
+        case "ask": {
+          if (d.thread) return Object.assign(base, { cmd: "chat.send", thread: d.thread, text: text, opened_revision: d.revision });
+          /* On an element with no thread yet: the server opens one and
+             delivers the question in the same event. */
+          const target = findRef(S.root, d.ref);
+          return Object.assign(base, { cmd: "chat.send", ref: d.ref, text: text,
+            quote: d.quote || (target ? elementQuote(target) : ""), opened_revision: d.revision });
+        }
         case "edit": return Object.assign(base, { cmd: "thread.edit", thread: d.thread, text: text, opened_revision: d.revision });
         case "chat": return Object.assign(base, { cmd: "chat.send", text: text, opened_revision: d.revision });
         default: return null;
@@ -2717,7 +2765,19 @@
           if (target.tagName === "DETAILS" && phaseIsShut(target)) setPhaseOpen(target, true, true);
           openComposer({ kind: isQuestion ? "answer" : "comment", ref: ref, quote: quote });
         });
-        (slots.btn || target).appendChild(btn);
+        /* Asking is offered wherever commenting is, and looks different:
+           a comment waits for the sent review, a question reaches the
+           agent now. The two share one row. */
+        const ask = el("button", { type: "button", class: "ask-btn", title: "Ask the agent",
+          "aria-label": "Ask the agent about this" });
+        ask.appendChild(askIcon());
+        ask.appendChild(el("span", { class: "ask-btn-label", text: "Ask the agent" }));
+        ask.addEventListener("click", function (e) {
+          e.stopPropagation();
+          if (target.tagName === "DETAILS" && phaseIsShut(target)) setPhaseOpen(target, true, true);
+          openComposer({ kind: "ask", ref: ref, quote: quote });
+        });
+        (slots.btn || target).appendChild(el("span", { class: "el-actions" }, btn, ask));
         if (!first) return;
         const boxHost = slots.box || target;
         const mounted = [];
@@ -2819,7 +2879,7 @@
         text.replaceChildren(
           document.createTextNode("This plan is under live review. "),
           el("strong", { text: "Comment on anything, answer the questions, then send your review." }),
-          document.createTextNode(" The agent hears you as you go."));
+          document.createTextNode(" Comments reach the agent with your review; \u201cAsk the agent\u201d reaches it now."));
       }
       const steps = root.querySelector(".pv-banner-steps");
       if (steps && !steps.hasAttribute("data-served")) {

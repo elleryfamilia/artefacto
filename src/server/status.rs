@@ -81,6 +81,7 @@ fn artifact_json(artifact: &Artifact) -> serde_json::Value {
                 "ref": t.target,
                 "status": t.status.as_str(),
                 "blocking": t.blocking,
+                "asked": t.asked,
                 "quote": t.quote,
                 "messages": t.messages,
             })
