@@ -1307,6 +1307,60 @@ were mutated seventeen and then four ways, all caught. What remains is a
 window in `clean` that predates the slice, a note said once per daemon,
 and prose. The next real finding will come from use.
 
+## Plan 6: the loadout dispatcher
+
+Built in the loadout repository (`~/_git/rosita`, binary `load`), not here:
+[loadout PR #57](https://github.com/elleryfamilia/loadout/pull/57), branch
+`feat/artefacto-dispatcher`, thirteen commits on loadout 0.28.0, gate green
+at 667 tests. Spec section 10, with these outcomes and divergences:
+
+- `load plan check | render | push | schema` and bare `load plan` run
+  `artefacto plan …` with loadout's paths; artefacto's exit codes pass
+  through unchanged; `render` records the Recents row from artefacto's JSON
+  and opens the browser itself; the gitignore entries, `load plan clean`,
+  and `load clean` stay loadout's and accept this repository's page marker,
+  whose bytes both repositories pin (`tests/fixtures/marker/first-line.txt`
+  here, `tests/fixtures/artefacto-marker-first-line.txt` there).
+- **Loadout had no consent-gated installer**; the spec assumed one. It was
+  written from nothing: `load plan` offers this repository's cargo-dist
+  installer on a terminal and prints the one-liner off one; `load doctor`
+  reports the version, with a note when the major or minor is not
+  `TESTED_VERSION` (0.1.0); `load update` reruns the installer, into the
+  receipt's directory, when the installer put artefacto there. Not
+  axoupdater: that is a self-updater, and asked about a second binary it
+  compares the receipt against the running `load` and answers "current"
+  offline whenever the two live apart (found by the fresh review).
+- The plan skill loadout installs is `artefacto-plan`, read from
+  `artefacto skill --print`, with a two-line pointer until artefacto is
+  installed; `loadout-plan-preview` is retired when pristine. The spec said
+  "the same id"; the manifest's name is the id, so what an agent sees is the
+  skill this repository documents.
+- Studio's Recents badge asks `artefacto plan check --json --lenient` once
+  for every plan row, cached five seconds. A pushed review is not a Recents
+  row: it lives on this repository's server and in `artefacto list` (spec
+  10 said pushes are recorded; spec 12 defers artefacto artifacts in
+  studio, and a Recents row must name a file studio can serve).
+- `load plan status` never existed as a verb; bare `load plan` prints
+  status from `artefacto plan status --json`'s answer, exit 0 either way.
+  The spec's table row is corrected.
+- Loadout's own plan module, fixtures, browser smoke, and shipped skill are
+  deleted; `loadout.plan/1` documents are still read here.
+
+Checked the same way as the rest: six slices mutated (18, then 8 and 7 on
+the fix rounds; two survivors are guards behind other guards) and two fresh
+reviews on a different model in detached worktrees. Round one found a high
+(the pointer skill could never become the real one: a missing manifest file
+read as a user edit), a medium-high (the updater misuse above), a medium
+(retiring a skill could not see edits), and four lows. Round two, on the
+fixes, found two regressions from the new on-disk hash (a `.DS_Store`
+flipped a pristine install to "edited"; manifest order versus sorted order
+in the two hashes) and one latent gap (the installer rerun ignored the
+receipt's directory). All fixed and pinned; the loop stops there. A hand-
+drive against this repository's binary found the one defect the stand-in
+had hidden, artefacto's non-zero exit for a stale render read as an invalid
+plan, and a harness trap: a mutation pass leaves the last mutation's build
+in `target/debug`, so a hand-drive must rebuild first.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
@@ -1358,6 +1412,7 @@ All are in `docs/specs/2026-09-06-artefacto-design.md`:
   a 5 minute age cap, coalescing repeated edits to the same ref) is plan 2b's
   Task 5 and is untouched.
 - **Question `options`** (spec 4.3): answers are free text, as v1 says.
+- **The loadout dispatcher is a loadout PR** (#57), not merged yet.
 - **A release has not been cut.** The cargo-dist configuration is committed
   and `dist plan` lists what a `v0.1.0` tag would build; no tag has been
   pushed and no installer has been run.
