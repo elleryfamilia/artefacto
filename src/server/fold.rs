@@ -154,6 +154,7 @@ fn thread_opened(review: &mut Review, event: &Event) {
             .get("blocking")
             .and_then(|b| b.as_bool())
             .unwrap_or(false),
+        asked: false,
         status: ThreadStatus::Open,
         messages: vec![msg],
     });
@@ -246,6 +247,29 @@ fn chat(review: &mut Review, event: &Event) {
         artifact.chat.push(msg);
     } else if let Some(t) = artifact.thread_mut(&thread) {
         t.messages.push(msg);
+    } else {
+        // A question asked on an element that had no thread opens one, and
+        // the question is its opening message. The server minted the id the
+        // way `thread.open` does, so the counter follows it the same way.
+        let target = str_field(event, "ref");
+        if target.is_empty() {
+            return;
+        }
+        if let Some(n) = thread
+            .strip_prefix("c-")
+            .and_then(|n| n.parse::<u32>().ok())
+        {
+            artifact.next_thread_n = artifact.next_thread_n.max(n + 1);
+        }
+        artifact.threads.push(Thread {
+            id: thread,
+            target,
+            quote: str_field(event, "quote"),
+            blocking: false,
+            asked: true,
+            status: ThreadStatus::Open,
+            messages: vec![msg],
+        });
     }
 }
 

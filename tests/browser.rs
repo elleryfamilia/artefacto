@@ -3071,3 +3071,296 @@ fn the_index_page_lists_artifacts_and_removes_a_row_in_a_real_browser() {
     assert!(page.errors().is_empty(), "{:?}", page.errors());
     drop(server);
 }
+
+#[test]
+fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    // Every element that offers Comment offers Ask beside it.
+    assert_eq!(
+        page.eval(
+            "document.querySelectorAll('.ask-btn').length > 0 && \
+             document.querySelectorAll('.ask-btn').length === document.querySelectorAll('.comment-btn').length"
+        ),
+        true,
+        "one ask button per comment button"
+    );
+
+    page.click("[data-plan-ref=\"task:t-a\"] .ask-btn");
+    page.type_into(
+        "[data-plan-ref=\"task:t-a\"] .pv-composers .composer[data-kind=\"ask\"] textarea",
+        "is this the whole plan?",
+    );
+    page.click(
+        "[data-plan-ref=\"task:t-a\"] .pv-composers .composer[data-kind=\"ask\"] .composer-send",
+    );
+    page.wait_until(
+        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 1",
+        "the question to open its thread",
+    );
+    assert_eq!(
+        page.text(
+            "document.querySelector('.thread[data-thread=\"c-1\"] .thread-label').textContent"
+        ),
+        "Question"
+    );
+    assert_eq!(
+        page.eval(
+            "!document.querySelector('[data-plan-ref=\"task:t-a\"] .pv-composers .composer')"
+        ),
+        true,
+        "the composer closed once the server accepted the question"
+    );
+
+    let out = s
+        .repo
+        .run(&["await", "--timeout", "5s", "--session", &s.session]);
+    let r: serde_json::Value = serde_json::from_str(out.success().stdout.trim()).unwrap();
+    assert_eq!(r["status"], "chat");
+    let seq = r["seq"].to_string();
+    let last = r["events"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["data"]["thread"], "c-1");
+    assert_eq!(last["data"]["ref"], "task:t-a");
+    assert_eq!(last["data"]["text"], "is this the whole plan?");
+
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--thread",
+            "c-1",
+            "yes, all of it",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
+        "the answer to join the thread",
+    );
+    page.screenshot(&screenshot_path("ask-on-a-task"));
+
+    // A reload shows the same thread from the server's state.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.text(
+            "document.querySelector('.thread[data-thread=\"c-1\"] .thread-label').textContent"
+        ),
+        "Question"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length"),
+        2
+    );
+
+    // On a question thread every follow-up is a question: there is no Reply,
+    // which would wait for the sent review, and Ask the agent wakes it again.
+    assert_eq!(
+        page.eval("document.querySelector('.thread[data-thread=\"c-1\"] .thread-reply').hidden"),
+        true,
+        "no passive Reply on a question thread"
+    );
+    page.click(".thread[data-thread=\"c-1\"] .thread-ask");
+    assert_eq!(
+        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .composer .composer-presence').textContent"),
+        "The agent hears this at once.",
+        "the composer says who hears it"
+    );
+    page.type_into(
+        ".thread[data-thread=\"c-1\"] .composer textarea",
+        "and the CLI layer?",
+    );
+    page.click(".thread[data-thread=\"c-1\"] .composer .composer-send");
+    page.wait_until(
+        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 3",
+        "the follow-up to join the thread",
+    );
+    let out = s.repo.run(&[
+        "await",
+        "--timeout",
+        "5s",
+        "--session",
+        &s.session,
+        "--ack",
+        &seq,
+    ]);
+    let r: serde_json::Value = serde_json::from_str(out.success().stdout.trim()).unwrap();
+    assert_eq!(r["status"], "chat", "the follow-up woke the agent: {r}");
+    let last = r["events"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["data"]["thread"], "c-1");
+    assert_eq!(last["data"]["text"], "and the CLI layer?");
+}
+
+#[test]
+fn the_hint_line_shows_until_dismissed_and_stores_nothing_before() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    let hint = page.text("document.querySelector('.feedback-bar-hint-text').textContent");
+    assert!(
+        hint.contains("Comments wait") && hint.contains("Ask the agent"),
+        "the hint names both behaviours: {hint}"
+    );
+    let banner = page.text("document.querySelector('.pv-banner-text').textContent");
+    assert!(
+        banner.contains("reaches it now") && !banner.contains("hears you"),
+        "the banner says which of the two reaches the agent now: {banner}"
+    );
+    assert_eq!(
+        page.eval("window.localStorage.length"),
+        0,
+        "nothing is stored until the reviewer dismisses it"
+    );
+    page.click(".feedback-bar-hint-dismiss");
+    assert_eq!(
+        page.eval("!document.querySelector('.feedback-bar-hint')"),
+        true,
+        "dismissed"
+    );
+
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.eval("!document.querySelector('.feedback-bar-hint')"),
+        true,
+        "dismissed stays dismissed across a reload"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.feedback-bar-chat')"),
+        true,
+        "the rest of the bar is untouched"
+    );
+}
+
+#[test]
+fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // The first control under the phases heading is "expand all".
+    page.click("#phases-actions .pv-textbtn");
+
+    // Wherever a comment button is, the ask button is beside it, on the same
+    // line, whether the host is a heading row or a prose column.
+    assert_eq!(
+        page.eval(
+            "document.querySelectorAll('.el-actions').length > 0 && \
+             document.querySelectorAll('.el-actions').length === document.querySelectorAll('.comment-btn').length"
+        ),
+        true,
+        "every comment button is in an actions row with its ask button"
+    );
+    let misaligned = page.eval(
+        "Array.from(document.querySelectorAll('.el-actions')).filter(function (row) { \
+           const c = row.querySelector('.comment-btn'), a = row.querySelector('.ask-btn'); \
+           if (!c || !a) return true; \
+           const cb = c.getBoundingClientRect(), ab = a.getBoundingClientRect(); \
+           return Math.abs(cb.top - ab.top) > 1 || ab.left <= cb.right; \
+         }).map(function (row) { return row.closest('[data-plan-ref]').getAttribute('data-plan-ref'); })",
+    );
+    assert_eq!(
+        misaligned,
+        serde_json::json!([]),
+        "every ask button sits right of its comment button on one line"
+    );
+
+    page.click("[data-plan-ref=\"task:t-session-store\"] .ask-btn");
+    page.type_into(
+        "[data-plan-ref=\"task:t-session-store\"] .pv-composers .composer[data-kind=\"ask\"] textarea",
+        "why a trait rather than a plain struct here?",
+    );
+    page.click(
+        "[data-plan-ref=\"task:t-session-store\"] .pv-composers .composer[data-kind=\"ask\"] .composer-send",
+    );
+    page.wait_until(
+        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 1",
+        "the question to open its thread",
+    );
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--thread",
+            "c-1",
+            "So Redis can slot in without touching the call sites.",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
+        "the answer to join the thread",
+    );
+    page.eval("document.querySelector('.thread[data-thread=\"c-1\"]').scrollIntoView({ block: 'center' })");
+    page.screenshot(&screenshot_path("ask-on-kitchen-sink"));
+}
+
+#[test]
+fn a_question_composer_says_when_no_agent_will_hear_it() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    page.click("[data-plan-ref=\"task:t-a\"] .ask-btn");
+    let line = "document.querySelector('[data-plan-ref=\"task:t-a\"] .composer[data-kind=\"ask\"] .composer-presence').textContent";
+    assert_eq!(page.text(line), "The agent hears this at once.");
+
+    // The lease expires while the composer is open: the line changes under
+    // the reviewer's cursor, the way the pill does.
+    s.server()
+        .age_lease(artefacto::server::lease::TTL + std::time::Duration::from_secs(1));
+    page.wait_until(
+        &format!("{line} === 'No agent is attached. Your question will wait for one.'"),
+        "the composer to say the question will wait",
+    );
+
+    // A composer opened while no agent is attached says so from the start.
+    page.click("[data-plan-ref=\"phase:p-one\"] .ask-btn");
+    assert_eq!(
+        page.text("document.querySelector('[data-plan-ref=\"phase:p-one\"] .composer[data-kind=\"ask\"] .composer-presence').textContent"),
+        "No agent is attached. Your question will wait for one."
+    );
+
+    // And an agent arriving restores the promise in every open composer.
+    s.repo
+        .run(&[
+            "await",
+            "--timeout",
+            "1s",
+            "--agent",
+            "claude",
+            "--takeover",
+        ])
+        .success();
+    page.wait_until(
+        &format!("{line} === 'The agent hears this at once.'"),
+        "the composer to say the agent hears it",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.composer-presence').length"),
+        2,
+        "one line per open question composer"
+    );
+    assert_eq!(
+        page.eval("Array.from(document.querySelectorAll('.composer-presence')).every(function (n) { return n.textContent === 'The agent hears this at once.'; })"),
+        true
+    );
+}

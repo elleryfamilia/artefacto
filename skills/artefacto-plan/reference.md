@@ -391,7 +391,7 @@ after the call.
     "feedback_path": "/repo/docs/plan-feedback.json", "submitted": false,
     "open_threads": 1, "unanchored_threads": 0, "blocking_threads": 1,
     "threads": [ { "id": "c-1", "ref": "task:t-session-store", "status": "open",
-                   "blocking": true, "quote": "no direct sled calls",
+                   "blocking": true, "asked": false, "quote": "no direct sled calls",
                    "messages": [
                      { "actor": "reviewer", "text": "Also assert this in the CLI layer.", "ts": "2026-09-06T16:02:11Z" },
                      { "actor": "agent", "text": "Added a CLI-layer test.", "ts": "2026-09-06T16:04:00Z" } ] } ],
@@ -439,7 +439,7 @@ name as `data.agent`. Your own events are not delivered back to you.
 | `thread.deleted` | reviewer | no | `thread` |
 | `question.answered` | reviewer | no | `question`, `text` (empty text removes the answer) |
 | `element.reviewed` | reviewer | no | `ref`, `on` |
-| `chat.sent` | reviewer | **yes**, as `chat` | `text`, `thread` (null for page-level) |
+| `chat.sent` | reviewer | **yes**, as `chat` | `text`, `thread` (null for page-level); a question asked on an element with no thread opens one in this event and carries `ref` and `quote` as well |
 | `review.submitted` | reviewer | **yes**, as `submitted` | `verdict`, `base_revision`, `feedback` (the document below), `path` (where it was written) |
 | `reviewer.idle` | server | **yes**, as `idle` | page open, reviewer quiet for the server's `--idle` window; once per quiet period |
 | `reviewer.away` | server | **yes**, as `away` | every page closed for `--away` with the review unsent; once |
@@ -484,6 +484,7 @@ Each comment:
 | `quote` | string or `null` | the text the reviewer selected, for context after a revision moves things |
 | `text` | string | the comment itself |
 | `blocking` | boolean | the reviewer checked "Blocks approval" |
+| `asked` | boolean | opened by a question to the agent (the page's "Ask the agent" on an element), not by a comment |
 | `status` | `"open"` \| `"changed"` \| `"declined"` \| `"unanchored"` | `unanchored`: the element it hung on is gone from the current revision |
 | `replies` | array | `{actor, text, ts}` for every message after the first, by reviewer or agent |
 
@@ -501,6 +502,7 @@ Each comment:
       "quote": "no direct sled calls outside the trait impl",
       "text": "Also assert no direct sled calls in the CLI layer.",
       "blocking": true,
+      "asked": false,
       "status": "open",
       "replies": [
         { "actor": "agent", "text": "Good catch; I'll add a test for the CLI layer.", "ts": "2026-09-06T16:04:00Z" }

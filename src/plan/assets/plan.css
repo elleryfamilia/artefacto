@@ -1609,7 +1609,8 @@ pre code { font-size: 1em; }
    two rules were written to assume. */
 :where(.task:hover, .pv-row:hover) .comment-btn,
 .comment-btn:focus-visible,
-:where([data-plan-ref]:focus-within) > .comment-btn {
+:where([data-plan-ref]:focus-within) > .comment-btn,
+:where([data-plan-ref]:focus-within) .el-actions > .comment-btn {
   color: var(--accent);
   border-color: var(--accent);
 }
@@ -1625,21 +1626,109 @@ pre code { font-size: 1em; }
 /* Per-criterion anchors: a persistent labelled button on a one-line row would
    overflow into its neighbours, so these are icon-only and revealed on hover
    or keyboard focus. */
-.acceptance .comment-btn {
+.acceptance li > .comment-btn,
+.acceptance .el-actions {
   position: absolute;
   top: 50%;
   right: 0;
   transform: translateY(-50%);
-  padding: 0.25rem 0.375rem;
   opacity: 0;
 }
 
-.acceptance .comment-btn-label { display: none; }
+.acceptance .el-actions { gap: 0.25rem; }
 
-.acceptance li:hover .comment-btn,
-.acceptance li:focus-within .comment-btn { opacity: 1; }
+.acceptance .comment-btn,
+.acceptance .ask-btn { padding: 0.25rem 0.375rem; }
+
+.acceptance .comment-btn-label,
+.acceptance .ask-btn-label { display: none; }
+
+.acceptance li:hover > .comment-btn,
+.acceptance li:focus-within > .comment-btn,
+.acceptance li:hover .el-actions,
+.acceptance li:focus-within .el-actions { opacity: 1; }
+
+/* Two icon buttons need the room one did. */
+[data-artefacto-artifact] .acceptance li { padding-right: 3.75rem; }
 
 .comment-btn-icon { width: 13px; height: 13px; flex: none; }
+
+/* On a served page the comment button and the ask button share one row,
+   placed where the comment button alone is placed on the static page. */
+.el-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: none;
+}
+
+.phase-head-line .el-actions,
+.task-head .el-actions,
+.pv-row-head .el-actions { margin-left: auto; }
+
+.summary-exec > .el-actions,
+.pv-row-body > .el-actions { align-self: flex-start; margin-top: 0.25rem; }
+
+/* The ask button sits beside the comment button wherever one is offered and
+   must not look like it: a comment waits for the sent review, a question
+   reaches the agent now. Accent outline at rest -- the comment button is grey
+   until its row is hovered -- and filled on hover. Not filled at rest: the
+   blocking and high-risk chips are filled accent, and a page with a dozen
+   ask buttons would read as a dozen warnings. */
+.ask-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  flex: none;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  padding: 0.3125rem 0.625rem;
+  background: var(--page);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.688rem;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease),
+              background var(--t-fast) var(--ease),
+              opacity var(--t-fast) var(--ease);
+}
+
+.ask-btn:hover,
+.ask-btn:focus-visible {
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+
+.ask-btn-icon { width: 13px; height: 13px; flex: none; }
+
+/* The line under a question composer: who hears it, and when. */
+.composer-presence {
+  font-family: var(--font-mono);
+  font-size: 0.688rem;
+  color: var(--ink-3);
+}
+
+/* Inside a thread the same distinction: Reply is quiet text, Ask is outlined
+   in the accent and fills on hover. */
+.thread-actions .thread-ask {
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  color: var(--accent);
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+
+.thread-actions .thread-ask:hover {
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+
+/* A thread opened by a question says so. */
+.thread.is-asked .thread-label { color: var(--accent); }
 
 /* The draft comment editor, and the saved drafts it produces, are both notes
    (see .pv-note) -- a reader's words sit in the page the same way an author's
@@ -1801,6 +1890,19 @@ pre code { font-size: 1em; }
   flex: 1 1 16rem;
   color: var(--ink-3);
 }
+
+/* The one-line hint takes the bar's full width above everything else. */
+.feedback-bar-hint {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink);
+}
+
+.feedback-bar-hint .pv-textbtn { margin-left: auto; flex: none; }
 
 .feedback-bar-restored { color: var(--accent); }
 .feedback-bar-blocking { color: var(--warn); font-weight: 500; }

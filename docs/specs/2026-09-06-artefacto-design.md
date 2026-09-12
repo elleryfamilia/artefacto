@@ -236,6 +236,11 @@ Behaviour added in server mode:
   `agent waiting` (an `await` holds it), or `no agent`
 - threads: reply, edit, delete, and an **ask the agent** button that turns a
   reply into a chat event
+- an **ask the agent** button beside every comment button, so a question can
+  be asked on an element that has no thread yet; the server opens the thread
+  and delivers the question as one `chat.sent`, and the thread is `asked`
+  wherever threads are listed. The bar carries a one-line, dismissable hint:
+  comments wait for the sent review, a question reaches the agent now
 - a page-level chat composer for questions about the plan as a whole; when
   the pill says `no agent`, the composer says the message will wait
 - open questions rendered as inputs, so answers arrive as data. In v1 an answer
@@ -508,8 +513,10 @@ Passive:
 
 Active:
 
-- `chat.sent` — from the composer or an "ask the agent" reply; carries the
-  thread id when it has one
+- `chat.sent` — from the composer, an "ask the agent" reply in a thread, or
+  "ask the agent" on an element with no thread yet, which opens one in this
+  same event (`ref`, `quote`, and the new `thread`); carries the thread id
+  when it has one
 - `review.submitted` — carries the full feedback document and `base_revision`
 - `reviewer.idle` — page open, no activity for `--idle`; fires once per quiet
   period and re-arms after activity. Activity is measured from a throttled
@@ -581,7 +588,8 @@ finds all of them under the new name:
 - `base_revision`: the revision the review was made against
 - `comments[]` keep their v1 fields; ids are server-assigned and stable
   (`c-<n>` per artifact, never renumbered); each gains `status`
-  (`open | changed | declined | unanchored`) and `replies[]`
+  (`open | changed | declined | unanchored`), `replies[]`, and `asked`
+  (opened by a question to the agent rather than by a comment)
 - `answers[]`: `{question, text}`
 - `reviewed[]`: refs marked reviewed
 
