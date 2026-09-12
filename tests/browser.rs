@@ -19,6 +19,8 @@ struct Served {
     server: InProcess,
     url: String,
     session: String,
+    /// The served artifact's id, `plan:<meta.id>`, whatever the fixture.
+    artifact: String,
 }
 
 impl Served {
@@ -28,7 +30,11 @@ impl Served {
 
     /// The page's tokenless address, for a second tab or a reload.
     fn page_url(&self) -> String {
-        format!("http://127.0.0.1:{}/a/plan:demo", self.server().port)
+        format!(
+            "http://127.0.0.1:{}/a/{}",
+            self.server().port,
+            self.artifact
+        )
     }
 
     /// Push the repository's plan.json as the next revision.
@@ -82,6 +88,7 @@ fn served(fixture: &str) -> Served {
         server,
         url: v["url"].as_str().expect("a bootstrap url").to_string(),
         session: v["session"].as_str().expect("a session").to_string(),
+        artifact: v["artifact"].as_str().expect("an artifact id").to_string(),
     }
 }
 
@@ -141,7 +148,7 @@ fn debug(page: &mut support::browser::Page) -> serde_json::Value {
 
 fn connected(page: &mut support::browser::Page) {
     page.wait_until(
-        "window.artefactoPlan.debug() && window.artefactoPlan.debug().connected && !window.artefactoPlan.debug().syncing",
+        "!!window.artefactoPlan && window.artefactoPlan.debug() && window.artefactoPlan.debug().connected && !window.artefactoPlan.debug().syncing",
         "the socket to connect and the state to load",
     );
 }
@@ -3480,6 +3487,20 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
         "the dark theme to apply and its crossfade to end",
     );
     page.screenshot(&screenshot_path("ask-on-kitchen-sink-dark"));
+    // And the third theme, which also has to survive a reload.
+    page.click("[data-theme-set=\"vibe\"]");
+    page.wait_until(
+        "document.documentElement.getAttribute('data-theme') === 'vibe' && !document.documentElement.classList.contains('theme-anim')",
+        "the vibe theme to apply",
+    );
+    page.screenshot(&screenshot_path("ask-on-kitchen-sink-vibe"));
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.text("document.documentElement.getAttribute('data-theme')"),
+        "vibe",
+        "the choice survives a reload"
+    );
     page.click("[data-theme-set=\"\"]");
 }
 

@@ -450,12 +450,16 @@
       document.querySelectorAll("details.phase").forEach(function (d, i) { d.open = wasOpen[i]; });
       if (failure) throw new Error(failure);
     });
-    check("theme toggle offers system, light and dark", function () {
+    check("theme toggle offers system, light, dark and vibe", function () {
       const modes = [].map.call(
         document.querySelectorAll("[data-theme-set]"),
         function (b) { return b.getAttribute("data-theme-set"); }
       );
-      if (modes.join("|") !== "|light|dark") throw new Error("modes were " + modes.join("|"));
+      if (modes.join("|") !== "|light|dark|vibe") throw new Error("modes were " + modes.join("|"));
+      applyTheme("vibe", false);
+      if (document.documentElement.getAttribute("data-theme") !== "vibe") {
+        throw new Error("vibe did not apply");
+      }
       /* System must be reachable AGAIN after an override, or "follow the OS"
          is a state a reader can only ever leave. */
       applyTheme("dark", false);
@@ -747,7 +751,7 @@
   function storedTheme() {
     try {
       const v = window.localStorage.getItem(THEME_KEY);
-      return v === "light" || v === "dark" ? v : "";
+      return v === "light" || v === "dark" || v === "vibe" ? v : "";
     } catch (e) { return ""; }
   }
 
@@ -803,7 +807,7 @@
     group.className = "pv-theme";
     group.setAttribute("role", "group");
     group.setAttribute("aria-label", "Colour theme");
-    [["", "System"], ["light", "Light"], ["dark", "Dark"]].forEach(function (pair) {
+    [["", "System"], ["light", "Light"], ["dark", "Dark"], ["vibe", "Vibe"]].forEach(function (pair) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.setAttribute("data-theme-set", pair[0]);

@@ -1023,8 +1023,12 @@ mod tests {
     /// own fill. A palette change that breaks this is a readability bug, not
     /// a taste.
     #[test]
-    fn tokens_meet_contrast_in_both_themes() {
-        for block in [":root {", ":root[data-theme=\"dark\"] {"] {
+    fn tokens_meet_contrast_in_every_theme() {
+        for block in [
+            ":root {",
+            ":root[data-theme=\"dark\"] {",
+            ":root[data-theme=\"vibe\"] {",
+        ] {
             let t = tokens_of(block);
             let page = &t["page"];
             for fg in [
@@ -1043,6 +1047,46 @@ mod tests {
             assert!(
                 !t.contains_key("focus"),
                 "--focus is an alias of a role, not a colour of its own"
+            );
+        }
+    }
+
+    /// The type tokens name the embedded families, in the default root and
+    /// in the vibe theme. The first token rewrite dropped the two families
+    /// and no test noticed: the browser fell back to a serif and a mono of
+    /// its own and the screenshots looked plausible.
+    #[test]
+    fn type_tokens_name_the_embedded_families() {
+        let css = stylesheet();
+        let root = &css[css.find(":root {").unwrap()..];
+        let root = &root[..root.find("\n}\n").unwrap()];
+        assert!(
+            root.contains("--font-serif: Newsreader,"),
+            "the prose voice"
+        );
+        assert!(
+            root.contains("--font-mono: \"JetBrains Mono\","),
+            "the metadata voice"
+        );
+        assert!(
+            root.contains("--font-display: var(--font-serif);"),
+            "the display voice"
+        );
+        let vibe = &css[css.find(":root[data-theme=\"vibe\"] {").unwrap()..];
+        let vibe = &vibe[..vibe.find("\n}\n").unwrap()];
+        assert!(vibe.contains("--font-serif: \"Bricolage Grotesque\","));
+        assert!(vibe.contains("--font-mono: \"Space Mono\","));
+        assert!(vibe.contains("--font-display: \"Bungee\","));
+        for family in [
+            "Newsreader",
+            "JetBrains Mono",
+            "Bricolage Grotesque",
+            "Space Mono",
+            "Bungee",
+        ] {
+            assert!(
+                css.contains(&format!("font-family: \"{family}\"")),
+                "{family} is embedded"
             );
         }
     }
@@ -1105,13 +1149,24 @@ mod tests {
             );
         }
         assert!(!CSS.contains("url(http"), "no external url() in plan.css");
-        // And the fonts did actually land: three faces across two families
-        // (Newsreader upright + italic, JetBrains Mono upright). Regenerate
-        // them with tools/build-plan-fonts.py, never by hand.
-        assert_eq!(CSS.matches("@font-face").count(), 3);
-        assert_eq!(CSS.matches("url(\"data:font/woff2;base64,").count(), 3);
-        assert!(CSS.contains("font-family: \"Newsreader\""));
-        assert!(CSS.contains("font-family: \"JetBrains Mono\""));
+        // And the fonts did actually land: seven faces across five families
+        // (Newsreader upright + italic, JetBrains Mono upright, and the vibe
+        // theme's Bricolage Grotesque, Space Mono regular + bold, Bungee).
+        // Regenerate them with tools/build-plan-fonts.py, never by hand.
+        assert_eq!(CSS.matches("@font-face").count(), 7);
+        assert_eq!(CSS.matches("url(\"data:font/woff2;base64,").count(), 7);
+        for family in [
+            "Newsreader",
+            "JetBrains Mono",
+            "Bricolage Grotesque",
+            "Space Mono",
+            "Bungee",
+        ] {
+            assert!(
+                CSS.contains(&format!("font-family: \"{family}\"")),
+                "{family} is embedded"
+            );
+        }
     }
 
     #[test]
