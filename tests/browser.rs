@@ -4778,6 +4778,27 @@ fn the_agent_can_stop_the_page_when_it_is_blocked() {
     );
     page.screenshot(&screenshot_path("interrupt-blocked"));
 
+    // A dialog is on screen, not on paper. Printing mid-interrupt gives the
+    // plan, not a dimmed first page and nothing after it.
+    page.call(
+        "Emulation.setEmulatedMedia",
+        serde_json::json!({ "media": "print" }),
+    );
+    assert_eq!(
+        page.text("getComputedStyle(document.querySelector('.ag-dim')).display"),
+        "none",
+        "the dialog is not printed"
+    );
+    assert_eq!(
+        page.text("getComputedStyle(document.documentElement).overflow"),
+        "visible",
+        "and the scroll lock does not cut the paper to one page"
+    );
+    page.call(
+        "Emulation.setEmulatedMedia",
+        serde_json::json!({ "media": "screen" }),
+    );
+
     // Its button opens the conversation, aimed at what the agent asked about.
     page.click(".ag-interrupt-go");
     page.wait_until("!document.querySelector('.ag-dim')", "the dialog to close");

@@ -2899,6 +2899,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
   .pv-panel-handle,
   .pv-panel-link,
   .pv-map,
+  .ag-dim,
   .ask-preview,
   .pv-presence,
   .thread-actions,
@@ -2912,7 +2913,10 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
   .pv-notices,
   .pv-rule-actions,
   #manual-copy { display: none !important; }
-  .is-reviewed { opacity: 1; }
+  /* A dialog is on screen, not on paper: printing mid-interrupt must not
+     give a dimmed first page and nothing after it. */
+  html.is-interrupted,
+  html.is-interrupted body { overflow: visible !important; }
   .task,
   .pv-row,
   details.phase { break-inside: avoid; }
