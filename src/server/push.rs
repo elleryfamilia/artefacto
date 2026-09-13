@@ -586,6 +586,25 @@ mod tests {
     }
 
     #[test]
+    fn a_phase_counts_beside_its_own_tasks() {
+        let before = plan(serde_json::json!([
+            { "id": "p-one", "title": "One", "tasks": [
+                { "id": "t-a", "title": "A" }, { "id": "t-b", "title": "B" }
+            ] }
+        ]));
+        let after = plan(serde_json::json!([
+            { "id": "p-one", "title": "One", "status": "done", "tasks": [
+                { "id": "t-a", "title": "A", "status": "done" },
+                { "id": "t-b", "title": "B", "status": "done" }
+            ] }
+        ]));
+        // Three rows changed on the page, so the summary says three. Counting
+        // only the tasks would report nothing at all for a plan whose phases
+        // carry the status and whose tasks do not.
+        assert_eq!(summarize(&before, &after), "3 done");
+    }
+
+    #[test]
     fn a_missing_status_reads_as_planned() {
         let without = plan(serde_json::json!([
             { "id": "p-one", "title": "One", "tasks": [{ "id": "t-a", "title": "A" }] }

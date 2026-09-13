@@ -787,6 +787,115 @@ fn the_static_export_selftest_passes_in_a_real_browser() {
 // --- the races a fake client cannot reach (spec 14) -------------------------
 
 #[test]
+fn the_sent_notice_counts_the_plan_on_screen() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    // Mark a task reviewed, then let a revision take that task away and mark
+    // the one that replaced it. The fold keeps both marks -- it does not
+    // prune what a revision removed -- so counting the state's own keys
+    // reported more tasks reviewed than the plan has.
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    support::wait_for(
+        || s.server().count_events("element.reviewed") == 1,
+        "the first mark",
+    );
+    s.edit_plan("\"id\": \"t-a\"", "\"id\": \"t-b\"");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "revision 2",
+    );
+    page.click("[data-plan-ref=\"task:t-b\"] .reviewed-toggle input");
+    support::wait_for(
+        || s.server().count_events("element.reviewed") == 2,
+        "the second mark",
+    );
+
+    page.click(".pv-panel-handle");
+    page.click(".feedback-bar-send");
+    page.wait_until(
+        "!!document.querySelector('.pv-notice[data-kind=\"sent\"]')",
+        "the sent notice",
+    );
+    let said = page.text(
+        "document.querySelector('.pv-notice[data-kind=\"sent\"] .pv-notice-text').textContent",
+    );
+    assert!(
+        said.contains("1 of 1 tasks reviewed"),
+        "the notice counts the plan on screen: {said}"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-reviewed').textContent"),
+        "1/1 reviewed",
+        "and the bar beside it agrees"
+    );
+}
+
+#[test]
+fn the_panel_keeps_what_was_typed_while_a_send_was_in_the_air() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".pv-panel-handle");
+    page.type_into(".pv-panel-composer textarea", "first question");
+
+    // The box stays editable while the send is in the air. A reviewer who
+    // keeps typing must not have it taken from them when the reply lands:
+    // that is the one failure this composer exists to prevent.
+    shape_fetch(&mut page, "/cmd", "hold-release", 0);
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "(window.__releasers || []).length > 0",
+        "the send to be held",
+    );
+    page.type_into(".pv-panel-composer textarea", "second question");
+    release_path(&mut page, "/cmd");
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 1",
+        "the first question to land",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
+        "second question",
+        "what was typed during the send is still there"
+    );
+    assert_eq!(
+        page.eval(
+            "(JSON.parse(window.sessionStorage.getItem('artefacto:panel:plan:demo') || '{}').text) === 'second question'"
+        ),
+        true,
+        "and it survives a reload"
+    );
+
+    // And it still sends: the composer is not stuck.
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "(window.__releasers || []).length > 0",
+        "the send to be held",
+    );
+    release_path(&mut page, "/cmd");
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 2",
+        "the second question",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
+        "",
+        "and the box clears when nothing new was typed"
+    );
+}
+
+#[test]
 fn the_panel_sends_the_revision_it_was_written_against() {
     let Some(browser) = Browser::launch() else {
         return;
@@ -3798,21 +3907,37 @@ fn a_turn_keeps_the_name_of_whoever_took_it() {
         "and so does the mark beside it"
     );
 
+    // The row that says an answer is being waited for is about now, not
+    // about a past turn, so it takes the name of whoever holds the lease.
+    page.type_into(".pv-panel-composer textarea", "and the TTL?");
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "!!document.querySelector('.pv-panel-msg.thread-working')",
+        "the working row",
+    );
+    assert_eq!(
+        page.text(
+            "document.querySelector('.pv-panel-msg.thread-working .thread-actor').textContent"
+        ),
+        "codex",
+        "the row waiting on an answer says who is being waited for"
+    );
+
     // The page survives a reload with the names intact: they come from the
     // server's snapshot, not from anything the page remembered.
     page.navigate(&s.page_url());
     connected(&mut page);
     page.click(".pv-panel-handle");
     page.wait_until(
-        "document.querySelectorAll('.pv-panel-msg').length === 2",
-        "both answers after a reload",
+        "document.querySelectorAll('.pv-panel-msg:not(.thread-working)').length === 3",
+        "both answers and the question after a reload",
     );
     assert_eq!(
         page.eval(
-            "Array.from(document.querySelectorAll('.pv-panel-msg .thread-actor')).map(function (n) { \
+            "Array.from(document.querySelectorAll('.pv-panel-msg:not(.thread-working) .thread-actor')).map(function (n) { \
                return n.firstChild.textContent; })"
         ),
-        serde_json::json!(["agent", "codex"])
+        serde_json::json!(["agent", "codex", "you"])
     );
 }
 
@@ -3928,6 +4053,30 @@ fn what_you_said_about_a_question_can_become_the_answer() {
         true,
         "still taken"
     );
+
+    // A revision takes the question away. The conversation stays, but there
+    // is no longer anywhere for an answer to go, so the offer goes with it.
+    // The check is against the questions the plan now holds, not against the
+    // shape of the ref: a ref that merely starts with `question:` is not
+    // enough, and the server refuses an answer to a question that is gone.
+    s.edit_plan("\"id\": \"q-ttl\"", "\"id\": \"q-later\"");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2' && !window.artefactoPlan.debug().syncing",
+        "revision 2",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-panel-lift-btn').length"),
+        0,
+        "no offer for a question the plan no longer has"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-panel-msg[data-thread=\"c-1\"]')"),
+        true,
+        "the conversation itself is still there"
+    );
+    let errors = page.errors();
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
 }
 
 #[test]
@@ -4139,6 +4288,22 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
     page.wait_until(
         "document.body.dataset.artefactoRevision === '2' && !document.querySelector('.pv-panel-foot').classList.contains('is-sent')",
         "revision 2 to reopen the review",
+    );
+    // Reopened, but not forgotten: the last verdict given is still the last
+    // verdict given. The server's fold keeps it across a revision, and the
+    // page's fold is that fold in another language -- a live page and a
+    // reloaded one must not disagree about a field the snapshot carries.
+    assert_eq!(
+        page.text("String(window.artefactoPlan.debug().verdict)"),
+        "request_changes",
+        "the page keeps the verdict the server keeps"
+    );
+    assert_eq!(
+        artefacto::server::http::with_review(&s.server().shared, |r| {
+            r.artifacts["plan:demo"].verdict.clone()
+        }),
+        Some("request_changes".to_string()),
+        "and that is what a reload would be handed"
     );
     page.click(".feedback-bar-approve");
     page.wait_until(
@@ -4922,6 +5087,17 @@ fn the_plan_strip_says_where_you_are_and_takes_you_there() {
     let mut page = browser.new_page();
     page.navigate(&s.url);
     connected(&mut page);
+    // Everything below measures the document, and the orientation banner is
+    // part of it on a first open only. Load it twice so the page under test
+    // is the one a returning reviewer sees, whatever this browser has seen
+    // before.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-banner')"),
+        false,
+        "the second open has no banner, so the measurements below are stable"
+    );
 
     // One segment per section the plan has, sized by how much of the
     // document each holds, in the order they appear.
@@ -4965,7 +5141,14 @@ fn the_plan_strip_says_where_you_are_and_takes_you_there() {
         "and the summary to be behind you"
     );
     // The numeral itself says which phase you are in; the strip does not
-    // also spell out "1 of 2" beside it.
+    // also spell out "1 of 2" beside it. Scrolled to an explicit fraction
+    // rather than to an element: the read line is a fraction of the whole
+    // document, so where `scrollIntoView` lands in it depends on the
+    // document's height, and on this plan the first phase owns a narrow band
+    // near the end.
+    page.eval(
+        "window.scrollTo({ top: 0.8 * (document.documentElement.scrollHeight - window.innerHeight), behavior: 'instant' })",
+    );
     page.wait_until(
         "document.querySelector('.pv-map-ph.is-active') && \
            document.querySelector('.pv-map-ph.is-active').textContent === '01'",

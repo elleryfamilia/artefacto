@@ -3177,9 +3177,14 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
           state.revision = e.revision > 0 ? e.revision : state.revision + 1;
           if (d.plan) state.plan = d.plan;
           if (d.plan_hash) state.planHash = d.plan_hash;
-          /* A new revision reopens the review. */
+          /* A new revision reopens the review. The verdict stays: it is the
+             last one given, and the server's fold keeps it for the same
+             reason (`review.rs`, "kept across a new revision"). Clearing it
+             here made a live page and a reloaded one disagree about a field
+             the snapshot carries -- invisible today, because everything
+             that reads it also checks `submitted`, and a trap for whatever
+             reads it next. */
           state.submitted = false;
-          state.verdict = null;
           core.reanchor(state.threads, core.planRefs(state.plan));
           return true;
         }
@@ -5931,15 +5936,24 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
        it. Without it a Send review that worked looked like one that did
        nothing, and got clicked four times. */
     function sentNotice() {
+      /* Counted against the plan on screen, not against everything the log
+         remembers. The fold keeps an answer and a reviewed mark after a
+         revision removes the element they were about, so counting the
+         state's own keys reported more tasks reviewed than the plan has --
+         and the bar beside this notice, which walks the page, disagreed
+         with it. */
       const threads = S.state.threads.filter(function (t) { return t.status !== "unanchored"; });
-      const answers = Object.keys(S.state.answers).filter(function (q) { return S.state.answers[q]; }).length;
+      const taskEls = S.root ? S.root.querySelectorAll('.task[data-plan-ref^="task:"]') : [];
+      let reviewed = 0;
+      Array.prototype.forEach.call(taskEls, function (t) {
+        if (S.state.reviewed.indexOf(t.getAttribute("data-plan-ref")) >= 0) reviewed++;
+      });
+      const open = (S.state.plan && S.state.plan.open_questions) || [];
+      const answers = open.filter(function (q) { return S.state.answers[q.id]; }).length;
       const parts = [];
       parts.push(threads.length + (threads.length === 1 ? " comment" : " comments"));
       parts.push(answers + (answers === 1 ? " answer" : " answers"));
-      const tasks = S.root ? S.root.querySelectorAll('.task[data-plan-ref^="task:"]').length : 0;
-      let k = 0;
-      S.state.reviewed.forEach(function (r) { if (r.indexOf("task:") === 0) k++; });
-      parts.push(k + " of " + tasks + " tasks reviewed");
+      parts.push(reviewed + " of " + taskEls.length + " tasks reviewed");
       notice("sent",
         (S.state.verdict === "approve" ? "Approval sent" : "Review sent") + " for revision " + S.state.revision + ": "
           + parts.join(", ") + ". The agent has it."
@@ -6117,7 +6131,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
         msgs.appendChild(el("div", { class: "thread-working", dataset: { actor: "agent" } },
           el("span", { class: "pv-avatar" }, agentMark(pending.state)),
           el("div", { class: "thread-msg-body" },
-            el("span", { class: "thread-actor", text: "agent" }),
+            el("span", { class: "thread-actor", text: agentTitle() }),
             el("p", { class: "thread-text", text: pending.text }))));
       }
       const resolution = node.querySelector(".thread-resolution");
@@ -6367,7 +6381,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
             log.appendChild(el("div", wattrs,
               el("span", { class: "pv-avatar" }, agentMark(pending.state)),
               el("div", { class: "pv-panel-msg-body" },
-                el("span", { class: "thread-actor", text: "agent" }),
+                el("span", { class: "thread-actor", text: agentTitle() }),
                 el("p", { class: "thread-text", text: pending.text }))));
           }
         }
@@ -6538,7 +6552,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       send({
         cmd: "question.answer", question: question, text: text,
         opened_revision: S.state.revision,
-      }).then(function () { render(); }, function () { /* the bar says it failed */ });
+      }).catch(function () { /* the bar's state line says it failed */ });
     }
 
     /* Everything said to and by the agent, in time order: the page-level
@@ -6720,12 +6734,22 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       send(cmd)
         .then(function () {
           S.ui.panelSending = false;
-          S.ui.panel = { text: "", ref: null, thread: null, quote: null, revision: null };
+          /* The box stays editable while a send is in the air, so what is
+             in it now may be a second question rather than the one that
+             just went. Clearing regardless threw that away with no trace,
+             which is the one failure this composer exists to prevent. */
+          const box = document.querySelector(".pv-panel-composer textarea");
+          const typing = box && box.value.trim() !== text;
+          if (typing) {
+            S.ui.panel.text = box.value;
+            S.ui.panel.revision = S.ui.panel.revision || S.state.revision;
+          } else {
+            S.ui.panel = { text: "", ref: null, thread: null, quote: null, revision: null };
+          }
           savePanelDraft();
           markAsked();
           renderPanelComposer();
-          const box = document.querySelector(".pv-panel-composer textarea");
-          if (box) { box.value = ""; box.rows = 1; box.focus({ preventScroll: true }); }
+          if (box && !typing) { box.value = ""; box.rows = 1; box.focus({ preventScroll: true }); }
           const btn = document.querySelector(".pv-panel-composer .thread-composer-send");
           if (btn) cleared(btn);
         })
@@ -7440,7 +7464,8 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
         connected: S.connected, page: S.pageId, syncing: S.syncing, gone: S.gone, lost: S.lost,
         reconnects: S.reconnects, applied: S.applied, revision: S.state.revision,
         planHash: S.state.planHash, lastSeq: S.state.lastSeq, presence: S.state.presence,
-        submitted: S.state.submitted, chat: S.state.chat.length, chatOpen: S.ui.chatOpen,
+        submitted: S.state.submitted, verdict: S.state.verdict,
+        chat: S.state.chat.length, chatOpen: S.ui.chatOpen,
         pending: Object.keys(S.pendingMarks).length,
         buffered: S.buffer.length,
         threads: S.state.threads.map(function (t) {

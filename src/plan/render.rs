@@ -1171,6 +1171,23 @@ mod tests {
         assert!(seen >= 4, "the kitchen sink should have every part: {seen}");
     }
 
+    /// A plan whose phases hold no tasks has nothing to put in the figure
+    /// column, and a `TASKS` header over a stack of empty cells reads as a
+    /// rendering failure rather than as "none yet".
+    #[test]
+    fn a_ledger_with_nothing_to_count_drops_its_column() {
+        let mut plan = plan_from("minimal.json");
+        for phase in &mut plan.phases {
+            phase.tasks.clear();
+        }
+        let html = render(&plan);
+        assert!(html.contains("<table class=\"pv-ledger\">"), "{html}");
+        assert!(!html.contains("<th>Tasks</th>"), "{html}");
+        // The `<td` matters: the stylesheet names the class too, so looking
+        // for the class alone passes with the column still rendered.
+        assert!(!html.contains("<td class=\"pv-ledger-fig\""), "{html}");
+    }
+
     /// The bracketed count is the whole of what the cell says about risk, so
     /// the words behind it have to be right on their own.
     #[test]
