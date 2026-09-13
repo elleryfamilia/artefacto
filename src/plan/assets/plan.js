@@ -695,7 +695,6 @@
     questions: ["M4 4h16v16H4z", "M9.4 9.2a2.7 2.7 0 1 1 3.6 2.5c-.7.3-1 .9-1 1.6", "M12 16.6h.01"],
     risks: ["M12 4.5 21 19H3z", "M12 10v4", "M12 16.6h.01"],
     phases: ["M4 6h7", "M4 12h13", "M4 18h9"],
-    dependencies: ["M5 7h7a3 3 0 0 1 3 3v4", "M12 11l3 3 3-3"],
   };
 
   /* A circle with one half filled: the picture every interface uses for
@@ -3698,13 +3697,9 @@
         agentMark(""),
         el("span", { class: "pv-panel-handle-label", text: "Conversation" }),
         el("span", { class: "pv-panel-count" })));
-      const right = root.querySelector(".pv-topbar-right");
-      if (right && !right.querySelector(".pv-panel-link")) {
-        right.insertBefore(el("button", { type: "button", class: "pv-panel-link",
-          onclick: function () { setPanelOpen(true); } },
-          "Conversation ", el("span", { class: "pv-panel-count" })), right.firstChild);
-        syncBarHeight(root);
-      }
+      /* One way in, not two: the floating handle is always in reach and
+         steps aside when the panel is open, so the bar carries nothing
+         about the conversation. */
       wireLeaving();
     }
 
@@ -4447,6 +4442,37 @@
     wirePrint();
   }
 
+  /* The orientation banner says what the page is and what to do with it.
+     That is worth one reading and no more, so it appears on the first open
+     of a plan in a browser and never again -- with a dismiss for a reader
+     who has it already. Keyed per plan, because the next plan is the first
+     time again for whoever is reviewing it.
+
+     Not a dialog: the modal is reserved for the three things that stop the
+     page (see `INTERRUPT`), and an explanation is not one of them. */
+  const INTRO_KEY = "artefacto.intro.";
+
+  function introSeen(key) {
+    try { return window.localStorage.getItem(INTRO_KEY + key) === "1"; } catch (e) { return true; }
+  }
+
+  function markIntroSeen(key) {
+    try { window.localStorage.setItem(INTRO_KEY + key, "1"); } catch (e) { /* an opaque origin: it shows once per load */ }
+  }
+
+  function mountIntro(root, key) {
+    const banner = root.querySelector(".pv-banner");
+    if (!banner || !key) return;
+    if (introSeen(key)) return banner.remove();
+    markIntroSeen(key);
+    if (!banner.querySelector(".pv-banner-dismiss")) {
+      banner.appendChild(el("button", {
+        type: "button", class: "pv-btn is-quiet pv-banner-dismiss", text: "Got it",
+        onclick: function () { banner.remove(); },
+      }));
+    }
+  }
+
   function mount(root) {
     mounted.observers.forEach(function (o) { o.disconnect(); });
     mounted = { observers: [] };
@@ -4462,7 +4488,10 @@
     let plan;
     try { plan = core.parseIsland(islandEl.textContent); } catch (e) { return; }
 
+    /* Keyed by the artifact when there is a server, and by the plan's own
+       id when there is not: a static export is still one plan. */
     const served = root.getAttribute("data-artefacto-artifact") || (session && session.artifact);
+    mountIntro(root, served || (plan.meta && plan.meta.id) || "");
     if (served) {
       if (!session) session = createSession(served);
       root.setAttribute("data-artefacto-artifact", served);

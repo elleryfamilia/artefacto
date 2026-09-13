@@ -623,16 +623,13 @@ pub fn render(plan: &Plan) -> String {
                             span.pv-brand-name { "artefacto" }
                             span.pv-brand-surface { "Plan" }
                         }
-                        div.pv-topbar-right {
-                            // The revision and nothing else. The plan's id is
-                            // already the eyebrow under the title, and its
-                            // name is the title: repeating both here made the
-                            // bar a second, worse heading. The revision is the
-                            // one fact in it that changes.
-                            @if let Some(rev) = plan.meta.revision {
-                                span.pv-topbar-id { "rev " (rev) }
-                            }
-                        }
+                        // Nothing of the plan's own here. Its name is the
+                        // title, its id and its revision are the line above
+                        // the title, and the bar is the room, not the
+                        // document. What lands in here is injected by
+                        // `plan.js` and by the server: the way out to the
+                        // index, and the theme.
+                        div.pv-topbar-right {}
                     }
                     // Orientation banner: what this page is and what to do
                     // with it. A reviewer opening a rendered plan cold has no
@@ -658,6 +655,14 @@ pub fn render(plan: &Plan) -> String {
                                 @if let Some(created) = &plan.meta.created { (created) }
                                 @if plan.meta.agent.is_none() && plan.meta.created.is_none() {
                                     "plan " code { (plan.meta.id) }
+                                }
+                                // Which version of the plan this is. It
+                                // belongs to the document, beside who wrote
+                                // it and when, rather than to the chrome.
+                                @if let Some(rev) = plan.meta.revision {
+                                    @if plan.meta.agent.is_some() || plan.meta.created.is_some()
+                                        || plan.meta.agent.is_none() && plan.meta.created.is_none() { " · " }
+                                    span.pv-eyebrow-rev { "revision " (rev) }
                                 }
                             }
                             h1 { (plan.meta.title) }
@@ -929,7 +934,13 @@ pub fn render(plan: &Plan) -> String {
                             }
                         }
                         @if let Some(g) = &phase_graph {
-                            (section_rule("Phase dependencies", None, Some("dependencies")))
+                            // No `data-part`: the strip named this segment
+                            // "Phase dependencies", which truncates to
+                            // "PHAS…" beside the phases it belongs to and
+                            // reads as a second phases segment. The section
+                            // is still a section; it is not a place in the
+                            // plan a reader navigates to separately.
+                            (section_rule("Phase dependencies", None, None))
                             div.pv-deps {
                                 (PreEscaped(g.as_str()))
                                 (graph_legend())
@@ -1157,7 +1168,7 @@ mod tests {
             );
             seen += 1;
         }
-        assert!(seen >= 5, "the kitchen sink should have every part: {seen}");
+        assert!(seen >= 4, "the kitchen sink should have every part: {seen}");
     }
 
     /// The strip's glyphs are navigation furniture. They take the neutral
@@ -1265,12 +1276,23 @@ mod tests {
             !html.contains("<div class=\"pv-theme\""),
             "the theme toggle is script-injected, not served"
         );
-        // The topbar carries the revision and nothing else: the plan's name
-        // is the title and its id is the eyebrow, both a few lines below.
-        assert!(html.contains(">rev 2</span>"), "the revision in the topbar");
+        // The topbar carries nothing of the plan's own. The revision is a
+        // fact about the document, so it sits on the document's own
+        // metadata line, beside who wrote it and when.
         assert!(
-            !html.contains("auth-refactor · rev"),
-            "the id is not repeated in the topbar"
+            html.contains("<div class=\"pv-topbar-right\"></div>"),
+            "the bar is the room, not the document"
+        );
+        let eyebrow = html
+            .split_once("<p class=\"pv-eyebrow\">")
+            .expect("byline eyebrow")
+            .1
+            .split_once("</p>")
+            .expect("a closed eyebrow")
+            .0;
+        assert!(
+            eyebrow.contains("revision 2"),
+            "the revision is on the plan's own line: {eyebrow}"
         );
         // Eyebrow (byline + created) renders above the h1.
         let meta_pos = html

@@ -587,9 +587,10 @@ fn marking_reviewed_reaches_the_log_and_survives_a_reload() {
         "the server is the store: nothing was read from localStorage"
     );
     assert_eq!(
-        page.eval("window.localStorage.length"),
-        0,
-        "and nothing was written there either"
+        page.eval("Object.keys(window.localStorage).sort()"),
+        serde_json::json!(["artefacto.intro.plan:demo"]),
+        "and nothing of the review was written there: the one key is this \
+         browser's own note that it has read the orientation once"
     );
 }
 
@@ -765,7 +766,7 @@ fn the_static_export_selftest_passes_in_a_real_browser() {
     // The strip is chrome, not conversation: a page with no server has it.
     assert_eq!(
         page.eval("document.querySelectorAll('.pv-map-part').length"),
-        5,
+        4,
         "the static export carries the plan strip"
     );
     page.eval(
@@ -3375,7 +3376,7 @@ fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
     // aims a follow-up at the same thread.
     page.navigate(&s.page_url());
     connected(&mut page);
-    page.click(".pv-panel-link");
+    page.click(".pv-panel-handle");
     assert_eq!(
         page.eval("document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]').length"),
         2
@@ -3595,7 +3596,7 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
         "only the chosen verdict is ever filled"
     );
     // The panel open beside the sheet, scrolled to the blocking comment.
-    page.click(".pv-panel-link");
+    page.click(".pv-panel-handle");
     page.eval("document.querySelector('.thread[data-thread=\"c-2\"]').scrollIntoView({ block: 'center' })");
     page.screenshot(&screenshot_path("ask-on-kitchen-sink"));
     // The same page in the dark theme, from the control, so both palettes are
@@ -3681,7 +3682,7 @@ fn a_turn_keeps_the_name_of_whoever_took_it() {
     let mut page = browser.new_page();
     page.navigate(&s.url);
     connected(&mut page);
-    page.click(".pv-panel-link");
+    page.click(".pv-panel-handle");
 
     // The agent that pushed this plan answers first.
     s.repo
@@ -3743,7 +3744,7 @@ fn a_turn_keeps_the_name_of_whoever_took_it() {
     // server's snapshot, not from anything the page remembered.
     page.navigate(&s.page_url());
     connected(&mut page);
-    page.click(".pv-panel-link");
+    page.click(".pv-panel-handle");
     page.wait_until(
         "document.querySelectorAll('.pv-panel-msg').length === 2",
         "both answers after a reload",
@@ -4039,7 +4040,7 @@ fn the_working_state_follows_the_servers_state() {
     // A reload shows the question still waiting: the state says so.
     page.navigate(&s.page_url());
     connected(&mut page);
-    page.click(".pv-panel-link");
+    page.click(".pv-panel-handle");
     assert_eq!(
         page.eval(working),
         true,
@@ -4352,6 +4353,52 @@ fn the_panel_composer_sends_once_and_keeps_its_place() {
 }
 
 #[test]
+fn the_orientation_is_read_once_and_then_gets_out_of_the_way() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // A reviewer opening a plan cold has no other way to know the page
+    // collects comments, so it is said once.
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-banner')"),
+        true,
+        "the first open explains the page"
+    );
+    assert!(page
+        .text("document.querySelector('.pv-banner-text').textContent")
+        .starts_with("This plan is under live review."));
+
+    // And not again. A second open of the same plan in the same browser
+    // goes straight to the plan.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-banner')"),
+        false,
+        "and the second open does not"
+    );
+
+    // A different plan is a first open again: it is the reviewer who has
+    // read it, for that plan.
+    let other = served("kitchen-sink.json");
+    page.navigate(&other.url);
+    connected(&mut page);
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-banner')"),
+        true,
+        "another plan explains itself too"
+    );
+    // Its dismiss takes it away now rather than at the next open.
+    page.click(".pv-banner-dismiss");
+    assert_eq!(page.eval("!!document.querySelector('.pv-banner')"), false);
+    let _ = other;
+}
+
+#[test]
 fn the_conversation_panel_starts_closed_docks_and_comes_back() {
     let Some(browser) = Browser::launch() else {
         return;
@@ -4444,8 +4491,9 @@ fn the_conversation_panel_starts_closed_docks_and_comes_back() {
         "the question in the log",
     );
     assert_eq!(
-        page.text("document.querySelector('.pv-panel-link .pv-panel-count').textContent"),
-        "1"
+        page.eval("!!document.querySelector('.pv-topbar .pv-panel-count')"),
+        false,
+        "the bar carries nothing about the conversation: the handle does"
     );
 
     // The choice survives a reload; hiding returns to the handle, and that
@@ -4466,11 +4514,14 @@ fn the_conversation_panel_starts_closed_docks_and_comes_back() {
     page.navigate(&s.page_url());
     connected(&mut page);
     assert_eq!(page.eval(closed), true, "closed stays closed");
-    page.click(".pv-panel-link");
+    page.click(".pv-panel-handle");
     assert_eq!(
-        page.eval("!document.querySelector('.pv-dock').classList.contains('is-hidden')"),
+        page.eval(
+            "!document.querySelector('.pv-dock').classList.contains('is-hidden') && \
+               document.querySelector('.pv-panel-handle').hidden"
+        ),
         true,
-        "the top-bar link opens it too"
+        "the handle opens it and steps aside, and is the only way in"
     );
 }
 
@@ -4634,7 +4685,7 @@ fn a_conversation_whose_element_left_says_so_and_keeps_its_draft() {
         "document.body.dataset.artefactoRevision === '2' && !window.artefactoPlan.debug().syncing",
         "revision 2",
     );
-    page.click(".pv-panel-link");
+    page.click(".pv-panel-handle");
     assert_eq!(
         page.text(
             "document.querySelector('.pv-panel-msg[data-thread=\"c-1\"] .pv-ctx').textContent"
@@ -4714,7 +4765,7 @@ fn the_plan_strip_says_where_you_are_and_takes_you_there() {
         .collect();
     assert_eq!(
         names,
-        vec!["summary", "questions", "risks", "phases", "dependencies"],
+        vec!["summary", "questions", "risks", "phases"],
         "the plan's parts, in the document's order"
     );
     let phases = parts.as_array().unwrap()[3]["grow"].as_f64().unwrap();

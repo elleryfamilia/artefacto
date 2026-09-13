@@ -857,6 +857,10 @@ code {
   border-bottom: var(--rule-w) solid var(--rule);
 }
 
+/* The banner shows once per plan, so it carries its own way out rather than
+   waiting to be scrolled past. */
+.pv-banner-dismiss { flex: none; }
+
 .pv-banner-text {
   flex: 1 1 22rem;
   font-size: 1.03rem;
@@ -2917,20 +2921,6 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
 .pv-panel-handle:hover { background: var(--agent); color: var(--agent-ink); border-color: var(--agent); }
 .pv-panel-handle[hidden] { display: none; }
 .pv-panel-count { font-family: var(--font-mono); font-size: 0.656rem; }
-/* Styled like the top bar's links, but not one of them: a test or a script
-   that takes the first link there still gets the index. */
-.pv-panel-link {
-  appearance: none;
-  border: 0;
-  background: none;
-  cursor: pointer;
-  font-family: var(--font-mono);
-  font-size: 0.719rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-.pv-panel-link:hover { color: var(--action); }
 
 @media print {
   /* Paper is white whatever theme is on: the light palette, re-declared. */
@@ -2981,7 +2971,6 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
   .pv-chat,
   .pv-dock,
   .pv-panel-handle,
-  .pv-panel-link,
   .pv-map,
   .ag-dim,
   .ask-preview,
