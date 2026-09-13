@@ -469,6 +469,56 @@ fn a_plain_nudge_carries_no_interrupt() {
 }
 
 #[test]
+fn an_interrupt_that_names_nothing_is_refused() {
+    let l = start();
+    // A ref the plan does not have renders on the page as "element gone",
+    // which tells the reviewer a revision moved it. It did not.
+    let out = l.repo.run(&[
+        "reply",
+        "--session",
+        &l.session,
+        "--nudge",
+        "--interrupt",
+        "--ref",
+        "task:t-nope",
+        "I have stopped.",
+    ]);
+    assert_ne!(out.code, 0, "{}", out.stdout);
+    assert!(
+        out.stderr.contains("no such element"),
+        "the agent is told what is wrong: {}",
+        out.stderr
+    );
+    assert_eq!(
+        l.server.count_events("nudge"),
+        0,
+        "and nothing was announced"
+    );
+}
+
+#[test]
+fn an_interrupt_title_is_one_line() {
+    let l = start();
+    let long = "Which store should the Redis cache replace? ".repeat(10);
+    let out = l.repo.run(&[
+        "reply",
+        "--session",
+        &l.session,
+        "--nudge",
+        "--interrupt",
+        "--title",
+        &long,
+        "I have stopped.",
+    ]);
+    assert_ne!(out.code, 0, "{}", out.stdout);
+    assert!(
+        out.stderr.contains("one line"),
+        "the refusal says why: {}",
+        out.stderr
+    );
+}
+
+#[test]
 fn stopping_the_page_is_only_ever_a_nudge() {
     let l = start();
     // --interrupt without --nudge, and its two details without --interrupt:

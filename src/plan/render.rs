@@ -1127,6 +1127,33 @@ mod tests {
         );
     }
 
+    /// The parts are named in this file; their glyphs live in `plan.js`.
+    /// `mapIcon` falls back to the summary glyph for a name it does not
+    /// know, so a section added here without an icon there would ship the
+    /// wrong picture and say nothing about it.
+    #[test]
+    fn every_part_of_the_plan_has_an_icon_in_the_strip() {
+        let page = render(&plan_from("kitchen-sink.json"));
+        let icons = JS
+            .split_once("const MAP_ICONS = {")
+            .expect("MAP_ICONS")
+            .1
+            .split_once("\n  };")
+            .expect("the end of MAP_ICONS")
+            .0;
+        let mut seen = 0;
+        for (at, marker) in page.match_indices("data-part=\"") {
+            let rest = &page[at + marker.len()..];
+            let name = &rest[..rest.find('"').expect("a closed attribute")];
+            assert!(
+                icons.contains(&format!("{name}:")),
+                "the strip has no icon for the `{name}` part"
+            );
+            seen += 1;
+        }
+        assert!(seen >= 5, "the kitchen sink should have every part: {seen}");
+    }
+
     /// Every colour on the page belongs to a family (neutral, status, action,
     /// agent); the old one-accent-for-everything token is gone for good.
     #[test]

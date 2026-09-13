@@ -398,12 +398,16 @@
    panel. Reserved for the three cases in the guidance sheet. */
 /* While an interrupt is up the page behind it does not scroll. */
 html.is-interrupted, html.is-interrupted body { overflow: hidden; }
-.ag-dim { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 1.5rem; background: rgba(28, 26, 21, 0.28); animation: pv-fade var(--t-mid) var(--ease) both; }
+/* `start center` with `margin: auto 0` on the box centres it when it fits
+   and scrolls when it does not: the agent writes the body, and a long one
+   must never push the buttons past the bottom of a page that cannot
+   scroll behind it. */
+.ag-dim { position: fixed; inset: 0; z-index: 60; display: grid; place-items: start center; overflow-y: auto; padding: 1.5rem; background: rgba(28, 26, 21, 0.28); animation: pv-fade var(--t-mid) var(--ease) both; }
 [data-theme="dark"] .ag-dim, [data-theme="vibe"] .ag-dim { background: rgba(0, 0, 0, 0.46); }
 @keyframes pv-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes ag-interrupt-in { from { opacity: 0; transform: translateY(8px) scale(0.985); } to { opacity: 1; transform: none; } }
 .ag-interrupt {
-  width: min(27rem, 100%); background: var(--page); border: var(--rule-w) solid var(--rule);
+  width: min(27rem, 100%); margin: auto 0; background: var(--page); border: var(--rule-w) solid var(--rule);
   border-top: 3px solid var(--agent); border-radius: var(--radius-lg); box-shadow: var(--shadow-float);
   padding: 1.125rem 1.25rem 1rem; animation: ag-interrupt-in var(--t-slow) var(--ease) both;
 }
@@ -416,7 +420,7 @@ html.is-interrupted, html.is-interrupted body { overflow: hidden; }
 .ag-interrupt[data-kind="revision"] .ag-interrupt-kicker { color: var(--action); }
 .ag-interrupt-when { margin-left: auto; font-family: var(--font-mono); font-size: 0.625rem; color: var(--muted); }
 .ag-interrupt-title { font-family: var(--font-display); font-weight: 400; font-size: 1.375rem; line-height: 1.2; letter-spacing: -0.01em; margin: 0.75rem 0 0.5rem; color: var(--ink); text-wrap: pretty; }
-.ag-interrupt-body { font-size: 1rem; line-height: 1.5; color: var(--ink-2); margin: 0; max-width: 44ch; text-wrap: pretty; }
+.ag-interrupt-body { font-size: 1rem; line-height: 1.5; color: var(--ink-2); margin: 0; max-width: 44ch; max-height: 40vh; overflow-y: auto; text-wrap: pretty; }
 .ag-interrupt-ctx { display: inline-flex; margin-top: 0.75rem; }
 .ag-interrupt-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 1.125rem; }
 .ag-interrupt-actions .is-quiet { margin-left: auto; }
@@ -536,7 +540,12 @@ body {
 [id^="phase-"],
 [id^="risk-"],
 [id^="question-"] {
-  scroll-margin-top: 5rem;
+  /* The header is not a fixed height: the plan strip adds a second row, and
+     both rows wrap differently at narrow widths. `plan.js` measures the bar
+     and writes `--bar-h`, so an anchor jump lands under the header whatever
+     is in it. The 5rem fallback is the bar without the strip, for the moment
+     before the first measure. */
+  scroll-margin-top: calc(var(--bar-h, 5rem) + 0.75rem);
 }
 
 /* The row you just jumped to washes accent for a beat, then fades out. On a

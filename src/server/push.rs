@@ -446,6 +446,11 @@ fn titles(plan: &serde_json::Value) -> std::collections::BTreeMap<String, String
 /// Every phase and task's status, by ref. A missing `status` is `planned`,
 /// the same default the model parses, so a plan that never writes the field
 /// and one that writes `planned` everywhere compare equal.
+///
+/// A phase counts alongside its own tasks, so a phase marked done with its
+/// four tasks reads "5 done". That is what a reviewer sees change on the
+/// page -- five rows, not four -- and the alternative, counting only tasks,
+/// would report nothing at all for a plan whose phases carry the status.
 fn statuses(plan: &serde_json::Value) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
     let Some(phases) = plan.get("phases").and_then(|p| p.as_array()) else {
@@ -563,23 +568,21 @@ mod tests {
             { "id": "p-one", "title": "One", "tasks": [
                 { "id": "t-a", "title": "A" },
                 { "id": "t-b", "title": "B" },
-                { "id": "t-c", "title": "C", "status": "planned" }
+                { "id": "t-c", "title": "C" },
+                { "id": "t-d", "title": "D", "status": "planned" }
             ] }
         ]));
         let after = plan(serde_json::json!([
             { "id": "p-one", "title": "One", "tasks": [
                 { "id": "t-a", "title": "A", "status": "done" },
-                { "id": "t-b", "title": "B", "status": "blocked" },
-                { "id": "t-c", "title": "C", "status": "planned" }
+                { "id": "t-b", "title": "B", "status": "done" },
+                { "id": "t-c", "title": "C", "status": "blocked" },
+                { "id": "t-d", "title": "D", "status": "planned" }
             ] }
         ]));
-        let summary = summarize(&before, &after);
-        assert!(summary.contains("1 done"), "{summary}");
-        assert!(summary.contains("1 moved"), "{summary}");
-        assert!(
-            !summary.contains("no change"),
-            "a revision that marks work done is not no change: {summary}"
-        );
+        // The counts differ on purpose: with one of each, swapping the two
+        // branches would produce the same sentence.
+        assert_eq!(summarize(&before, &after), "2 done, 1 moved");
     }
 
     #[test]

@@ -852,6 +852,17 @@
     return el.getBoundingClientRect().top + window.scrollY;
   }
 
+  /* The header's height, published for the stylesheet. Anchor jumps use
+     `scroll-margin-top`, which has to be a CSS value, and the bar is not a
+     fixed height: the strip adds a second row, and both rows wrap at narrow
+     widths. Measured here and written once so a fragment link lands under
+     the header rather than behind it. */
+  function syncBarHeight(root) {
+    const bar = (root || document).querySelector(".pv-topbar");
+    if (!bar) return;
+    document.documentElement.style.setProperty("--bar-h", bar.offsetHeight + "px");
+  }
+
   /* A part's share of the strip: proportional to how much of the document
      it holds, with a floor so a part is never a sliver. The phases carry
      their numerals, so their floor is the wider one -- collapsed phases are
@@ -871,10 +882,12 @@
         id: d.id,
         n: String(i + 1).padStart(2, "0"),
         /* What the phase already says on the page: its high-risk chip, or a
-           task whose rail says blocked or high. The dependency graph's
-           legend carries a dot of every status, so the rails are read
-           rather than every dot in the phase. */
-        flag: !!d.querySelector("summary .pv-chip-high, .task-rail .pv-dot-blocked, .task-rail .pv-dot-high"),
+           task whose rail says blocked. Two clauses, not three -- the chip
+           counts the phase's high-risk tasks, so it and a high dot on a
+           rail are the same fact twice. The rails are read rather than
+           every dot in the phase, because the dependency graph's legend
+           carries a dot of every status. */
+        flag: !!d.querySelector("summary .pv-chip-high, .task-rail .pv-dot-blocked"),
       };
     });
   }
@@ -942,6 +955,7 @@
     wireScrub(track);
     mapState.parts = parts;
     mapState.phases = phases;
+    syncBarHeight(root);
     if (!mapState.wired) {
       mapState.wired = true;
       window.addEventListener("scroll", scheduleMap, { passive: true });
@@ -959,6 +973,8 @@
     }
   }
 
+  const FLAG_LABEL = " \u2014 a blocked task or a high risk in this phase";
+
   function mapNumerals(phases) {
     const host = document.createElement("span");
     host.className = "pv-map-phases";
@@ -971,10 +987,13 @@
       const n = document.createElement("span");
       n.textContent = ph.n;
       a.appendChild(n);
+      /* The flag is a dot. A label on the link is the only way a reader who
+         cannot see it is told, and `title` on an empty span is not one. */
+      a.setAttribute("aria-label", "Phase " + ph.n + (ph.flag ? FLAG_LABEL : ""));
       if (ph.flag) {
         const flag = document.createElement("span");
         flag.className = "pv-map-flag";
-        flag.title = "a blocked task or a high risk in this phase";
+        flag.title = FLAG_LABEL.replace(" \u2014 ", "");
         a.appendChild(flag);
       }
       host.appendChild(a);
@@ -992,7 +1011,8 @@
       a.className = "pv-map-tick" + (ph.flag ? " has-flag" : "");
       a.href = "#" + ph.id;
       a.setAttribute("data-map-phase", ph.id);
-      a.title = "Phase " + ph.n;
+      a.title = "Phase " + ph.n + (ph.flag ? FLAG_LABEL : "");
+      a.setAttribute("aria-label", a.title);
       a.addEventListener("click", function (e) { e.preventDefault(); jumpToNode(ph.node); });
       const num = document.createElement("span");
       num.className = "pv-map-tick-num";
@@ -1023,6 +1043,7 @@
       if (node) node.style.flexGrow = partGrow(p, span, node.classList.contains("is-group"));
     });
     mapState.parts = parts;
+    syncBarHeight(root);
     renderMap();
   }
 
@@ -1032,7 +1053,72 @@
      end of the plan and the strip never stops short of its last part. */
   function readFraction() {
     const max = document.documentElement.scrollHeight - window.innerHeight;
-    return max > 0 ? Math.min(Math.max(window.scrollY / max, 0), 1) : 0;
+    /* Nothing to scroll means the whole plan is on screen, which is the
+       end of the read, not the start of it. Returning 0 there pinned a
+       short plan's strip to the top of the summary for ever. */
+    return max > 0 ? Math.min(Math.max(window.scrollY / max, 0), 1) : 1;
+  }
+
+  /* Where a position in the document sits along the track, in the strip's
+     own pixels.
+
+     The segments are laid out by flex-grow, with a floor under each one and
+     a gap between them, so their edges do not fall where a straight linear
+     map of the document would put them. Two maps that disagree put the
+     caret over one segment while a different one is lit, which is what this
+     avoids: the caret is placed inside the segment it belongs to, and the
+     scrubber inverts the same walk. */
+  function trackParts(track) {
+    const box = track.getBoundingClientRect();
+    const out = [];
+    mapState.parts.forEach(function (p) {
+      const node = track.querySelector('[data-map-part="' + p.part + '"]');
+      if (!node) return;
+      const r = node.getBoundingClientRect();
+      out.push({ part: p, left: r.left - box.left, width: r.width });
+    });
+    return out;
+  }
+
+  function lineToX(track, line) {
+    const boxes = trackParts(track);
+    if (!boxes.length) return 0;
+    for (let i = 0; i < boxes.length; i++) {
+      const b = boxes[i];
+      if (line < b.part.top) return b.left;
+      if (line < b.part.top + b.part.height) {
+        return b.left + b.width * ((line - b.part.top) / b.part.height);
+      }
+    }
+    const last = boxes[boxes.length - 1];
+    return last.left + last.width;
+  }
+
+  function xToLine(track, x) {
+    const boxes = trackParts(track);
+    if (!boxes.length) return 0;
+    for (let i = 0; i < boxes.length; i++) {
+      const b = boxes[i];
+      if (x < b.left) return b.part.top;
+      if (x <= b.left + b.width) {
+        return b.part.top + b.part.height * ((x - b.left) / b.width);
+      }
+    }
+    const last = boxes[boxes.length - 1].part;
+    return last.top + last.height;
+  }
+
+  /* A position in the document as the fraction `readLine` would have come
+     from, so a scrub lands where the caret was dropped. */
+  function lineToScroll(line) {
+    const parts = mapState.parts;
+    if (!parts.length) return 0;
+    const first = parts[0].top;
+    const last = parts[parts.length - 1];
+    const span = last.top + last.height - first;
+    const fraction = span > 0 ? Math.min(Math.max((line - first) / span, 0), 1) : 0;
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    return Math.max(0, max * fraction);
   }
 
   /* That fraction as a position in the document, for the parts to answer to. */
@@ -1044,12 +1130,16 @@
     return first + (last.top + last.height - first) * readFraction();
   }
 
+  function setCurrent(node, on) {
+    if (on) node.setAttribute("aria-current", "true");
+    else node.removeAttribute("aria-current");
+  }
+
   function renderMap() {
     const track = document.querySelector(".pv-map-track");
     if (!track || !mapState.parts.length) return;
     const parts = mapState.parts;
     const last = parts[parts.length - 1];
-    const fraction = readFraction();
     const line = readLine();
     let active = null;
     parts.forEach(function (p) {
@@ -1059,18 +1149,25 @@
       if (isActive) active = p;
       node.classList.toggle("is-active", isActive);
       node.classList.toggle("is-past", line >= p.top + p.height);
+      /* Where you are is colour and letter-spacing on screen. `aria-current`
+         is the same fact for a reader who gets neither. */
+      setCurrent(node, isActive);
     });
     /* At the very end of the scroll the line sits on the document's last
        pixel, which is inside no part: the last one keeps the caret company. */
     if (!active) {
       const node = track.querySelector('[data-map-part="' + last.part + '"]');
-      if (node) { node.classList.add("is-active"); node.classList.remove("is-past"); }
+      if (node) {
+        node.classList.add("is-active");
+        node.classList.remove("is-past");
+        setCurrent(node, true);
+      }
     }
     const fill = track.querySelector(".pv-map-fill");
     const caret = track.querySelector(".pv-map-caret");
-    const width = track.clientWidth * fraction;
-    if (fill) fill.style.width = width + "px";
-    if (caret) caret.style.left = width + "px";
+    const x = lineToX(track, line);
+    if (fill) fill.style.width = x + "px";
+    if (caret) caret.style.left = x + "px";
     renderMapPhases(track);
   }
 
@@ -1087,6 +1184,7 @@
       if (!node) return;
       node.classList.toggle("is-active", i === current);
       node.classList.toggle("is-past", i < current);
+      setCurrent(node, i === current);
     });
     const read = track.querySelector(".pv-map-ph-read");
     if (read) read.textContent = current >= 0 ? (current + 1) + " of " + mapState.phases.length : "";
@@ -1123,9 +1221,8 @@
     if (!scrub) return;
     const to = function (clientX) {
       const box = track.getBoundingClientRect();
-      const fraction = Math.min(Math.max((clientX - box.left) / box.width, 0), 1);
-      const max = document.documentElement.scrollHeight - window.innerHeight;
-      window.scrollTo({ top: Math.max(0, max * fraction), left: 0, behavior: "instant" });
+      const line = xToLine(track, clientX - box.left);
+      window.scrollTo({ top: lineToScroll(line), left: 0, behavior: "instant" });
     };
     scrub.addEventListener("pointerdown", function (e) {
       e.preventDefault();
@@ -1437,11 +1534,17 @@
     let source = el;
     if (!/^h[1-6]$/i.test(el.tagName)) {
       /* A row's head line first, then a real heading, then the element.
-         A question and a risk have no heading -- the statement is the head
-         line -- and reading the whole row instead picks up its severity
-         chip, the buttons the page injects, and the answer box, which is
-         what a chip and a stored quote must not say. */
-      source = el.querySelector(".pv-row-head .pv-prose, h1, h2, h3, h4, h5, h6") || el;
+         Two queries rather than one selector list, because a list returns
+         whatever comes first in the document, not the first selector that
+         matches -- which would be the same thing only by luck.
+
+         A question has no heading: its statement is the head line, and
+         reading the whole row instead picks up the severity chip, the
+         buttons the page injects, and the answer box, which is what a chip
+         and a stored quote must not say. */
+      source = el.querySelector(".pv-row-head .pv-prose")
+        || el.querySelector("h1, h2, h3, h4, h5, h6")
+        || el;
     }
     const text = (source.textContent || "").trim().replace(/\s+/g, " ");
     return text.slice(0, 80);
@@ -2100,6 +2203,8 @@
        reason. */
     S.ui.interrupt = null;
     S.ui.interrupted = {};
+    S.ui.interruptNext = null;
+    S.ui.closeInterrupt = null;
 
     /* ---- transport ------------------------------------------------- */
 
@@ -2608,6 +2713,13 @@
     }
 
     function swapBody(html, revision) {
+      /* Whatever the dialog was about, it was about the revision that is
+         being replaced. Take it down before the body goes, and drop
+         anything queued behind it for the same reason. */
+      if (S.ui.closeInterrupt) {
+        S.ui.interruptNext = null;
+        S.ui.closeInterrupt(false);
+      }
       const view = captureView();
       const doc = new DOMParser().parseFromString(html, "text/html");
       const next = doc.body;
@@ -3493,9 +3605,21 @@
 
     function interrupt(cause, opts) {
       const o = opts || {};
-      if (S.ui.interrupt || S.ui.interrupted[cause + ":" + (o.key || "")]) return;
       const spec = INTERRUPT[cause];
       if (!spec) return;
+      if (S.ui.interrupted[cause + ":" + (o.key || "")]) return;
+      /* One dialog at a time, but the second is not thrown away: the agent
+         says it has stopped once, and the nudge that carried it is never
+         logged, so dropping it loses the message. It waits in one slot and
+         goes up when the first closes. A blocked one displaces whatever is
+         waiting, because it is the only cause a reviewer cannot recover on
+         their own. */
+      if (S.ui.interrupt) {
+        if (cause === "blocked" || !S.ui.interruptNext || S.ui.interruptNext.cause !== "blocked") {
+          S.ui.interruptNext = { cause: cause, opts: o };
+        }
+        return;
+      }
       S.ui.interrupt = cause;
       S.ui.interrupted[cause + ":" + (o.key || "")] = true;
       const dim = el("div", { class: "ag-dim" });
@@ -3538,9 +3662,21 @@
         dim.remove();
         document.documentElement.classList.remove("is-interrupted");
         S.ui.interrupt = null;
-        if (previous && previous.focus) previous.focus({ preventScroll: true });
+        S.ui.closeInterrupt = null;
+        if (previous && previous.focus && document.contains(previous)) {
+          previous.focus({ preventScroll: true });
+        }
         if (taken && o.onGo) o.onGo();
+        const next = S.ui.interruptNext;
+        if (next) {
+          S.ui.interruptNext = null;
+          interrupt(next.cause, next.opts);
+        }
       };
+      /* The one handle anything else needs: a body swap has to take the
+         dialog down itself, because `replaceChildren` would destroy the
+         backdrop and leave the scroll lock on with nothing on screen. */
+      S.ui.closeInterrupt = close;
       /* Escape is Not now, and Tab stays inside: an interrupt the reviewer
          cannot leave with the keyboard is a trap, not a dialog. */
       const onKey = function (e) {
@@ -3557,10 +3693,11 @@
       not.addEventListener("click", function () { close(false); });
       dim.addEventListener("mousedown", function (e) { if (e.target === dim) close(false); });
       document.addEventListener("keydown", onKey, true);
-      document.body.appendChild(dim);
+      /* On the root, not the body: a revision replaces the body's children,
+         and a backdrop that lives there goes with them. */
+      document.documentElement.appendChild(dim);
       document.documentElement.classList.add("is-interrupted");
       go.focus({ preventScroll: true });
-      return close;
     }
 
     /* The quiet-spell check runs on its own clock; a test shortens the
@@ -3615,7 +3752,10 @@
       if (!blocking.length && !unanswered.length) return;
       const what = blocking.length ? "comment" : "question";
       interrupt("hanging", {
-        key: "rev" + S.state.revision + ":" + (blocking.length ? blocking[0].id : unanswered[0].id),
+        /* Keyed by the revision alone. Keying it by the blocking thing as
+           well meant that adding a blocking comment after dismissing this
+           raised it again in the same quiet spell. */
+        key: "rev" + S.state.revision,
         title: "The agent is waiting on you",
         body: "Your verdict has not been sent and a blocking " + what
           + " is still open. Nothing moves until one of those does.",

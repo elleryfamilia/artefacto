@@ -24,6 +24,10 @@ use tiny_http::Request;
 /// URL encoding to reach the log intact.
 const MAX_BODY: usize = crate::server::ingress::MAX_TEXT;
 
+/// The longest `--title` an interrupt may carry. The dialog leads with it on
+/// one line; past this it is a body pretending to be a heading.
+const MAX_TITLE: usize = 120;
+
 /// `POST /cli/reply`. A thread message, page-level chat, or a banner.
 pub fn handle_reply(shared: &Arc<Shared>, request: Request, query: &Query) {
     let Some((request, text)) = body_of(request) else {
@@ -46,9 +50,38 @@ pub fn handle_reply(shared: &Arc<Shared>, request: Request, query: &Query) {
         if query.get("interrupt").map(String::as_str) == Some("1") {
             let mut stop = serde_json::json!({ "kind": "blocked" });
             if let Some(title) = query.get("title").filter(|t| !t.is_empty()) {
+                /* The title is one line in a dialog. A long one is not a
+                title, and nothing else bounds it: the body is capped by
+                MAX_BODY, this is not part of the body. */
+                if title.chars().count() > MAX_TITLE {
+                    return refuse(
+                        request,
+                        &format!(
+                            "--title is {} characters; the dialog leads with one line, so the limit is {MAX_TITLE}",
+                            title.chars().count()
+                        ),
+                    );
+                }
                 stop["title"] = serde_json::json!(title);
             }
             if let Some(element) = query.get("ref").filter(|r| !r.is_empty()) {
+                /* A ref the plan does not have renders as the "element gone"
+                chip, which tells the reviewer a revision moved it. It did
+                not; the agent got the ref wrong. Say so to the agent, which
+                can fix it, rather than to the reviewer, who cannot. */
+                let known = crate::server::http::with_review(shared, |review| {
+                    review
+                        .artifacts
+                        .get(&artifact)
+                        .map(|art| crate::server::review::plan_refs(&art.plan).contains(element))
+                        .unwrap_or(false)
+                });
+                if !known {
+                    return refuse(
+                        request,
+                        &format!("no such element in {artifact}: {element}"),
+                    );
+                }
                 stop["ref"] = serde_json::json!(element);
             }
             data["interrupt"] = stop;

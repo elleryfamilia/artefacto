@@ -4599,6 +4599,54 @@ fn the_plan_strip_says_where_you_are_and_takes_you_there() {
         "the line fills to the read position: {fill}%"
     );
 
+    // The caret is drawn in the same space the segments are laid out in.
+    // They are not the same as a straight linear map of the document: a
+    // segment has a floor under its width and a gap beside it, so a caret
+    // placed by fraction alone drifts into the neighbouring segment.
+    for top in ["0.3", "0.5", "0.7", "0.9"] {
+        page.eval(&format!(
+            "window.scrollTo({{ top: {top} * (document.documentElement.scrollHeight - window.innerHeight), behavior: 'instant' }})"
+        ));
+        page.wait_until(
+            "(function(){ const c = document.querySelector('.pv-map-caret').getBoundingClientRect(); \
+               const a = document.querySelector('.pv-map-part.is-active').getBoundingClientRect(); \
+               return c.left >= a.left - 1 && c.left <= a.right + 1; })()",
+            "the caret to sit inside the segment that is lit",
+        );
+    }
+
+    // Every segment is wide enough to be a target: the floor under a short
+    // section's share is the only reason the dependency graph's segment is
+    // clickable at all.
+    assert_eq!(
+        page.eval(
+            "Array.from(document.querySelectorAll('.pv-map-part')).every(function (p) { \
+               return p.getBoundingClientRect().width >= 28; })"
+        ),
+        true,
+        "no segment is a sliver"
+    );
+
+    // Where you are, for a reader who gets neither colour nor spacing.
+    assert_eq!(
+        page.eval(
+            "document.querySelectorAll('.pv-map-part[aria-current]').length === 1 && \
+               document.querySelector('.pv-map-part[aria-current]') === document.querySelector('.pv-map-part.is-active')"
+        ),
+        true,
+        "the segment you are in is the current one"
+    );
+
+    // A fragment link lands under the header, not behind it. The strip made
+    // the header two rows tall, so a fixed scroll margin no longer clears it.
+    page.eval("document.querySelector('a[href=\"#question-q-ttl\"]').click()");
+    page.wait_until(
+        "(function(){ const r = document.getElementById('question-q-ttl').getBoundingClientRect(); \
+           const bar = document.querySelector('.pv-topbar').getBoundingClientRect(); \
+           return r.top >= bar.bottom - 1; })()",
+        "the question the summary links to to clear the header",
+    );
+
     // A phase with a high risk carries a flag; the other does not.
     assert_eq!(
         page.eval("document.querySelectorAll('.pv-map-ph .pv-map-flag').length"),
@@ -4633,10 +4681,14 @@ fn a_long_plan_gets_ticks_instead_of_numerals() {
     let server = InProcess::start_in(&repo);
     // A plan with more phases than the strip can spell out.
     let mut phases = Vec::new();
+    // Two phases earn a flag, for the two different reasons a phase can:
+    // phase 5 holds a high-risk task, phase 9 holds a blocked one. Neither
+    // holds both, so each clause of the rule is on its own here.
     for i in 1..=14 {
         phases.push(format!(
-            r#"{{"id":"p-{i}","title":"Phase {i}","tasks":[{{"id":"t-{i}","title":"Task {i}","status":"{status}"}}]}}"#,
-            status = if i == 9 { "blocked" } else { "planned" }
+            r#"{{"id":"p-{i}","title":"Phase {i}","tasks":[{{"id":"t-{i}","title":"Task {i}","status":"{status}"{risk}}}]}}"#,
+            status = if i == 9 { "blocked" } else { "planned" },
+            risk = if i == 5 { r#","risk":"high""# } else { "" }
         ));
     }
     let plan = repo.path().join("plan.json");
@@ -4671,9 +4723,17 @@ fn a_long_plan_gets_ticks_instead_of_numerals() {
         "and no numerals to run out of room"
     );
     assert_eq!(
-        page.eval("document.querySelectorAll('.pv-map-tick.has-flag').length"),
-        1,
-        "the blocked phase carries a flag"
+        page.eval(
+            "Array.from(document.querySelectorAll('.pv-map-tick.has-flag')).map(function (t) { \
+               return t.dataset.mapPhase; })"
+        ),
+        serde_json::json!(["phase-p-5", "phase-p-9"]),
+        "the high-risk phase and the blocked phase each carry a flag"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-map-tick.has-flag').title"),
+        "Phase 05 \u{2014} a blocked task or a high risk in this phase",
+        "and a reader who cannot see the dot is told why"
     );
     // A viewport short enough that fourteen collapsed phases scroll.
     page.call(
@@ -4818,11 +4878,233 @@ fn the_agent_can_stop_the_page_when_it_is_blocked() {
         "and the page scrolls again"
     );
 
-    // The same interrupt does not come back: it was answered or dismissed.
+    // A different interrupt gets through: the event's sequence number is its
+    // identity, not the cause.
     page.eval(
-        "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 997, events: [] })",
+        &REPLAY
+            .replace("SEQ", "9001")
+            .replace("TITLE", "Still blocked"),
     );
-    assert_eq!(page.eval("!!document.querySelector('.ag-dim')"), false);
+    page.wait_until(
+        "document.querySelector('.ag-interrupt-title') && \
+           document.querySelector('.ag-interrupt-title').textContent === 'Still blocked'",
+        "the second interrupt",
+    );
+    page.click(".ag-interrupt-not");
+    page.wait_until("!document.querySelector('.ag-dim')", "the dialog to close");
+
+    // And the same one does not come back. A reconnect replays the frames it
+    // never acknowledged; saying "I have stopped" twice for one stop would
+    // make the dialog something a reviewer learns to dismiss.
+    page.eval(
+        &REPLAY
+            .replace("SEQ", "9001")
+            .replace("TITLE", "Still blocked"),
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-dim')"),
+        false,
+        "a replayed frame raises nothing"
+    );
+}
+
+/// One nudge-with-interrupt frame, as the socket would deliver it. `SEQ` is
+/// the event's sequence number, which is what the page keys "said once" on.
+const REPLAY: &str =
+    "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: SEQ, events: [{ \
+           format: 'artefacto.event/1', actor: 'agent', artifact: 'plan:demo', revision: 1, \
+           seq: SEQ, ts: '2026-09-13T00:00:00Z', type: 'nudge', \
+           data: { agent: 'agent', text: 'I have stopped.', \
+                   interrupt: { kind: 'blocked', title: 'TITLE' } } }] })";
+
+#[test]
+fn a_revision_while_the_agent_has_stopped_you_leaves_the_page_working() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--artifact",
+            "plan:auth-refactor",
+            "--nudge",
+            "--interrupt",
+            "--title",
+            "Which store should Redis replace?",
+            "I have stopped.",
+        ])
+        .success();
+    page.wait_until("!!document.querySelector('.ag-interrupt')", "the dialog");
+
+    // The agent answers itself by pushing. The dialog was about the revision
+    // that is being replaced, so it goes -- and it must take the scroll lock
+    // with it, or the reviewer is left on a page that cannot move with
+    // nothing on screen to say why.
+    s.edit_plan("Auth refactor", "Auth refactor, revised");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "revision 2 to land",
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-dim')"),
+        false,
+        "the dialog goes with the revision it was about"
+    );
+    assert_eq!(
+        page.text("getComputedStyle(document.documentElement).overflow"),
+        "visible",
+        "and the page scrolls again"
+    );
+    page.eval("window.scrollTo({ top: 400, behavior: 'instant' })");
+    page.wait_until("window.scrollY > 0", "the page to actually scroll");
+
+    // And the next thing the agent has to say still gets through.
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--artifact",
+            "plan:auth-refactor",
+            "--nudge",
+            "--interrupt",
+            "--title",
+            "Still blocked on the store",
+            "I have stopped again.",
+        ])
+        .success();
+    page.wait_until(
+        "!!document.querySelector('.ag-interrupt')",
+        "the next interrupt to reach the page",
+    );
+}
+
+#[test]
+fn a_second_interrupt_waits_its_turn_instead_of_vanishing() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // Put the hanging dialog up and keep it there: no countdown.
+    page.eval(
+        "(function(){ window.artefactoPlan.settings.hangingAfterMs = 200; \
+           window.artefactoPlan.settings.hangingCheckMs = 100; \
+           window.artefactoPlan.settings.hangingDismissMs = 0; \
+           window.artefactoPlan.restartHangingCheck(); return true; })()",
+    );
+    page.wait_until(
+        "document.querySelector('.ag-interrupt') && document.querySelector('.ag-interrupt').dataset.cause === 'hanging'",
+        "the hanging dialog",
+    );
+
+    // The agent says it has stopped. The nudge is never logged, so dropping
+    // it would lose the message for good.
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--artifact",
+            "plan:auth-refactor",
+            "--nudge",
+            "--interrupt",
+            "--title",
+            "Which store should Redis replace?",
+            "I have stopped.",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelector('.pv-panel-log') && \
+           document.querySelector('.pv-panel-log').textContent.indexOf('I have stopped.') >= 0",
+        "the nudge to reach the page's conversation",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt').dataset.cause"),
+        "hanging",
+        "one dialog at a time"
+    );
+
+    // Dismissing the first hands the page to the second.
+    page.click(".ag-interrupt-not");
+    page.wait_until(
+        "document.querySelector('.ag-interrupt') && document.querySelector('.ag-interrupt').dataset.cause === 'blocked'",
+        "the interrupt that was waiting",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-title').textContent"),
+        "Which store should Redis replace?"
+    );
+}
+
+#[test]
+fn a_long_message_keeps_the_dialog_reachable() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({ "width": 900, "height": 420, "deviceScaleFactor": 1, "mobile": false }),
+    );
+    let long = "The trait boundary depends on your answer. ".repeat(30);
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--artifact",
+            "plan:demo",
+            "--nudge",
+            "--interrupt",
+            "--title",
+            "Which store should Redis replace?",
+            &long,
+        ])
+        .success();
+    page.wait_until("!!document.querySelector('.ag-interrupt')", "the dialog");
+    // The agent writes the body and nothing bounds it. The page behind
+    // cannot scroll, so the dialog has to stay reachable on its own.
+    assert_eq!(
+        page.eval(
+            "(function(){ const b = document.querySelector('.ag-interrupt').getBoundingClientRect(); \
+               return b.top >= 0 && b.bottom <= window.innerHeight + 1; })()"
+        ),
+        true,
+        "the whole dialog is on screen"
+    );
+    assert_eq!(
+        page.eval(
+            "(function(){ const go = document.querySelector('.ag-interrupt-go').getBoundingClientRect(); \
+               return go.bottom > 0 && go.bottom <= window.innerHeight; })()"
+        ),
+        true,
+        "including the button it is about"
+    );
+    assert_eq!(
+        page.eval(
+            "(function(){ const b = document.querySelector('.ag-interrupt-body'); \
+               return b.scrollHeight > b.clientHeight; })()"
+        ),
+        true,
+        "the message itself is what scrolls"
+    );
+    page.call(
+        "Emulation.clearDeviceMetricsOverride",
+        serde_json::json!({}),
+    );
 }
 
 #[test]
@@ -4865,11 +5147,19 @@ fn a_revision_that_moves_what_you_commented_on_stops_the_page() {
         "the comment is in the recovery panel"
     );
 
-    // And it does not come back for the same revision.
+    // And it does not come back for the same revision: a later frame that
+    // orphans nothing new finds the same threads still unanchored.
     page.eval(
-        "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 996, events: [] })",
+        "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 996, events: [{ \
+           format: 'artefacto.event/1', actor: 'reviewer', artifact: 'plan:demo', revision: 2, \
+           seq: 996, ts: '2026-09-13T00:00:00Z', type: 'element.reviewed', \
+           data: { ref: 'phase:p-one', reviewed: true } }] })",
     );
-    assert_eq!(page.eval("!!document.querySelector('.ag-dim')"), false);
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-dim')"),
+        false,
+        "the same orphans do not raise it twice"
+    );
 
     // A later revision that moves something else is a new thing to say, so
     // the dialog comes back: dismissing one is not dismissing them all.
