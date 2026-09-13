@@ -11,7 +11,8 @@
       "**A question thread is a conversation** (`p-ask`): a persistent one-line input that sends on Enter, the working state from send to answer, and a line that says who will hear it.",
       "**Two verdicts, autosave said out loud** (`p-bar`): *Request changes* and *Approve* as one group, the chosen one filled, and a *Saved · rev N* line so leaving is not losing.",
       "**Vibe is a question, not a task** (`q-vibe`): the third theme swaps three font families the page would have to embed.",
-      "**The conversation moves into a panel** (`p-panel`, added at revision 10 from the second design round): one docked conversation with the agent, every message anchored to its element by a chip, the bottom bar folded into the panel's foot, and the inline question thread replaced by a spine, a count on the mark, and a one-line preview."
+      "**The conversation moves into a panel** (`p-panel`, added at revision 10 from the second design round): one docked conversation with the agent, every message anchored to its element by a chip, the bottom bar folded into the panel's foot, and the inline question thread replaced by a spine, a count on the mark, and a one-line preview.",
+      "**Two more from the third design round** (`p-strip`, `p-interrupt`): a plan strip in the sticky header that says where in the plan you are and jumps or scrubs to any part, and an interrupt dialog for the two or three moments when the agent genuinely cannot continue, everything else staying a line in the panel."
     ],
     "out_of_scope": [
       "Comments delivered live (that is `--passive live` in the re-plan; the bar copy has a batched and a live variant ready)",
@@ -20,7 +21,7 @@
     ],
     "agent": "claude",
     "created": "2026-09-12",
-    "revision": 14
+    "revision": 15
   },
   "phases": [
     {
@@ -808,6 +809,194 @@
           "estimate": "s"
         }
       ]
+    },
+    {
+      "id": "p-strip",
+      "title": "The plan strip",
+      "summary_md": "A persistent navigation in the sticky header: the plan's parts as one horizontal spine, each segment as wide as the share of the document that part occupies, a line that fills to the read position, and a caret where you are. The phases part carries its numerals inline, switching to one tick per phase when there are more than six, with a flag on any phase holding a blocking question. Clicking a part or a numeral jumps to it; dragging the bar row scrubs the document like a timeline.\n\nPage-side only: no event, no server change. The strip is built from the rendered document, so it works in the static export too.",
+      "tasks": [
+        {
+          "id": "t-strip-parts",
+          "title": "The parts, sized by the document",
+          "summary_md": "`mountMap` reads the rendered sections (summary, open questions, risks, phases, dependencies) and builds `.pv-map` into the top bar: one `.pv-map-part` per section that exists, its flex proportional to the section's height, with an icon, a label, and a bar. Sections the plan does not have are left out; a plan with only phases gets one part.",
+          "status": "planned",
+          "risk": "low",
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify",
+              "note": "the strip's section of artefacto-v3.css"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "the kitchen-sink page shows five parts whose widths follow the sections' heights",
+            "the minimal page shows only the parts it has"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-strip-read",
+          "title": "Where you are, and where you have been",
+          "summary_md": "A scroll listener (throttled to a frame) sets `is-active` on the part under the read line, `is-past` on those above it, fills `.pv-map-fill` to the read fraction and places `.pv-map-caret`. The phases part marks its numerals the same way and shows *n of m*. Reduced motion keeps the transitions off.",
+          "status": "planned",
+          "risk": "medium",
+          "depends_on": [
+            "t-strip-parts"
+          ],
+          "acceptance": [
+            "scrolling to the risks section makes that part active and the ones before it past",
+            "the fill and the caret track the scroll position"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-strip-jump",
+          "title": "Jump, scrub, and the dense treatment",
+          "summary_md": "A part or a numeral is a link that scrolls its section into view and flashes it (`pv-aimed`); the bar row is a scrubber that maps a drag to a scroll position. Past six phases the numerals become `.pv-map-ticks`, one tick per phase, the numeral shown for the one you are in or hover, and a flag on any phase with a blocking question.",
+          "status": "planned",
+          "risk": "medium",
+          "depends_on": [
+            "t-strip-read"
+          ],
+          "acceptance": [
+            "clicking Risks scrolls to the risks and flashes them",
+            "a twenty-phase plan shows ticks, not numerals, and the active tick carries its number",
+            "dragging the bar row scrolls the document"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-strip-static",
+          "title": "The static export, print, and the record",
+          "summary_md": "The strip is chrome: it mounts on the static export too (it needs no server), prints as nothing, and does not fight the page's link colour. Screenshots at both phase counts; spec 4.3 and BUILD-STATUS.",
+          "status": "planned",
+          "risk": "low",
+          "depends_on": [
+            "t-strip-jump"
+          ],
+          "files": [
+            {
+              "path": "docs/specs/2026-09-06-artefacto-design.md",
+              "action": "modify"
+            },
+            {
+              "path": "docs/BUILD-STATUS.md",
+              "action": "modify"
+            }
+          ],
+          "acceptance": [
+            "the static export's self-test passes with the strip mounted",
+            "print shows no strip"
+          ],
+          "estimate": "s"
+        }
+      ]
+    },
+    {
+      "id": "p-interrupt",
+      "title": "When the agent interrupts",
+      "summary_md": "A panel message waits; an interrupt does not. The page dims, the plan stops, one sentence says what is needed, and one button gets the reviewer there. The design names three cases and nothing else: **blocked on an answer** (the agent has stopped and cannot resume without a decision only the reviewer can make), **ground moved** (a revision changed the part being read, so an open comment is now about something that no longer exists), and **review left hanging** (unsent verdict, an unanswered blocking question, and three minutes of no activity).\n\nThe page can see two of those by itself; only the first needs the agent to say so. So `reply --nudge` gains `--interrupt`, with a title and an optional element, and the nudge event carries it. A plain nudge stays a line in the panel, which is what the reviewer asked for when this one interrupted them for nothing.",
+      "tasks": [
+        {
+          "id": "t-interrupt-dialog",
+          "title": "The dialog",
+          "summary_md": "`.ag-dim` and `.ag-interrupt` from the design: the mark, a kicker naming the case, the time, a title, a sentence, an optional context chip, and the actions (the primary one jumps and closes; *Not now* is quiet and pushed right). Kinds colour the top edge: agent teal, alarm when blocking, action for a revision. Focus moves into the dialog and is trapped while it is open, Escape is *Not now*, and the page under it does not scroll.",
+          "status": "planned",
+          "risk": "medium",
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "the dialog traps focus and returns it when it closes",
+            "Escape and the backdrop both dismiss it",
+            "nothing behind it scrolls while it is open"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-interrupt-page",
+          "title": "The two the page sees",
+          "summary_md": "**Ground moved**: when a revision leaves a thread the reviewer wrote in unanchored, the dialog says so and its button opens the panel at that conversation (or the recovery panel for a comment). **Review left hanging**: three minutes with no activity, a verdict not sent, and a blocking question unanswered; the button opens the panel at the question. Each fires once per cause, not once per render, and never twice for the same revision.",
+          "status": "planned",
+          "risk": "high",
+          "depends_on": [
+            "t-interrupt-dialog"
+          ],
+          "acceptance": [
+            "a push that unanchors the reviewer's thread raises one dialog",
+            "the hanging dialog fires once after three idle minutes and not again until something changes"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-interrupt-agent",
+          "title": "The one the agent says",
+          "summary_md": "`artefacto reply --nudge \"…\" --interrupt --title \"…\" [--ref task:t-x]` puts `interrupt: {kind, title, ref}` on the nudge event; the page raises the dialog for it and a plain nudge stays a panel line. A flag rather than a new verb: it is the same event, and an agent that does not know about it keeps working. The skill says when to use it, in the design's words: the agent has stopped and cannot resume without a decision only the reviewer can make.",
+          "status": "planned",
+          "risk": "medium",
+          "depends_on": [
+            "t-interrupt-dialog"
+          ],
+          "files": [
+            {
+              "path": "src/cli.rs",
+              "action": "modify"
+            },
+            {
+              "path": "src/server/verbs.rs",
+              "action": "modify"
+            },
+            {
+              "path": "skills/artefacto-plan/SKILL.md",
+              "action": "modify"
+            },
+            {
+              "path": "tests/server_loop.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "`reply --nudge --interrupt --title T` raises the dialog on the page with T as its title",
+            "a plain nudge is still a line in the panel",
+            "the skill names the one case this is for"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-interrupt-record",
+          "title": "Guidance, screenshots, and the record",
+          "summary_md": "Spec 4.3 and BUILD-STATUS carry the three cases and the rule that everything else stays in the panel; screenshots of each kind in light and dark.",
+          "status": "planned",
+          "risk": "low",
+          "depends_on": [
+            "t-interrupt-page",
+            "t-interrupt-agent"
+          ],
+          "acceptance": [
+            "the record names the three cases and what the page does for each"
+          ],
+          "estimate": "s"
+        }
+      ]
     }
   ],
   "risks": [
@@ -846,6 +1035,12 @@
       "title": "The panel replaces work that just landed",
       "severity": "medium",
       "mitigation_md": "The inline question thread, its persistent input, and the bottom bar were built this afternoon and are tested; the panel removes them. The tests are rewritten with the slice, not deleted, so every behaviour keeps a test: working state, single send, drafts, focus, resolution, verdicts."
+    },
+    {
+      "id": "r-interrupt-noise",
+      "title": "An interrupt that is not one",
+      "severity": "medium",
+      "mitigation_md": "The reviewer already told this agent its nudge was too quiet to act on and too frequent to ignore. Three cases, each with a test that it fires once; everything else is a line in the panel, and the skill says so."
     }
   ],
   "open_questions": [

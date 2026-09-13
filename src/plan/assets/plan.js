@@ -678,6 +678,19 @@
     return svg;
   }
 
+  /* The plan strip's part icons, one per section of the document. */
+  const MAP_ICONS = {
+    summary: ["M4 6h16", "M4 11h12", "M4 16h8"],
+    questions: ["M4 4h16v16H4z", "M9.4 9.2a2.7 2.7 0 1 1 3.6 2.5c-.7.3-1 .9-1 1.6", "M12 16.6h.01"],
+    risks: ["M12 4.5 21 19H3z", "M12 10v4", "M12 16.6h.01"],
+    phases: ["M4 6h7", "M4 12h13", "M4 18h9"],
+    dependencies: ["M5 7h7a3 3 0 0 1 3 3v4", "M12 11l3 3 3-3"],
+  };
+
+  function mapIcon(part) {
+    return svgIcon("pv-map-icon", MAP_ICONS[part] || MAP_ICONS.summary);
+  }
+
   /* Speech-bubble icon for the comment button: bubble outline plus two
      short lines standing in for text. */
   function commentIcon() {
@@ -800,6 +813,327 @@
   }
 
   let themeWired = false;
+  /* ---- the plan strip ------------------------------------------------
+
+     The document's parts as one spine in the sticky header: each segment as
+     wide as the share of the page that part holds, a line that fills to the
+     read position, a caret where the reader is. It is built from the
+     rendered document, so it needs no plan data and no server: the static
+     export carries it too.
+
+     `data-part` on a section's rule is what makes a section a part. A rule
+     inside a section carries none, so a task's acceptance is not a part. */
+  const MAP_DENSE_PHASES = 6;
+
+  function mapParts(root) {
+    const rules = Array.from(root.querySelectorAll(".pv-rule[data-part]"));
+    if (!rules.length) return [];
+    const main = root.querySelector(".pv-main") || root.querySelector(".pv-sheet") || root;
+    const bottom = docTop(main) + main.offsetHeight;
+    /* The first part starts where the document does, not at its own rule:
+       the title and the figures above the summary are part of the plan, and
+       a strip that says nothing until the reader is past them is a strip
+       that says nothing on arrival. */
+    return rules.map(function (rule, i) {
+      const top = i === 0 ? Math.min(docTop(rule), docTop(main)) : docTop(rule);
+      const end = i + 1 < rules.length ? docTop(rules[i + 1]) : bottom;
+      const label = rule.querySelector(".pv-label");
+      return {
+        part: rule.getAttribute("data-part"),
+        label: label ? label.textContent : "",
+        node: rule,
+        top: top,
+        height: Math.max(1, end - top),
+      };
+    });
+  }
+
+  function docTop(el) {
+    return el.getBoundingClientRect().top + window.scrollY;
+  }
+
+  /* A phase worth a flag in the strip: one holding a blocked task or a high
+     risk, which is what the phase's own chip says on the page. */
+  function mapPhases(root) {
+    return Array.from(root.querySelectorAll("details.phase")).map(function (d, i) {
+      return {
+        node: d,
+        id: d.id,
+        n: String(i + 1).padStart(2, "0"),
+        /* What the phase already says on the page: its high-risk chip, or a
+           task whose rail says blocked or high. The dependency graph's
+           legend carries a dot of every status, so the rails are read
+           rather than every dot in the phase. */
+        flag: !!d.querySelector("summary .pv-chip-high, .task-rail .pv-dot-blocked, .task-rail .pv-dot-high"),
+      };
+    });
+  }
+
+  function mountMap(root) {
+    const bar = root.querySelector(".pv-topbar");
+    if (!bar || bar.querySelector(".pv-map")) return;
+    const parts = mapParts(root);
+    if (!parts.length) return;
+    const phases = mapPhases(root);
+    const map = document.createElement("nav");
+    map.className = "pv-map";
+    map.setAttribute("aria-label", "Where you are in the plan");
+    const track = document.createElement("div");
+    track.className = "pv-map-track";
+    map.appendChild(track);
+    const span = parts[parts.length - 1].top + parts[parts.length - 1].height - parts[0].top;
+
+    parts.forEach(function (p) {
+      const group = p.part === "phases" && phases.length > 0;
+      const part = document.createElement(group ? "div" : "a");
+      part.className = "pv-map-part" + (group ? " is-group" : "");
+      part.setAttribute("data-map-part", p.part);
+      /* Proportional to the document, with a floor so a part is never a
+         sliver: the phases carry their numerals, so their floor is the
+         wider one. Collapsed phases are a short section holding most of
+         the plan's controls. */
+      part.style.flexGrow = String(Math.max(group ? 0.34 : 0.08, p.height / span));
+      part.style.flexBasis = "0";
+      if (!group) {
+        part.href = "#";
+        part.addEventListener("click", function (e) { e.preventDefault(); jumpToNode(p.node); });
+      }
+      const head = document.createElement("span");
+      head.className = "pv-map-head";
+      const label = document.createElement("span");
+      label.className = "pv-map-label";
+      label.textContent = p.label;
+      if (group) {
+        const link = document.createElement("a");
+        link.className = "pv-map-link";
+        link.href = "#";
+        link.addEventListener("click", function (e) { e.preventDefault(); jumpToNode(p.node); });
+        link.appendChild(mapIcon(p.part));
+        link.appendChild(label);
+        head.appendChild(link);
+        head.appendChild(phases.length > MAP_DENSE_PHASES ? mapTicks(phases) : mapNumerals(phases));
+        const read = document.createElement("span");
+        read.className = "pv-map-ph-read";
+        head.appendChild(read);
+      } else {
+        head.appendChild(mapIcon(p.part));
+        head.appendChild(label);
+      }
+      part.appendChild(head);
+      const barLine = document.createElement("span");
+      barLine.className = "pv-map-bar";
+      part.appendChild(barLine);
+      track.appendChild(part);
+    });
+
+    ["pv-map-fill", "pv-map-caret", "pv-map-scrub"].forEach(function (cls) {
+      const n = document.createElement("div");
+      n.className = cls;
+      if (cls === "pv-map-scrub") n.setAttribute("aria-hidden", "true");
+      track.appendChild(n);
+    });
+    bar.appendChild(map);
+    wireScrub(track);
+    mapState.parts = parts;
+    mapState.phases = phases;
+    if (!mapState.wired) {
+      mapState.wired = true;
+      window.addEventListener("scroll", scheduleMap, { passive: true });
+      window.addEventListener("resize", function () { remeasureMap(root); }, { passive: true });
+    }
+    renderMap();
+
+    /* A phase opening or closing moves everything below it: the parts are
+       measured again when the document's height changes. */
+    if (window.ResizeObserver) {
+      const main = root.querySelector(".pv-main") || root;
+      const ro = new ResizeObserver(function () { remeasureMap(root); });
+      ro.observe(main);
+      mounted.observers.push(ro);
+    }
+  }
+
+  function mapNumerals(phases) {
+    const host = document.createElement("span");
+    host.className = "pv-map-phases";
+    phases.forEach(function (ph) {
+      const a = document.createElement("a");
+      a.className = "pv-map-ph";
+      a.href = "#" + ph.id;
+      a.setAttribute("data-map-phase", ph.id);
+      a.addEventListener("click", function (e) { e.preventDefault(); jumpToNode(ph.node); });
+      const n = document.createElement("span");
+      n.textContent = ph.n;
+      a.appendChild(n);
+      if (ph.flag) {
+        const flag = document.createElement("span");
+        flag.className = "pv-map-flag";
+        flag.title = "a blocked task or a high risk in this phase";
+        a.appendChild(flag);
+      }
+      host.appendChild(a);
+    });
+    return host;
+  }
+
+  /* Past a handful of phases the numerals stop fitting: one tick each, the
+     number shown for the phase you are in or hovering. */
+  function mapTicks(phases) {
+    const host = document.createElement("span");
+    host.className = "pv-map-ticks";
+    phases.forEach(function (ph) {
+      const a = document.createElement("a");
+      a.className = "pv-map-tick" + (ph.flag ? " has-flag" : "");
+      a.href = "#" + ph.id;
+      a.setAttribute("data-map-phase", ph.id);
+      a.title = "Phase " + ph.n;
+      a.addEventListener("click", function (e) { e.preventDefault(); jumpToNode(ph.node); });
+      const num = document.createElement("span");
+      num.className = "pv-map-tick-num";
+      num.textContent = ph.n;
+      const mark = document.createElement("span");
+      mark.className = "pv-map-tick-mark";
+      a.appendChild(num);
+      a.appendChild(mark);
+      host.appendChild(a);
+    });
+    return host;
+  }
+
+  const mapState = { parts: [], phases: [], frame: 0, wired: false };
+
+  /* The parts are positions in a document that changes height: a phase
+     opens, a thread lands, a revision swaps the body. Measured again, and
+     the segments resized, without rebuilding the strip. */
+  function remeasureMap(root) {
+    const track = document.querySelector(".pv-map-track");
+    if (!track) return;
+    const parts = mapParts(root || document.body);
+    if (!parts.length) return;
+    const last = parts[parts.length - 1];
+    const span = last.top + last.height - parts[0].top;
+    parts.forEach(function (p) {
+      const node = track.querySelector('[data-map-part="' + p.part + '"]');
+      if (node) node.style.flexGrow = String(Math.max(node.classList.contains("is-group") ? 0.34 : 0.08, p.height / span));
+    });
+    mapState.parts = parts;
+    renderMap();
+  }
+
+  /* How far through the document the reader is, as a fraction of what there
+     is to scroll. One number for the whole strip: the fill, the caret, and
+     which part is active all come from it, so the end of the scroll is the
+     end of the plan and the strip never stops short of its last part. */
+  function readFraction() {
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    return max > 0 ? Math.min(Math.max(window.scrollY / max, 0), 1) : 0;
+  }
+
+  /* That fraction as a position in the document, for the parts to answer to. */
+  function readLine() {
+    const parts = mapState.parts;
+    if (!parts.length) return 0;
+    const first = parts[0].top;
+    const last = parts[parts.length - 1];
+    return first + (last.top + last.height - first) * readFraction();
+  }
+
+  function renderMap() {
+    const track = document.querySelector(".pv-map-track");
+    if (!track || !mapState.parts.length) return;
+    const parts = mapState.parts;
+    const last = parts[parts.length - 1];
+    const fraction = readFraction();
+    const line = readLine();
+    let active = null;
+    parts.forEach(function (p) {
+      const node = track.querySelector('[data-map-part="' + p.part + '"]');
+      if (!node) return;
+      const isActive = line >= p.top && line < p.top + p.height;
+      if (isActive) active = p;
+      node.classList.toggle("is-active", isActive);
+      node.classList.toggle("is-past", line >= p.top + p.height);
+    });
+    /* At the very end of the scroll the line sits on the document's last
+       pixel, which is inside no part: the last one keeps the caret company. */
+    if (!active) {
+      const node = track.querySelector('[data-map-part="' + last.part + '"]');
+      if (node) { node.classList.add("is-active"); node.classList.remove("is-past"); }
+    }
+    const fill = track.querySelector(".pv-map-fill");
+    const caret = track.querySelector(".pv-map-caret");
+    const width = track.clientWidth * fraction;
+    if (fill) fill.style.width = width + "px";
+    if (caret) caret.style.left = width + "px";
+    renderMapPhases(track);
+  }
+
+  function renderMapPhases(track) {
+    if (!mapState.phases.length) return;
+    const line = readLine();
+    let current = -1;
+    mapState.phases.forEach(function (ph, i) {
+      const top = docTop(ph.node);
+      if (line >= top) current = i;
+    });
+    mapState.phases.forEach(function (ph, i) {
+      const node = track.querySelector('[data-map-phase="' + ph.id + '"]');
+      if (!node) return;
+      node.classList.toggle("is-active", i === current);
+      node.classList.toggle("is-past", i < current);
+    });
+    const read = track.querySelector(".pv-map-ph-read");
+    if (read) read.textContent = current >= 0 ? (current + 1) + " of " + mapState.phases.length : "";
+  }
+
+  function scheduleMap() {
+    if (mapState.frame) return;
+    mapState.frame = window.requestAnimationFrame(function () {
+      mapState.frame = 0;
+      renderMap();
+    });
+  }
+
+  /* A jump is a scroll and a flash: the reader asked for a place, and the
+     page says which place it landed on. */
+  function jumpToNode(node) {
+    if (!node) return;
+    const bar = document.querySelector(".pv-topbar");
+    const offset = (bar ? bar.offsetHeight : 0) + 12;
+    window.scrollTo({ top: Math.max(0, docTop(node) - offset), left: 0, behavior: "instant" });
+    const target = node.classList && node.classList.contains("pv-rule")
+      ? node.nextElementSibling || node
+      : node;
+    if (!target) return;
+    target.classList.remove("pv-aimed");
+    void target.offsetWidth;
+    target.classList.add("pv-aimed");
+  }
+
+  /* The bar row is a scrubber: a drag across it maps to a position in the
+     document, the way a timeline does. */
+  function wireScrub(track) {
+    const scrub = track.querySelector(".pv-map-scrub");
+    if (!scrub) return;
+    const to = function (clientX) {
+      const box = track.getBoundingClientRect();
+      const fraction = Math.min(Math.max((clientX - box.left) / box.width, 0), 1);
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      window.scrollTo({ top: Math.max(0, max * fraction), left: 0, behavior: "instant" });
+    };
+    scrub.addEventListener("pointerdown", function (e) {
+      e.preventDefault();
+      scrub.setPointerCapture(e.pointerId);
+      to(e.clientX);
+    });
+    scrub.addEventListener("pointermove", function (e) {
+      if (scrub.hasPointerCapture && scrub.hasPointerCapture(e.pointerId)) to(e.clientX);
+    });
+    scrub.addEventListener("pointerup", function (e) {
+      if (scrub.releasePointerCapture) scrub.releasePointerCapture(e.pointerId);
+    });
+  }
+
   function mountThemeToggle(root) {
     const host = root.querySelector(".pv-topbar-right");
     if (!host || host.querySelector(".pv-theme")) return;
@@ -3658,6 +3992,7 @@
        document whose island failed to parse still gets a usable shell. */
     mountThemeToggle(root);
     mountScrollCues(root);
+    mountMap(root);
 
     const islandEl = root.querySelector("#plan-data");
     if (!islandEl) return;

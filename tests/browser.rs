@@ -740,6 +740,19 @@ fn the_static_export_selftest_passes_in_a_real_browser() {
         0,
         "nothing of the agent on a static page"
     );
+    // The strip is chrome, not conversation: a page with no server has it.
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-map-part').length"),
+        5,
+        "the static export carries the plan strip"
+    );
+    page.eval(
+        "window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'instant' })",
+    );
+    page.wait_until(
+        "!!document.querySelector('.pv-map-part.is-past')",
+        "the strip to follow the reader with no server behind it",
+    );
     page.screenshot(&screenshot_path("static-export"));
     assert_eq!(
         page.eval("!!document.querySelector('.pv-presence')"),
@@ -4515,4 +4528,173 @@ fn a_page_level_draft_from_the_old_chat_lands_in_the_panel() {
         0,
         "the old draft is not left behind"
     );
+}
+
+#[test]
+fn the_plan_strip_says_where_you_are_and_takes_you_there() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    // One segment per section the plan has, sized by how much of the
+    // document each holds, in the order they appear.
+    let parts = page.eval(
+        "Array.from(document.querySelectorAll('.pv-map-part')).map(function (p) { \
+           return { part: p.dataset.mapPart, grow: Math.round(parseFloat(getComputedStyle(p).flexGrow) * 100) / 100 }; })",
+    );
+    let names: Vec<String> = parts
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["part"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["summary", "questions", "risks", "phases", "dependencies"],
+        "the plan's parts, in the document's order"
+    );
+    let phases = parts.as_array().unwrap()[3]["grow"].as_f64().unwrap();
+    let risks = parts.as_array().unwrap()[2]["grow"].as_f64().unwrap();
+    assert!(
+        phases > risks,
+        "the phases hold more of the page than the risks: {parts}"
+    );
+
+    // Where you are: the summary at the top, the phases once you are in them.
+    assert_eq!(
+        page.text("document.querySelector('.pv-map-part.is-active').dataset.mapPart"),
+        "summary"
+    );
+    page.eval("document.querySelector('[data-plan-ref=\"phase:p-backend\"]').scrollIntoView({ block: 'start' })");
+    page.wait_until(
+        "document.querySelector('.pv-map-part.is-active') && document.querySelector('.pv-map-part.is-active').dataset.mapPart === 'phases'",
+        "the phases part to become the one you are in",
+    );
+    assert_eq!(
+        page.eval(
+            "document.querySelector('[data-map-part=\"summary\"]').classList.contains('is-past')"
+        ),
+        true,
+        "and the summary to be behind you"
+    );
+    page.wait_until(
+        "document.querySelector('.pv-map-ph-read').textContent === '1 of 2'",
+        "the phases part to count the phase the read line is in",
+    );
+    page.eval("window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' })");
+    page.wait_until(
+        "document.querySelector('.pv-map-ph-read').textContent === '2 of 2'",
+        "the count to follow the reader to the last phase",
+    );
+    let fill = page.eval(
+        "(function(){ const f = document.querySelector('.pv-map-fill'), t = document.querySelector('.pv-map-track'); \
+           return Math.round(100 * f.getBoundingClientRect().width / t.getBoundingClientRect().width); })()",
+    );
+    assert!(
+        fill.as_f64().unwrap_or(0.0) > 30.0,
+        "the line fills to the read position: {fill}%"
+    );
+
+    // A phase with a high risk carries a flag; the other does not.
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-map-ph .pv-map-flag').length"),
+        1,
+        "one phase holds a high risk"
+    );
+
+    // Clicking a part takes you there and says which one it landed on.
+    page.click("[data-map-part=\"risks\"]");
+    page.wait_until(
+        "!!document.querySelector('.pv-aimed')",
+        "the section it landed on to flash",
+    );
+    assert_eq!(
+        page.eval(
+            "(function(){ const r = document.querySelector('.pv-rule[data-part=\"risks\"]').getBoundingClientRect(); \
+               const bar = document.querySelector('.pv-topbar').getBoundingClientRect(); \
+               return r.top >= bar.bottom - 4 && r.top < bar.bottom + 40; })()"
+        ),
+        true,
+        "the risks are under the header, not behind it"
+    );
+    page.screenshot(&screenshot_path("plan-strip"));
+}
+
+#[test]
+fn a_long_plan_gets_ticks_instead_of_numerals() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let repo = Repo::new();
+    let server = InProcess::start_in(&repo);
+    // A plan with more phases than the strip can spell out.
+    let mut phases = Vec::new();
+    for i in 1..=14 {
+        phases.push(format!(
+            r#"{{"id":"p-{i}","title":"Phase {i}","tasks":[{{"id":"t-{i}","title":"Task {i}","status":"{status}"}}]}}"#,
+            status = if i == 9 { "blocked" } else { "planned" }
+        ));
+    }
+    let plan = repo.path().join("plan.json");
+    std::fs::write(
+        &plan,
+        format!(
+            r#"{{"format":"artefacto.plan/1","meta":{{"id":"long","title":"A long plan"}},"phases":[{}]}}"#,
+            phases.join(",")
+        ),
+    )
+    .unwrap();
+    let out = repo.run(&[
+        "plan",
+        "push",
+        plan.to_str().unwrap(),
+        "--json",
+        "--no-open",
+    ]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let v: serde_json::Value = serde_json::from_str(&out.stdout).expect("json");
+    let mut page = browser.new_page();
+    page.navigate(v["url"].as_str().unwrap());
+    connected(&mut page);
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-map-tick').length"),
+        14,
+        "one tick per phase"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-map-ph').length"),
+        0,
+        "and no numerals to run out of room"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-map-tick.has-flag').length"),
+        1,
+        "the blocked phase carries a flag"
+    );
+    // A viewport short enough that fourteen collapsed phases scroll.
+    page.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({ "width": 1280, "height": 520, "deviceScaleFactor": 1, "mobile": false }),
+    );
+    page.eval("window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' })");
+    page.wait_until(
+        "!!document.querySelector('.pv-map-tick.is-active')",
+        "the tick for the phase you are in",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-map-tick.is-active .pv-map-tick-num').textContent"),
+        "14",
+        "the last phase, and the only tick showing its number"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-map-tick.is-past').length"),
+        13,
+        "the ones behind it are past"
+    );
+    page.screenshot(&screenshot_path("plan-strip-dense"));
+    let _ = server;
 }

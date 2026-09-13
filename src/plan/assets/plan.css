@@ -320,6 +320,79 @@
 [data-theme="vibe"] .phase-numeral { font-size: 2.75rem; }
 [data-theme="vibe"] .pv-stat-n { font-family: var(--font-display); }
 
+/* ── Plan strip (persistent header nav) ─────────────────────────────────────
+   The plan's five parts as one horizontal spine in the sticky header. Segment
+   widths are proportional to how much of the document each part occupies, the
+   line fills to the read position, and the bar row scrubs like a timeline. */
+.pv-map { flex: 1 0 100%; margin-top: 0.625rem; padding-top: 0.625rem; border-top: var(--rule-w) solid var(--rule-soft); }
+.pv-map-track { position: relative; display: flex; align-items: flex-end; gap: 0.375rem; padding-bottom: 0.5rem; }
+.pv-map-track a.pv-map-part, .pv-map-track a.pv-map-link, .pv-map-track a.pv-map-tick { color: inherit; }
+.pv-map-track .pv-map-part { color: var(--muted); }
+.pv-map-part { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 0.5rem; text-decoration: none; color: var(--muted); }
+.pv-map-head { display: flex; align-items: center; gap: 0.4375rem; min-width: 0; font-family: var(--font-mono); font-size: 0.75rem; }
+.pv-map-icon { width: 15px; height: 15px; flex: none; align-self: center; color: var(--numeral); transition: color var(--t-fast) linear; }
+.pv-map-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.719rem; letter-spacing: 0.1em; text-transform: uppercase; }
+
+/* The phases part carries its phase numerals inline, each one placed above
+   where that phase begins; past ~6 phases the tail becomes a +n link. */
+.pv-map-part.is-group .pv-map-head { gap: 0; }
+.pv-map-link { display: flex; align-items: center; gap: 0.4375rem; flex: none; min-width: 0; color: inherit; text-decoration: none; }
+.pv-map-phases { display: flex; align-items: center; flex: 1 1 auto; min-width: 0; margin-left: 0.875rem; }
+.pv-map-track a.pv-map-ph { color: var(--numeral); }
+.pv-map-ph { display: flex; align-items: center; gap: 0.3125rem; flex: 1 1 auto; min-width: 0; font-family: var(--font-mono); font-size: 0.75rem; color: var(--numeral); text-decoration: none; transition: color var(--t-fast) linear; }
+.pv-map-ph:last-of-type { flex: none; }
+.pv-map-ph > span { overflow: hidden; }
+.pv-map-track a.pv-map-ph.is-past { color: var(--ink-3); }
+.pv-map-track a.pv-map-ph.is-active { color: var(--ink); }
+.pv-map-track a.pv-map-ph:hover, .pv-map-track a.pv-map-ph:focus-visible { color: var(--action); }
+.pv-map-ph:focus-visible, .pv-map-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+/* Dense treatment: one tick per phase, numeral only on the one you are in. */
+.pv-map-ticks { display: flex; align-items: flex-end; flex: 1 1 auto; min-width: 0; height: 1.125rem; }
+.pv-map-tick { position: relative; display: flex; align-items: flex-end; justify-content: flex-start; flex: 1 1 auto; min-width: 0; height: 100%; text-decoration: none; }
+.pv-map-tick-mark { width: var(--rule-w); height: 0.5rem; background: var(--numeral); transition: height var(--t-fast) var(--ease), background var(--t-fast) linear; }
+.pv-map-tick.is-past .pv-map-tick-mark { background: var(--ink-3); }
+.pv-map-tick.has-flag .pv-map-tick-mark { background: var(--alarm); height: 0.688rem; }
+.pv-map-tick.is-active .pv-map-tick-mark { height: 1.125rem; width: 2px; background: var(--ink); }
+.pv-map-tick:hover .pv-map-tick-mark { height: 1.125rem; background: var(--action); }
+.pv-map-tick-num {
+  position: absolute; left: 0; bottom: 100%; margin-bottom: 0.125rem; font-family: var(--font-mono);
+  font-size: 0.656rem; color: var(--ink); opacity: 0; pointer-events: none; transition: opacity var(--t-fast) linear;
+}
+.pv-map-tick.is-active .pv-map-tick-num, .pv-map-tick:hover .pv-map-tick-num { opacity: 1; }
+.pv-map-tick:hover .pv-map-tick-num { color: var(--action); }
+.pv-map-ph-read { flex: none; margin-left: 0.75rem; font-family: var(--font-mono); font-size: 0.75rem; color: var(--ink-3); }
+.pv-map-tick:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.pv-map-flag { width: 5px; height: 5px; flex: none; align-self: center; background: var(--alarm); }
+.pv-map-bar { height: 2px; background: var(--rule); transition: background var(--t-fast) linear; }
+.pv-map-track .pv-map-part.is-past { color: var(--ink-3); }
+.pv-map-part.is-past .pv-map-icon { color: var(--ink-3); }
+.pv-map-track .pv-map-part.is-active { color: var(--ink); }
+.pv-map-part.is-active .pv-map-icon { color: var(--ink); }
+.pv-map-part.is-active .pv-map-label { letter-spacing: 0.13em; }
+.pv-map-track .pv-map-part:hover, .pv-map-track .pv-map-part:focus-visible, .pv-map-track .pv-map-link:hover { color: var(--action); }
+.pv-map-part:hover .pv-map-icon { color: var(--action); }
+.pv-map-part:hover .pv-map-bar { background: var(--action-rule); }
+.pv-map-part:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.pv-map-fill { position: absolute; left: 0; bottom: 0.5rem; height: 2px; background: var(--action); pointer-events: none; }
+.pv-map-caret { position: absolute; bottom: 0.25rem; width: 2px; height: 0.75rem; margin-left: -1px; background: var(--action); pointer-events: none; }
+/* The bar row doubles as a scrubber; the labels above it still jump by part. */
+.pv-map-scrub { position: absolute; left: -0.25rem; right: -0.25rem; bottom: -0.125rem; height: 1.125rem; z-index: 2; cursor: ew-resize; touch-action: none; }
+
+@keyframes pv-aim-flash {
+  0% { background: var(--action-wash); }
+  100% { background: transparent; }
+}
+.pv-aimed { animation: pv-aim-flash 1.4s var(--ease) 1; }
+
+@media (max-width: 56rem) {
+  .pv-map-label { display: none; }
+  .pv-map-part.is-active .pv-map-label { display: block; }
+}
+
+/* The strip is chrome, not prose: the page's link colour does not reach it.
+   Every one of its links is a button in disguise, so none is underlined. */
+.pv-map-track a { color: inherit; text-decoration: none; }
+
 /* ---------------------------------------------------------------------------
    Motion
    ---------------------------------------------------------------------------
@@ -2794,6 +2867,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
   .pv-dock,
   .pv-panel-handle,
   .pv-panel-link,
+  .pv-map,
   .ask-preview,
   .pv-presence,
   .thread-actions,

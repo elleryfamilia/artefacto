@@ -321,6 +321,79 @@
 [data-theme="vibe"] .phase-numeral { font-size: 2.75rem; }
 [data-theme="vibe"] .pv-stat-n { font-family: var(--font-display); }
 
+/* ── Plan strip (persistent header nav) ─────────────────────────────────────
+   The plan's five parts as one horizontal spine in the sticky header. Segment
+   widths are proportional to how much of the document each part occupies, the
+   line fills to the read position, and the bar row scrubs like a timeline. */
+.pv-map { flex: 1 0 100%; margin-top: 0.625rem; padding-top: 0.625rem; border-top: var(--rule-w) solid var(--rule-soft); }
+.pv-map-track { position: relative; display: flex; align-items: flex-end; gap: 0.375rem; padding-bottom: 0.5rem; }
+.pv-map-track a.pv-map-part, .pv-map-track a.pv-map-link, .pv-map-track a.pv-map-tick { color: inherit; }
+.pv-map-track .pv-map-part { color: var(--muted); }
+.pv-map-part { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 0.5rem; text-decoration: none; color: var(--muted); }
+.pv-map-head { display: flex; align-items: center; gap: 0.4375rem; min-width: 0; font-family: var(--font-mono); font-size: 0.75rem; }
+.pv-map-icon { width: 15px; height: 15px; flex: none; align-self: center; color: var(--numeral); transition: color var(--t-fast) linear; }
+.pv-map-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.719rem; letter-spacing: 0.1em; text-transform: uppercase; }
+
+/* The phases part carries its phase numerals inline, each one placed above
+   where that phase begins; past ~6 phases the tail becomes a +n link. */
+.pv-map-part.is-group .pv-map-head { gap: 0; }
+.pv-map-link { display: flex; align-items: center; gap: 0.4375rem; flex: none; min-width: 0; color: inherit; text-decoration: none; }
+.pv-map-phases { display: flex; align-items: center; flex: 1 1 auto; min-width: 0; margin-left: 0.875rem; }
+.pv-map-track a.pv-map-ph { color: var(--numeral); }
+.pv-map-ph { display: flex; align-items: center; gap: 0.3125rem; flex: 1 1 auto; min-width: 0; font-family: var(--font-mono); font-size: 0.75rem; color: var(--numeral); text-decoration: none; transition: color var(--t-fast) linear; }
+.pv-map-ph:last-of-type { flex: none; }
+.pv-map-ph > span { overflow: hidden; }
+.pv-map-track a.pv-map-ph.is-past { color: var(--ink-3); }
+.pv-map-track a.pv-map-ph.is-active { color: var(--ink); }
+.pv-map-track a.pv-map-ph:hover, .pv-map-track a.pv-map-ph:focus-visible { color: var(--action); }
+.pv-map-ph:focus-visible, .pv-map-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+/* Dense treatment: one tick per phase, numeral only on the one you are in. */
+.pv-map-ticks { display: flex; align-items: flex-end; flex: 1 1 auto; min-width: 0; height: 1.125rem; }
+.pv-map-tick { position: relative; display: flex; align-items: flex-end; justify-content: flex-start; flex: 1 1 auto; min-width: 0; height: 100%; text-decoration: none; }
+.pv-map-tick-mark { width: var(--rule-w); height: 0.5rem; background: var(--numeral); transition: height var(--t-fast) var(--ease), background var(--t-fast) linear; }
+.pv-map-tick.is-past .pv-map-tick-mark { background: var(--ink-3); }
+.pv-map-tick.has-flag .pv-map-tick-mark { background: var(--alarm); height: 0.688rem; }
+.pv-map-tick.is-active .pv-map-tick-mark { height: 1.125rem; width: 2px; background: var(--ink); }
+.pv-map-tick:hover .pv-map-tick-mark { height: 1.125rem; background: var(--action); }
+.pv-map-tick-num {
+  position: absolute; left: 0; bottom: 100%; margin-bottom: 0.125rem; font-family: var(--font-mono);
+  font-size: 0.656rem; color: var(--ink); opacity: 0; pointer-events: none; transition: opacity var(--t-fast) linear;
+}
+.pv-map-tick.is-active .pv-map-tick-num, .pv-map-tick:hover .pv-map-tick-num { opacity: 1; }
+.pv-map-tick:hover .pv-map-tick-num { color: var(--action); }
+.pv-map-ph-read { flex: none; margin-left: 0.75rem; font-family: var(--font-mono); font-size: 0.75rem; color: var(--ink-3); }
+.pv-map-tick:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.pv-map-flag { width: 5px; height: 5px; flex: none; align-self: center; background: var(--alarm); }
+.pv-map-bar { height: 2px; background: var(--rule); transition: background var(--t-fast) linear; }
+.pv-map-track .pv-map-part.is-past { color: var(--ink-3); }
+.pv-map-part.is-past .pv-map-icon { color: var(--ink-3); }
+.pv-map-track .pv-map-part.is-active { color: var(--ink); }
+.pv-map-part.is-active .pv-map-icon { color: var(--ink); }
+.pv-map-part.is-active .pv-map-label { letter-spacing: 0.13em; }
+.pv-map-track .pv-map-part:hover, .pv-map-track .pv-map-part:focus-visible, .pv-map-track .pv-map-link:hover { color: var(--action); }
+.pv-map-part:hover .pv-map-icon { color: var(--action); }
+.pv-map-part:hover .pv-map-bar { background: var(--action-rule); }
+.pv-map-part:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.pv-map-fill { position: absolute; left: 0; bottom: 0.5rem; height: 2px; background: var(--action); pointer-events: none; }
+.pv-map-caret { position: absolute; bottom: 0.25rem; width: 2px; height: 0.75rem; margin-left: -1px; background: var(--action); pointer-events: none; }
+/* The bar row doubles as a scrubber; the labels above it still jump by part. */
+.pv-map-scrub { position: absolute; left: -0.25rem; right: -0.25rem; bottom: -0.125rem; height: 1.125rem; z-index: 2; cursor: ew-resize; touch-action: none; }
+
+@keyframes pv-aim-flash {
+  0% { background: var(--action-wash); }
+  100% { background: transparent; }
+}
+.pv-aimed { animation: pv-aim-flash 1.4s var(--ease) 1; }
+
+@media (max-width: 56rem) {
+  .pv-map-label { display: none; }
+  .pv-map-part.is-active .pv-map-label { display: block; }
+}
+
+/* The strip is chrome, not prose: the page's link colour does not reach it.
+   Every one of its links is a button in disguise, so none is underlined. */
+.pv-map-track a { color: inherit; text-decoration: none; }
+
 /* ---------------------------------------------------------------------------
    Motion
    ---------------------------------------------------------------------------
@@ -2795,6 +2868,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
   .pv-dock,
   .pv-panel-handle,
   .pv-panel-link,
+  .pv-map,
   .ask-preview,
   .pv-presence,
   .thread-actions,
@@ -2815,15 +2889,15 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
   .is-reviewed { opacity: 1; }
 }
 </style></head><body data-plan-fingerprint="sha256:01bdbd56aa2b3524013a7662173ece75a446a5ab6aa9b228f2275e58b358b01e"><div class="pv-sheet"><header class="pv-topbar"><div class="pv-brand"><span class="pv-brand-mark" aria-hidden="true"></span><span class="pv-brand-name">artefacto</span><span class="pv-brand-surface">Plan viewer</span></div><div class="pv-topbar-right"><span class="pv-topbar-id">auth-refactor · rev 2</span></div></header><div class="pv-banner"><span class="pv-chip pv-chip-solid">For review</span><p class="pv-banner-text">This plan is being worked through — <strong>the statuses below are the agent's own record.</strong> Comment on anything, then copy your feedback back into the conversation.</p><span class="pv-banner-steps"><b>01</b> skim  <b>02</b> comment  <b>03</b> copy feedback</span></div><main class="pv-main"><div class="pv-head"><p class="pv-eyebrow">by claude · 2026-07-07</p><h1>Auth refactor</h1><div class="pv-lede"><p>Extract <em>session</em> handling.</p>
-</div></div><div class="pv-stats"><div class="pv-stat"><span class="pv-stat-n">5</span><span class="pv-stat-l">Tasks · 1 done</span></div><div class="pv-stat"><span class="pv-stat-n">2</span><span class="pv-stat-l">Phases</span></div><div class="pv-stat is-hot"><span class="pv-stat-n">1</span><span class="pv-stat-l">Risks · 1 high</span></div><div class="pv-stat is-hot"><span class="pv-stat-n">2</span><span class="pv-stat-l">Questions · 1 blocking</span></div></div><div class="pv-rule"><span class="pv-label">Summary</span><span class="pv-rule-line"></span></div><section class="plan-summary" data-plan-ref="meta:auth-refactor"><div class="summary-grid"><div class="summary-exec"><p>This refactor extracts <code>SessionStore</code> behind a trait so a Redis-backed implementation can slot in without touching call sites. It ships behind a config flag and closes the <em>lock contention</em> risk by sharding the store. The ask: review the trait boundary in <code>t-session-store</code> before Redis work starts.</p>
+</div></div><div class="pv-stats"><div class="pv-stat"><span class="pv-stat-n">5</span><span class="pv-stat-l">Tasks · 1 done</span></div><div class="pv-stat"><span class="pv-stat-n">2</span><span class="pv-stat-l">Phases</span></div><div class="pv-stat is-hot"><span class="pv-stat-n">1</span><span class="pv-stat-l">Risks · 1 high</span></div><div class="pv-stat is-hot"><span class="pv-stat-n">2</span><span class="pv-stat-l">Questions · 1 blocking</span></div></div><div class="pv-rule" data-part="summary"><span class="pv-label">Summary</span><span class="pv-rule-line"></span></div><section class="plan-summary" data-plan-ref="meta:auth-refactor"><div class="summary-grid"><div class="summary-exec"><p>This refactor extracts <code>SessionStore</code> behind a trait so a Redis-backed implementation can slot in without touching call sites. It ships behind a config flag and closes the <em>lock contention</em> risk by sharding the store. The ask: review the trait boundary in <code>t-session-store</code> before Redis work starts.</p>
 </div><aside class="summary-glance"><table class="pv-ledger"><thead><tr><th>Phase</th><th>Est · risk</th></tr></thead><tbody><tr data-phase-row="p-core"><td><a href="#phase-p-core">Core</a></td><td class="pv-ledger-fig">1s · 1m · 1 medium</td></tr><tr data-phase-row="p-backend"><td><a href="#phase-p-backend">Backend</a></td><td class="pv-ledger-fig is-hot">1l · 1 high</td></tr></tbody></table><p class="summary-ask has-blocking"><span class="pv-dot pv-dot-high" aria-hidden="true"></span><span>1 blocking question(s) must be resolved before implementation: <a href="#question-q-ttl">Session TTL?</a></span></p></aside></div><ul class="summary-keypoints"><li><p><strong>Trait extraction</strong> decouples session persistence from its backing store, gated behind a config flag.</p>
 </li><li><p><strong>Redis backend</strong> (<code>t-redis</code>) is blocked on the trait boundary landing first.</p>
 </li><li><p><strong>Lock contention</strong> (<code>r-locking</code>) is mitigated by sharding the store, not by removing the lock.</p>
-</li></ul><p class="summary-outofscope"><strong>Out of scope: </strong>Migrating existing sessions between backends, Multi-region session replication</p></section><div class="pv-rule"><span class="pv-label">Open questions</span><span class="pv-rule-line"></span></div><section class="pv-rows questions"><div class="pv-row" id="question-q-ttl" data-plan-ref="question:q-ttl"><span class="pv-chip pv-chip-high">Blocking</span><div class="pv-row-body"><div class="pv-row-head"><div class="pv-prose"><p>Session TTL?</p>
+</li></ul><p class="summary-outofscope"><strong>Out of scope: </strong>Migrating existing sessions between backends, Multi-region session replication</p></section><div class="pv-rule" data-part="questions"><span class="pv-label">Open questions</span><span class="pv-rule-line"></span></div><section class="pv-rows questions"><div class="pv-row" id="question-q-ttl" data-plan-ref="question:q-ttl"><span class="pv-chip pv-chip-high">Blocking</span><div class="pv-row-body"><div class="pv-row-head"><div class="pv-prose"><p>Session TTL?</p>
 </div></div></div></div><div class="pv-row" id="question-q-name" data-plan-ref="question:q-name"><span class="pv-chip pv-chip-planned">Open</span><div class="pv-row-body"><div class="pv-row-head"><div class="pv-prose"><p>Trait name?</p>
-</div></div></div></div></section><div class="pv-rule"><span class="pv-label">Risks</span><span class="pv-rule-line"></span></div><section class="pv-rows risks"><div class="pv-row" data-plan-ref="risk:r-locking"><span class="pv-chip pv-chip-high">high</span><div class="pv-row-body"><div class="pv-row-head"><h3 id="risk-r-locking">Lock contention</h3></div><div class="pv-prose"><p>Shard the store.</p>
-</div></div></div></section><div class="pv-rule"><span class="pv-label">Phases</span><span class="pv-rule-line"></span><span class="pv-rule-actions" id="phases-actions"></span></div><div class="pv-phases"><details class="phase" id="phase-p-core" data-plan-ref="phase:p-core"><summary><span class="phase-numeral" aria-hidden="true">01</span><div class="phase-head"><div class="phase-head-line"><h2>Core</h2><span class="phase-meta">2 tasks · 1 done</span></div><span class="phase-teaser">The trait seam.</span></div><span class="phase-marker" aria-hidden="true">›</span></summary><div class="phase-body"><div class="pv-deps"><div class="pv-rule"><span class="pv-label">Dependencies</span><span class="pv-rule-line"></span></div><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 432 54" width="432" height="54" class="plan-graph"><path class="edge" d="M 200 27 H 232"/><path class="arrow-head" d="M 232 27 L 225 23 L 225 31 z"/><a href="#task-t-config-flag" class="node-group status-done"><title>Config flag</title><rect class="node" x="0" y="0" width="200" height="54" rx="4"/><rect class="node-stripe" x="0" y="0" width="3" height="54"/><text x="101" y="27">Config flag</text></a><a href="#task-t-session-store" class="node-group status-planned risk-medium"><title>Introduce SessionStore trait</title><rect class="node" x="232" y="0" width="200" height="54" rx="4"/><rect class="node-stripe" x="232" y="0" width="3" height="54"/><text x="333" y="27"><tspan x="333" dy="-7">Introduce SessionStore</tspan><tspan x="333" dy="15">trait</tspan></text></a></svg><div class="pv-legend"><span><span class="pv-dot pv-dot-done" aria-hidden="true"></span>done</span><span><span class="pv-dot pv-dot-in_progress" aria-hidden="true"></span>in progress</span><span><span class="pv-dot pv-dot-blocked" aria-hidden="true"></span>blocked</span><span><span class="pv-dot pv-dot-planned" aria-hidden="true"></span>planned</span></div></div><div class="task" id="task-t-config-flag" data-plan-ref="task:t-config-flag"><div class="task-body"><div class="task-head"><h3>Config flag</h3></div><div class="pv-rule"><span class="pv-label">Acceptance</span><span class="pv-rule-line"></span></div><ul class="acceptance"><li data-plan-ref="task:t-config-flag"><span>flag parses</span></li></ul><ul class="validation"><li><code>cargo test config::</code></li></ul></div><div class="task-rail"><span><span class="pv-dot pv-dot-done" aria-hidden="true"></span>done</span><span><span class="pv-dot pv-dot-planned" aria-hidden="true"></span>small effort</span><span class="task-id">t-config-flag</span></div></div><div class="task" id="task-t-session-store" data-plan-ref="task:t-session-store"><div class="task-body"><div class="task-head"><h3>Introduce SessionStore trait</h3></div><div class="pv-prose"><p>Extract persistence behind a trait so <code>t-redis</code> can slot in.</p>
-</div><ul class="files"><li><code>src/auth/session.rs</code><span class="pv-chip pv-chip-modify">modify</span><span class="file-note">extract trait</span></li><li><code>src/auth/store.rs</code><span class="pv-chip pv-chip-create">create</span></li><li><code>tests/auth.rs</code><span class="pv-chip pv-chip-test">test</span></li></ul><div class="pv-rule"><span class="pv-label">Acceptance</span><span class="pv-rule-line"></span></div><ul class="acceptance"><li data-plan-ref="task:t-session-store"><span>existing session tests pass unchanged</span></li><li data-plan-ref="task:t-session-store"><span>no direct sled calls outside the trait impl</span></li></ul><ul class="validation"><li><code>cargo test auth::</code></li></ul><p class="depends">depends on <a href="#task-t-config-flag">t-config-flag</a></p></div><div class="task-rail"><span><span class="pv-dot pv-dot-planned" aria-hidden="true"></span>planned</span><span><span class="pv-dot pv-dot-medium" aria-hidden="true"></span>medium risk</span><span><span class="pv-dot pv-dot-planned" aria-hidden="true"></span>medium effort</span><span class="task-id">t-session-store</span></div></div></div></details><details class="phase" id="phase-p-backend" data-plan-ref="phase:p-backend"><summary><span class="phase-numeral" aria-hidden="true">02</span><div class="phase-head"><div class="phase-head-line"><h2>Backend</h2><span class="phase-meta">3 tasks</span><span class="pv-chip pv-chip-high">1 high risk</span></div></div><span class="phase-marker" aria-hidden="true">›</span></summary><div class="phase-body"><div class="pv-deps"><div class="pv-rule"><span class="pv-label">Dependencies</span><span class="pv-rule-line"></span></div><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 432 226" width="432" height="226" class="plan-graph"><path class="edge" d="M 200 199 H 216 V 27 H 232"/><path class="arrow-head" d="M 232 27 L 225 23 L 225 31 z"/><a href="#task-t-bench" class="node-group status-cut risk-low"><title>Benchmarks</title><rect class="node" x="0" y="0" width="200" height="54" rx="4"/><rect class="node-stripe" x="0" y="0" width="3" height="54"/><text x="101" y="27">Benchmarks</text></a><a href="#task-t-cleanup" class="node-group status-in_progress"><title>Remove dead code</title><rect class="node" x="0" y="86" width="200" height="54" rx="4"/><rect class="node-stripe" x="0" y="86" width="3" height="54"/><text x="101" y="113">Remove dead code</text></a><a href="#task-t-session-store" class="node-group stub status-planned risk-medium"><title>Introduce SessionStore trait</title><rect class="node" x="0" y="172" width="200" height="54" rx="4"/><rect class="node-stripe" x="0" y="172" width="3" height="54"/><text x="101" y="199"><tspan x="101" dy="-7">Introduce SessionStore</tspan><tspan x="101" dy="15">trait</tspan></text></a><a href="#task-t-redis" class="node-group status-blocked risk-high"><title>Redis backend</title><rect class="node" x="232" y="0" width="200" height="54" rx="4"/><rect class="node-stripe" x="232" y="0" width="3" height="54"/><text x="333" y="27">Redis backend</text></a></svg><div class="pv-legend"><span><span class="pv-dot pv-dot-done" aria-hidden="true"></span>done</span><span><span class="pv-dot pv-dot-in_progress" aria-hidden="true"></span>in progress</span><span><span class="pv-dot pv-dot-blocked" aria-hidden="true"></span>blocked</span><span><span class="pv-dot pv-dot-planned" aria-hidden="true"></span>planned</span></div></div><div class="task" id="task-t-redis" data-plan-ref="task:t-redis"><div class="task-body"><div class="task-head"><h3>Redis backend</h3></div><p class="depends">depends on <a href="#task-t-session-store">t-session-store</a></p></div><div class="task-rail"><span><span class="pv-dot pv-dot-blocked" aria-hidden="true"></span>blocked</span><span><span class="pv-dot pv-dot-high" aria-hidden="true"></span>high risk</span><span><span class="pv-dot pv-dot-planned" aria-hidden="true"></span>large effort</span><span class="task-id">t-redis</span></div></div><div class="task" id="task-t-cleanup" data-plan-ref="task:t-cleanup"><div class="task-body"><div class="task-head"><h3>Remove dead code</h3></div></div><div class="task-rail"><span><span class="pv-dot pv-dot-in_progress" aria-hidden="true"></span>in_progress</span><span class="task-id">t-cleanup</span></div></div><div class="task" id="task-t-bench" data-plan-ref="task:t-bench"><div class="task-body"><div class="task-head"><h3>Benchmarks</h3></div></div><div class="task-rail"><span><span class="pv-dot pv-dot-cut" aria-hidden="true"></span>cut</span><span><span class="pv-dot pv-dot-low" aria-hidden="true"></span>low risk</span><span class="task-id">t-bench</span></div></div></div></details></div><div class="pv-rule"><span class="pv-label">Phase dependencies</span><span class="pv-rule-line"></span></div><div class="pv-deps"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 56" width="512" height="56" class="plan-graph"><path class="edge" d="M 240 28 H 272"/><path class="arrow-head" d="M 272 28 L 265 24 L 265 32 z"/><a href="#phase-p-core" class="node-group phase-node status-in_progress"><title>Core</title><rect class="node" x="0" y="0" width="240" height="56" rx="4"/><rect class="node-stripe" x="0" y="0" width="3" height="56"/><text x="121" y="28">Core</text></a><a href="#phase-p-backend" class="node-group phase-node status-in_progress has-high"><title>Backend</title><rect class="node" x="272" y="0" width="240" height="56" rx="4"/><rect class="node-stripe" x="272" y="0" width="3" height="56"/><text x="393" y="28">Backend</text></a></svg><div class="pv-legend"><span><span class="pv-dot pv-dot-done" aria-hidden="true"></span>done</span><span><span class="pv-dot pv-dot-in_progress" aria-hidden="true"></span>in progress</span><span><span class="pv-dot pv-dot-blocked" aria-hidden="true"></span>blocked</span><span><span class="pv-dot pv-dot-planned" aria-hidden="true"></span>planned</span></div></div></main></div><script type="application/json" id="plan-data">{"format":"artefacto.plan/1","meta":{"id":"auth-refactor","title":"Auth refactor","goal_md":"\u003cp\u003eExtract \u003cem\u003esession\u003c/em\u003e handling.\u003c/p\u003e\n","summary_md":"\u003cp\u003eThis refactor extracts \u003ccode\u003eSessionStore\u003c/code\u003e behind a trait so a Redis-backed implementation can slot in without touching call sites. It ships behind a config flag and closes the \u003cem\u003elock contention\u003c/em\u003e risk by sharding the store. The ask: review the trait boundary in \u003ccode\u003et-session-store\u003c/code\u003e before Redis work starts.\u003c/p\u003e\n","key_points":["\u003cp\u003e\u003cstrong\u003eTrait extraction\u003c/strong\u003e decouples session persistence from its backing store, gated behind a config flag.\u003c/p\u003e\n","\u003cp\u003e\u003cstrong\u003eRedis backend\u003c/strong\u003e (\u003ccode\u003et-redis\u003c/code\u003e) is blocked on the trait boundary landing first.\u003c/p\u003e\n","\u003cp\u003e\u003cstrong\u003eLock contention\u003c/strong\u003e (\u003ccode\u003er-locking\u003c/code\u003e) is mitigated by sharding the store, not by removing the lock.\u003c/p\u003e\n"],"out_of_scope":["Migrating existing sessions between backends","Multi-region session replication"],"agent":"claude","created":"2026-07-07","revision":2},"phases":[{"id":"p-core","title":"Core","icon":"wrench","summary_md":"\u003cp\u003eThe trait seam.\u003c/p\u003e\n","tasks":[{"id":"t-config-flag","title":"Config flag","status":"done","acceptance":["flag parses"],"validation":["cargo test config::"],"estimate":"s"},{"id":"t-session-store","title":"Introduce SessionStore trait","icon":"shield","summary_md":"\u003cp\u003eExtract persistence behind a trait so \u003ccode\u003et-redis\u003c/code\u003e can slot in.\u003c/p\u003e\n","status":"planned","risk":"medium","depends_on":["t-config-flag"],"files":[{"path":"src/auth/session.rs","action":"modify","note":"extract trait"},{"path":"src/auth/store.rs","action":"create"},{"path":"tests/auth.rs","action":"test"}],"acceptance":["existing session tests pass unchanged","no direct sled calls outside the trait impl"],"validation":["cargo test auth::"],"estimate":"m"}]},{"id":"p-backend","title":"Backend","icon":"database","tasks":[{"id":"t-redis","title":"Redis backend","status":"blocked","risk":"high","depends_on":["t-session-store"],"estimate":"l"},{"id":"t-cleanup","title":"Remove dead code","status":"in_progress"},{"id":"t-bench","title":"Benchmarks","status":"cut","risk":"low"}]}],"risks":[{"id":"r-locking","title":"Lock contention","severity":"high","mitigation_md":"\u003cp\u003eShard the store.\u003c/p\u003e\n"}],"open_questions":[{"id":"q-ttl","question_md":"\u003cp\u003eSession TTL?\u003c/p\u003e\n","blocking":true},{"id":"q-name","question_md":"\u003cp\u003eTrait name?\u003c/p\u003e\n","blocking":false}]}</script><script>/* artefacto plan viewer — progressive enhancement over server-rendered HTML.
+</div></div></div></div></section><div class="pv-rule" data-part="risks"><span class="pv-label">Risks</span><span class="pv-rule-line"></span></div><section class="pv-rows risks"><div class="pv-row" data-plan-ref="risk:r-locking"><span class="pv-chip pv-chip-high">high</span><div class="pv-row-body"><div class="pv-row-head"><h3 id="risk-r-locking">Lock contention</h3></div><div class="pv-prose"><p>Shard the store.</p>
+</div></div></div></section><div class="pv-rule" data-part="phases"><span class="pv-label">Phases</span><span class="pv-rule-line"></span><span class="pv-rule-actions" id="phases-actions"></span></div><div class="pv-phases"><details class="phase" id="phase-p-core" data-plan-ref="phase:p-core"><summary><span class="phase-numeral" aria-hidden="true">01</span><div class="phase-head"><div class="phase-head-line"><h2>Core</h2><span class="phase-meta">2 tasks · 1 done</span></div><span class="phase-teaser">The trait seam.</span></div><span class="phase-marker" aria-hidden="true">›</span></summary><div class="phase-body"><div class="pv-deps"><div class="pv-rule"><span class="pv-label">Dependencies</span><span class="pv-rule-line"></span></div><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 432 54" width="432" height="54" class="plan-graph"><path class="edge" d="M 200 27 H 232"/><path class="arrow-head" d="M 232 27 L 225 23 L 225 31 z"/><a href="#task-t-config-flag" class="node-group status-done"><title>Config flag</title><rect class="node" x="0" y="0" width="200" height="54" rx="4"/><rect class="node-stripe" x="0" y="0" width="3" height="54"/><text x="101" y="27">Config flag</text></a><a href="#task-t-session-store" class="node-group status-planned risk-medium"><title>Introduce SessionStore trait</title><rect class="node" x="232" y="0" width="200" height="54" rx="4"/><rect class="node-stripe" x="232" y="0" width="3" height="54"/><text x="333" y="27"><tspan x="333" dy="-7">Introduce SessionStore</tspan><tspan x="333" dy="15">trait</tspan></text></a></svg><div class="pv-legend"><span><span class="pv-dot pv-dot-done" aria-hidden="true"></span>done</span><span><span class="pv-dot pv-dot-in_progress" aria-hidden="true"></span>in progress</span><span><span class="pv-dot pv-dot-blocked" aria-hidden="true"></span>blocked</span><span><span class="pv-dot pv-dot-planned" aria-hidden="true"></span>planned</span></div></div><div class="task" id="task-t-config-flag" data-plan-ref="task:t-config-flag"><div class="task-body"><div class="task-head"><h3>Config flag</h3></div><div class="pv-rule"><span class="pv-label">Acceptance</span><span class="pv-rule-line"></span></div><ul class="acceptance"><li data-plan-ref="task:t-config-flag"><span>flag parses</span></li></ul><ul class="validation"><li><code>cargo test config::</code></li></ul></div><div class="task-rail"><span><span class="pv-dot pv-dot-done" aria-hidden="true"></span>done</span><span><span class="pv-dot pv-dot-planned" aria-hidden="true"></span>small effort</span><span class="task-id">t-config-flag</span></div></div><div class="task" id="task-t-session-store" data-plan-ref="task:t-session-store"><div class="task-body"><div class="task-head"><h3>Introduce SessionStore trait</h3></div><div class="pv-prose"><p>Extract persistence behind a trait so <code>t-redis</code> can slot in.</p>
+</div><ul class="files"><li><code>src/auth/session.rs</code><span class="pv-chip pv-chip-modify">modify</span><span class="file-note">extract trait</span></li><li><code>src/auth/store.rs</code><span class="pv-chip pv-chip-create">create</span></li><li><code>tests/auth.rs</code><span class="pv-chip pv-chip-test">test</span></li></ul><div class="pv-rule"><span class="pv-label">Acceptance</span><span class="pv-rule-line"></span></div><ul class="acceptance"><li data-plan-ref="task:t-session-store"><span>existing session tests pass unchanged</span></li><li data-plan-ref="task:t-session-store"><span>no direct sled calls outside the trait impl</span></li></ul><ul class="validation"><li><code>cargo test auth::</code></li></ul><p class="depends">depends on <a href="#task-t-config-flag">t-config-flag</a></p></div><div class="task-rail"><span><span class="pv-dot pv-dot-planned" aria-hidden="true"></span>planned</span><span><span class="pv-dot pv-dot-medium" aria-hidden="true"></span>medium risk</span><span><span class="pv-dot pv-dot-planned" aria-hidden="true"></span>medium effort</span><span class="task-id">t-session-store</span></div></div></div></details><details class="phase" id="phase-p-backend" data-plan-ref="phase:p-backend"><summary><span class="phase-numeral" aria-hidden="true">02</span><div class="phase-head"><div class="phase-head-line"><h2>Backend</h2><span class="phase-meta">3 tasks</span><span class="pv-chip pv-chip-high">1 high risk</span></div></div><span class="phase-marker" aria-hidden="true">›</span></summary><div class="phase-body"><div class="pv-deps"><div class="pv-rule"><span class="pv-label">Dependencies</span><span class="pv-rule-line"></span></div><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 432 226" width="432" height="226" class="plan-graph"><path class="edge" d="M 200 199 H 216 V 27 H 232"/><path class="arrow-head" d="M 232 27 L 225 23 L 225 31 z"/><a href="#task-t-bench" class="node-group status-cut risk-low"><title>Benchmarks</title><rect class="node" x="0" y="0" width="200" height="54" rx="4"/><rect class="node-stripe" x="0" y="0" width="3" height="54"/><text x="101" y="27">Benchmarks</text></a><a href="#task-t-cleanup" class="node-group status-in_progress"><title>Remove dead code</title><rect class="node" x="0" y="86" width="200" height="54" rx="4"/><rect class="node-stripe" x="0" y="86" width="3" height="54"/><text x="101" y="113">Remove dead code</text></a><a href="#task-t-session-store" class="node-group stub status-planned risk-medium"><title>Introduce SessionStore trait</title><rect class="node" x="0" y="172" width="200" height="54" rx="4"/><rect class="node-stripe" x="0" y="172" width="3" height="54"/><text x="101" y="199"><tspan x="101" dy="-7">Introduce SessionStore</tspan><tspan x="101" dy="15">trait</tspan></text></a><a href="#task-t-redis" class="node-group status-blocked risk-high"><title>Redis backend</title><rect class="node" x="232" y="0" width="200" height="54" rx="4"/><rect class="node-stripe" x="232" y="0" width="3" height="54"/><text x="333" y="27">Redis backend</text></a></svg><div class="pv-legend"><span><span class="pv-dot pv-dot-done" aria-hidden="true"></span>done</span><span><span class="pv-dot pv-dot-in_progress" aria-hidden="true"></span>in progress</span><span><span class="pv-dot pv-dot-blocked" aria-hidden="true"></span>blocked</span><span><span class="pv-dot pv-dot-planned" aria-hidden="true"></span>planned</span></div></div><div class="task" id="task-t-redis" data-plan-ref="task:t-redis"><div class="task-body"><div class="task-head"><h3>Redis backend</h3></div><p class="depends">depends on <a href="#task-t-session-store">t-session-store</a></p></div><div class="task-rail"><span><span class="pv-dot pv-dot-blocked" aria-hidden="true"></span>blocked</span><span><span class="pv-dot pv-dot-high" aria-hidden="true"></span>high risk</span><span><span class="pv-dot pv-dot-planned" aria-hidden="true"></span>large effort</span><span class="task-id">t-redis</span></div></div><div class="task" id="task-t-cleanup" data-plan-ref="task:t-cleanup"><div class="task-body"><div class="task-head"><h3>Remove dead code</h3></div></div><div class="task-rail"><span><span class="pv-dot pv-dot-in_progress" aria-hidden="true"></span>in_progress</span><span class="task-id">t-cleanup</span></div></div><div class="task" id="task-t-bench" data-plan-ref="task:t-bench"><div class="task-body"><div class="task-head"><h3>Benchmarks</h3></div></div><div class="task-rail"><span><span class="pv-dot pv-dot-cut" aria-hidden="true"></span>cut</span><span><span class="pv-dot pv-dot-low" aria-hidden="true"></span>low risk</span><span class="task-id">t-bench</span></div></div></div></details></div><div class="pv-rule" data-part="dependencies"><span class="pv-label">Phase dependencies</span><span class="pv-rule-line"></span></div><div class="pv-deps"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 56" width="512" height="56" class="plan-graph"><path class="edge" d="M 240 28 H 272"/><path class="arrow-head" d="M 272 28 L 265 24 L 265 32 z"/><a href="#phase-p-core" class="node-group phase-node status-in_progress"><title>Core</title><rect class="node" x="0" y="0" width="240" height="56" rx="4"/><rect class="node-stripe" x="0" y="0" width="3" height="56"/><text x="121" y="28">Core</text></a><a href="#phase-p-backend" class="node-group phase-node status-in_progress has-high"><title>Backend</title><rect class="node" x="272" y="0" width="240" height="56" rx="4"/><rect class="node-stripe" x="272" y="0" width="3" height="56"/><text x="393" y="28">Backend</text></a></svg><div class="pv-legend"><span><span class="pv-dot pv-dot-done" aria-hidden="true"></span>done</span><span><span class="pv-dot pv-dot-in_progress" aria-hidden="true"></span>in progress</span><span><span class="pv-dot pv-dot-blocked" aria-hidden="true"></span>blocked</span><span><span class="pv-dot pv-dot-planned" aria-hidden="true"></span>planned</span></div></div></main></div><script type="application/json" id="plan-data">{"format":"artefacto.plan/1","meta":{"id":"auth-refactor","title":"Auth refactor","goal_md":"\u003cp\u003eExtract \u003cem\u003esession\u003c/em\u003e handling.\u003c/p\u003e\n","summary_md":"\u003cp\u003eThis refactor extracts \u003ccode\u003eSessionStore\u003c/code\u003e behind a trait so a Redis-backed implementation can slot in without touching call sites. It ships behind a config flag and closes the \u003cem\u003elock contention\u003c/em\u003e risk by sharding the store. The ask: review the trait boundary in \u003ccode\u003et-session-store\u003c/code\u003e before Redis work starts.\u003c/p\u003e\n","key_points":["\u003cp\u003e\u003cstrong\u003eTrait extraction\u003c/strong\u003e decouples session persistence from its backing store, gated behind a config flag.\u003c/p\u003e\n","\u003cp\u003e\u003cstrong\u003eRedis backend\u003c/strong\u003e (\u003ccode\u003et-redis\u003c/code\u003e) is blocked on the trait boundary landing first.\u003c/p\u003e\n","\u003cp\u003e\u003cstrong\u003eLock contention\u003c/strong\u003e (\u003ccode\u003er-locking\u003c/code\u003e) is mitigated by sharding the store, not by removing the lock.\u003c/p\u003e\n"],"out_of_scope":["Migrating existing sessions between backends","Multi-region session replication"],"agent":"claude","created":"2026-07-07","revision":2},"phases":[{"id":"p-core","title":"Core","icon":"wrench","summary_md":"\u003cp\u003eThe trait seam.\u003c/p\u003e\n","tasks":[{"id":"t-config-flag","title":"Config flag","status":"done","acceptance":["flag parses"],"validation":["cargo test config::"],"estimate":"s"},{"id":"t-session-store","title":"Introduce SessionStore trait","icon":"shield","summary_md":"\u003cp\u003eExtract persistence behind a trait so \u003ccode\u003et-redis\u003c/code\u003e can slot in.\u003c/p\u003e\n","status":"planned","risk":"medium","depends_on":["t-config-flag"],"files":[{"path":"src/auth/session.rs","action":"modify","note":"extract trait"},{"path":"src/auth/store.rs","action":"create"},{"path":"tests/auth.rs","action":"test"}],"acceptance":["existing session tests pass unchanged","no direct sled calls outside the trait impl"],"validation":["cargo test auth::"],"estimate":"m"}]},{"id":"p-backend","title":"Backend","icon":"database","tasks":[{"id":"t-redis","title":"Redis backend","status":"blocked","risk":"high","depends_on":["t-session-store"],"estimate":"l"},{"id":"t-cleanup","title":"Remove dead code","status":"in_progress"},{"id":"t-bench","title":"Benchmarks","status":"cut","risk":"low"}]}],"risks":[{"id":"r-locking","title":"Lock contention","severity":"high","mitigation_md":"\u003cp\u003eShard the store.\u003c/p\u003e\n"}],"open_questions":[{"id":"q-ttl","question_md":"\u003cp\u003eSession TTL?\u003c/p\u003e\n","blocking":true},{"id":"q-name","question_md":"\u003cp\u003eTrait name?\u003c/p\u003e\n","blocking":false}]}</script><script>/* artefacto plan viewer — progressive enhancement over server-rendered HTML.
    Pure core first (no DOM), then the DOM layer, then the served-page
    session, then the #selftest harness.
 
@@ -3503,6 +3577,19 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
     return svg;
   }
 
+  /* The plan strip's part icons, one per section of the document. */
+  const MAP_ICONS = {
+    summary: ["M4 6h16", "M4 11h12", "M4 16h8"],
+    questions: ["M4 4h16v16H4z", "M9.4 9.2a2.7 2.7 0 1 1 3.6 2.5c-.7.3-1 .9-1 1.6", "M12 16.6h.01"],
+    risks: ["M12 4.5 21 19H3z", "M12 10v4", "M12 16.6h.01"],
+    phases: ["M4 6h7", "M4 12h13", "M4 18h9"],
+    dependencies: ["M5 7h7a3 3 0 0 1 3 3v4", "M12 11l3 3 3-3"],
+  };
+
+  function mapIcon(part) {
+    return svgIcon("pv-map-icon", MAP_ICONS[part] || MAP_ICONS.summary);
+  }
+
   /* Speech-bubble icon for the comment button: bubble outline plus two
      short lines standing in for text. */
   function commentIcon() {
@@ -3625,6 +3712,327 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
   }
 
   let themeWired = false;
+  /* ---- the plan strip ------------------------------------------------
+
+     The document's parts as one spine in the sticky header: each segment as
+     wide as the share of the page that part holds, a line that fills to the
+     read position, a caret where the reader is. It is built from the
+     rendered document, so it needs no plan data and no server: the static
+     export carries it too.
+
+     `data-part` on a section's rule is what makes a section a part. A rule
+     inside a section carries none, so a task's acceptance is not a part. */
+  const MAP_DENSE_PHASES = 6;
+
+  function mapParts(root) {
+    const rules = Array.from(root.querySelectorAll(".pv-rule[data-part]"));
+    if (!rules.length) return [];
+    const main = root.querySelector(".pv-main") || root.querySelector(".pv-sheet") || root;
+    const bottom = docTop(main) + main.offsetHeight;
+    /* The first part starts where the document does, not at its own rule:
+       the title and the figures above the summary are part of the plan, and
+       a strip that says nothing until the reader is past them is a strip
+       that says nothing on arrival. */
+    return rules.map(function (rule, i) {
+      const top = i === 0 ? Math.min(docTop(rule), docTop(main)) : docTop(rule);
+      const end = i + 1 < rules.length ? docTop(rules[i + 1]) : bottom;
+      const label = rule.querySelector(".pv-label");
+      return {
+        part: rule.getAttribute("data-part"),
+        label: label ? label.textContent : "",
+        node: rule,
+        top: top,
+        height: Math.max(1, end - top),
+      };
+    });
+  }
+
+  function docTop(el) {
+    return el.getBoundingClientRect().top + window.scrollY;
+  }
+
+  /* A phase worth a flag in the strip: one holding a blocked task or a high
+     risk, which is what the phase's own chip says on the page. */
+  function mapPhases(root) {
+    return Array.from(root.querySelectorAll("details.phase")).map(function (d, i) {
+      return {
+        node: d,
+        id: d.id,
+        n: String(i + 1).padStart(2, "0"),
+        /* What the phase already says on the page: its high-risk chip, or a
+           task whose rail says blocked or high. The dependency graph's
+           legend carries a dot of every status, so the rails are read
+           rather than every dot in the phase. */
+        flag: !!d.querySelector("summary .pv-chip-high, .task-rail .pv-dot-blocked, .task-rail .pv-dot-high"),
+      };
+    });
+  }
+
+  function mountMap(root) {
+    const bar = root.querySelector(".pv-topbar");
+    if (!bar || bar.querySelector(".pv-map")) return;
+    const parts = mapParts(root);
+    if (!parts.length) return;
+    const phases = mapPhases(root);
+    const map = document.createElement("nav");
+    map.className = "pv-map";
+    map.setAttribute("aria-label", "Where you are in the plan");
+    const track = document.createElement("div");
+    track.className = "pv-map-track";
+    map.appendChild(track);
+    const span = parts[parts.length - 1].top + parts[parts.length - 1].height - parts[0].top;
+
+    parts.forEach(function (p) {
+      const group = p.part === "phases" && phases.length > 0;
+      const part = document.createElement(group ? "div" : "a");
+      part.className = "pv-map-part" + (group ? " is-group" : "");
+      part.setAttribute("data-map-part", p.part);
+      /* Proportional to the document, with a floor so a part is never a
+         sliver: the phases carry their numerals, so their floor is the
+         wider one. Collapsed phases are a short section holding most of
+         the plan's controls. */
+      part.style.flexGrow = String(Math.max(group ? 0.34 : 0.08, p.height / span));
+      part.style.flexBasis = "0";
+      if (!group) {
+        part.href = "#";
+        part.addEventListener("click", function (e) { e.preventDefault(); jumpToNode(p.node); });
+      }
+      const head = document.createElement("span");
+      head.className = "pv-map-head";
+      const label = document.createElement("span");
+      label.className = "pv-map-label";
+      label.textContent = p.label;
+      if (group) {
+        const link = document.createElement("a");
+        link.className = "pv-map-link";
+        link.href = "#";
+        link.addEventListener("click", function (e) { e.preventDefault(); jumpToNode(p.node); });
+        link.appendChild(mapIcon(p.part));
+        link.appendChild(label);
+        head.appendChild(link);
+        head.appendChild(phases.length > MAP_DENSE_PHASES ? mapTicks(phases) : mapNumerals(phases));
+        const read = document.createElement("span");
+        read.className = "pv-map-ph-read";
+        head.appendChild(read);
+      } else {
+        head.appendChild(mapIcon(p.part));
+        head.appendChild(label);
+      }
+      part.appendChild(head);
+      const barLine = document.createElement("span");
+      barLine.className = "pv-map-bar";
+      part.appendChild(barLine);
+      track.appendChild(part);
+    });
+
+    ["pv-map-fill", "pv-map-caret", "pv-map-scrub"].forEach(function (cls) {
+      const n = document.createElement("div");
+      n.className = cls;
+      if (cls === "pv-map-scrub") n.setAttribute("aria-hidden", "true");
+      track.appendChild(n);
+    });
+    bar.appendChild(map);
+    wireScrub(track);
+    mapState.parts = parts;
+    mapState.phases = phases;
+    if (!mapState.wired) {
+      mapState.wired = true;
+      window.addEventListener("scroll", scheduleMap, { passive: true });
+      window.addEventListener("resize", function () { remeasureMap(root); }, { passive: true });
+    }
+    renderMap();
+
+    /* A phase opening or closing moves everything below it: the parts are
+       measured again when the document's height changes. */
+    if (window.ResizeObserver) {
+      const main = root.querySelector(".pv-main") || root;
+      const ro = new ResizeObserver(function () { remeasureMap(root); });
+      ro.observe(main);
+      mounted.observers.push(ro);
+    }
+  }
+
+  function mapNumerals(phases) {
+    const host = document.createElement("span");
+    host.className = "pv-map-phases";
+    phases.forEach(function (ph) {
+      const a = document.createElement("a");
+      a.className = "pv-map-ph";
+      a.href = "#" + ph.id;
+      a.setAttribute("data-map-phase", ph.id);
+      a.addEventListener("click", function (e) { e.preventDefault(); jumpToNode(ph.node); });
+      const n = document.createElement("span");
+      n.textContent = ph.n;
+      a.appendChild(n);
+      if (ph.flag) {
+        const flag = document.createElement("span");
+        flag.className = "pv-map-flag";
+        flag.title = "a blocked task or a high risk in this phase";
+        a.appendChild(flag);
+      }
+      host.appendChild(a);
+    });
+    return host;
+  }
+
+  /* Past a handful of phases the numerals stop fitting: one tick each, the
+     number shown for the phase you are in or hovering. */
+  function mapTicks(phases) {
+    const host = document.createElement("span");
+    host.className = "pv-map-ticks";
+    phases.forEach(function (ph) {
+      const a = document.createElement("a");
+      a.className = "pv-map-tick" + (ph.flag ? " has-flag" : "");
+      a.href = "#" + ph.id;
+      a.setAttribute("data-map-phase", ph.id);
+      a.title = "Phase " + ph.n;
+      a.addEventListener("click", function (e) { e.preventDefault(); jumpToNode(ph.node); });
+      const num = document.createElement("span");
+      num.className = "pv-map-tick-num";
+      num.textContent = ph.n;
+      const mark = document.createElement("span");
+      mark.className = "pv-map-tick-mark";
+      a.appendChild(num);
+      a.appendChild(mark);
+      host.appendChild(a);
+    });
+    return host;
+  }
+
+  const mapState = { parts: [], phases: [], frame: 0, wired: false };
+
+  /* The parts are positions in a document that changes height: a phase
+     opens, a thread lands, a revision swaps the body. Measured again, and
+     the segments resized, without rebuilding the strip. */
+  function remeasureMap(root) {
+    const track = document.querySelector(".pv-map-track");
+    if (!track) return;
+    const parts = mapParts(root || document.body);
+    if (!parts.length) return;
+    const last = parts[parts.length - 1];
+    const span = last.top + last.height - parts[0].top;
+    parts.forEach(function (p) {
+      const node = track.querySelector('[data-map-part="' + p.part + '"]');
+      if (node) node.style.flexGrow = String(Math.max(node.classList.contains("is-group") ? 0.34 : 0.08, p.height / span));
+    });
+    mapState.parts = parts;
+    renderMap();
+  }
+
+  /* How far through the document the reader is, as a fraction of what there
+     is to scroll. One number for the whole strip: the fill, the caret, and
+     which part is active all come from it, so the end of the scroll is the
+     end of the plan and the strip never stops short of its last part. */
+  function readFraction() {
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    return max > 0 ? Math.min(Math.max(window.scrollY / max, 0), 1) : 0;
+  }
+
+  /* That fraction as a position in the document, for the parts to answer to. */
+  function readLine() {
+    const parts = mapState.parts;
+    if (!parts.length) return 0;
+    const first = parts[0].top;
+    const last = parts[parts.length - 1];
+    return first + (last.top + last.height - first) * readFraction();
+  }
+
+  function renderMap() {
+    const track = document.querySelector(".pv-map-track");
+    if (!track || !mapState.parts.length) return;
+    const parts = mapState.parts;
+    const last = parts[parts.length - 1];
+    const fraction = readFraction();
+    const line = readLine();
+    let active = null;
+    parts.forEach(function (p) {
+      const node = track.querySelector('[data-map-part="' + p.part + '"]');
+      if (!node) return;
+      const isActive = line >= p.top && line < p.top + p.height;
+      if (isActive) active = p;
+      node.classList.toggle("is-active", isActive);
+      node.classList.toggle("is-past", line >= p.top + p.height);
+    });
+    /* At the very end of the scroll the line sits on the document's last
+       pixel, which is inside no part: the last one keeps the caret company. */
+    if (!active) {
+      const node = track.querySelector('[data-map-part="' + last.part + '"]');
+      if (node) { node.classList.add("is-active"); node.classList.remove("is-past"); }
+    }
+    const fill = track.querySelector(".pv-map-fill");
+    const caret = track.querySelector(".pv-map-caret");
+    const width = track.clientWidth * fraction;
+    if (fill) fill.style.width = width + "px";
+    if (caret) caret.style.left = width + "px";
+    renderMapPhases(track);
+  }
+
+  function renderMapPhases(track) {
+    if (!mapState.phases.length) return;
+    const line = readLine();
+    let current = -1;
+    mapState.phases.forEach(function (ph, i) {
+      const top = docTop(ph.node);
+      if (line >= top) current = i;
+    });
+    mapState.phases.forEach(function (ph, i) {
+      const node = track.querySelector('[data-map-phase="' + ph.id + '"]');
+      if (!node) return;
+      node.classList.toggle("is-active", i === current);
+      node.classList.toggle("is-past", i < current);
+    });
+    const read = track.querySelector(".pv-map-ph-read");
+    if (read) read.textContent = current >= 0 ? (current + 1) + " of " + mapState.phases.length : "";
+  }
+
+  function scheduleMap() {
+    if (mapState.frame) return;
+    mapState.frame = window.requestAnimationFrame(function () {
+      mapState.frame = 0;
+      renderMap();
+    });
+  }
+
+  /* A jump is a scroll and a flash: the reader asked for a place, and the
+     page says which place it landed on. */
+  function jumpToNode(node) {
+    if (!node) return;
+    const bar = document.querySelector(".pv-topbar");
+    const offset = (bar ? bar.offsetHeight : 0) + 12;
+    window.scrollTo({ top: Math.max(0, docTop(node) - offset), left: 0, behavior: "instant" });
+    const target = node.classList && node.classList.contains("pv-rule")
+      ? node.nextElementSibling || node
+      : node;
+    if (!target) return;
+    target.classList.remove("pv-aimed");
+    void target.offsetWidth;
+    target.classList.add("pv-aimed");
+  }
+
+  /* The bar row is a scrubber: a drag across it maps to a position in the
+     document, the way a timeline does. */
+  function wireScrub(track) {
+    const scrub = track.querySelector(".pv-map-scrub");
+    if (!scrub) return;
+    const to = function (clientX) {
+      const box = track.getBoundingClientRect();
+      const fraction = Math.min(Math.max((clientX - box.left) / box.width, 0), 1);
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      window.scrollTo({ top: Math.max(0, max * fraction), left: 0, behavior: "instant" });
+    };
+    scrub.addEventListener("pointerdown", function (e) {
+      e.preventDefault();
+      scrub.setPointerCapture(e.pointerId);
+      to(e.clientX);
+    });
+    scrub.addEventListener("pointermove", function (e) {
+      if (scrub.hasPointerCapture && scrub.hasPointerCapture(e.pointerId)) to(e.clientX);
+    });
+    scrub.addEventListener("pointerup", function (e) {
+      if (scrub.releasePointerCapture) scrub.releasePointerCapture(e.pointerId);
+    });
+  }
+
   function mountThemeToggle(root) {
     const host = root.querySelector(".pv-topbar-right");
     if (!host || host.querySelector(".pv-theme")) return;
@@ -6483,6 +6891,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
        document whose island failed to parse still gets a usable shell. */
     mountThemeToggle(root);
     mountScrollCues(root);
+    mountMap(root);
 
     const islandEl = root.querySelector("#plan-data");
     if (!islandEl) return;
