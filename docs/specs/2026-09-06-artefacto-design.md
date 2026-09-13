@@ -342,14 +342,33 @@ Grotesque, Space Mono, Bungee, embedded like Newsreader and JetBrains Mono),
 squares every corner, and doubles every structural rule; radii and the
 rule weight are tokens for that reason.
 
-**The header (the third design round, 2026-09-13).** The bar carries the
-brand, the conversation, the presence pill, one link out, the plan's
-identity, and the theme. Only one of those leaves the document, so only one
-of them is a link: *All artifacts* has a grid mark, the action colour, a rule
-under it, and a divider between it and the plan's id. The theme is a
-preference rather than part of the review, so it is one glyph at the end of
-the bar with the four choices behind it, closed by Escape or a click outside;
-the glyph's label says which theme is showing.
+**The header (the third design round, 2026-09-13).** It carries the brand,
+the conversation, one link out, the revision, and the theme. Only one of
+those leaves the document, so only one of them is a link: *All artifacts*
+has a grid mark, the action colour, a rule under it, and a divider before
+the revision. The theme is a preference rather than part of the review, so
+it is one glyph at the end with the four choices behind it, closed by
+Escape or a click outside; the glyph's label says which theme is showing.
+The room is called *Plan* rather than *Plan viewer*: it shows many kinds of
+artifact, and is named after what is on screen.
+
+Everything else in the bar earns its place by changing. The plan's id is
+the eyebrow under its title, so the bar carries the revision alone. The
+conversation's count appears only once something has been said, because a
+zero beside the word reads as a status rather than a tally. **The presence
+pill appears only when nobody is there to hear the reviewer** -- no agent,
+a dropped connection, a stopped server, a signed-out page -- and names the
+agent that left. An attached agent is the normal case, and a header that
+announces the normal case is one a reader learns to stop reading.
+
+**The agent has a name.** Every agent event carries its lease name in
+`data.agent` (section 6.1), both folds keep it on the turn it wrote, and
+the page uses it wherever it used to say *the agent*: the speaker label,
+the avatar, the notices, the interrupt, the presence line. Kept per turn
+rather than read from whoever holds the lease now, so a turn stays
+attributed to whoever took it when two agents work in sequence. A page
+written before this, and a static export, read *agent*. The buttons stay
+generic -- *Ask the agent* has to read the same with nobody attached.
 
 **Where you are in the plan (the third design round, 2026-09-13).** The
 header carries a strip: one segment per section the plan has (summary, open

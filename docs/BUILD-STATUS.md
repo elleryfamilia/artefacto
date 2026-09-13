@@ -1916,6 +1916,32 @@ Nine mutations on the four changes, one of which survived: asserting the
 link's mark by its class alone passes with no mark in the markup, because the
 stylesheet names the class too. Gate: 548 tests.
 
+### The owner's second pass: who is speaking, and what the bar is for
+
+Four more notes (`0fcac43`), all about the header earning its place:
+
+- **The agent is named.** Every agent event now carries its lease name, the
+  server's fold and the page's own both keep it on the turn it wrote, and
+  the page says *claude* where it said *the agent*. Per turn, not per page:
+  reading the name off whoever holds the lease now would relabel an older
+  agent's messages when a second one takes over, which a browser test
+  drives with two sessions. A log written before this, and a static export,
+  still read *agent*.
+- **"Plan viewer" is "Plan".** The page shows many kinds of artifact; the
+  room is named after what is on screen.
+- **The presence pill speaks only when something is wrong.** It was saying
+  *agent live* on every page of every review. It now appears for no agent, a
+  dropped connection, a stopped server, or a signed-out page, and says which
+  agent left.
+- **Less in the bar.** The plan's id was in the bar and again in the eyebrow
+  under the title, so the bar keeps the revision alone. The conversation's
+  count shows only when something has been said.
+
+Eleven mutations, one survivor: a `[hidden]` rule on the conversation's
+count that the browser's own rule already covered, since that element
+declares no display of its own. Deleted. The presence pill's is
+`inline-flex` and does need its own. Gate: 549 tests.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
