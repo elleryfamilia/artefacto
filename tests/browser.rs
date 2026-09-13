@@ -787,6 +787,64 @@ fn the_static_export_selftest_passes_in_a_real_browser() {
 // --- the races a fake client cannot reach (spec 14) -------------------------
 
 #[test]
+fn the_panel_sends_the_revision_it_was_written_against() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".pv-panel-handle");
+    page.type_into(".pv-panel-composer textarea", "is this still the plan?");
+
+    // The agent pushes while the reviewer is mid-sentence. Spec 4.3: what
+    // they wrote was written against revision 1, and arrives saying so --
+    // reading the revision at send time would label it 2 and tell the agent
+    // the reviewer had seen a plan they had not.
+    s.edit_plan("Demo plan", "Demo plan, revised");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "the page to swap in revision 2",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
+        "is this still the plan?",
+        "the draft survives the swap"
+    );
+    // Finishing the sentence after the swap does not re-date it: the
+    // question was opened against revision 1, and the last keystroke is not
+    // when it was written.
+    page.type_into(
+        ".pv-panel-composer textarea",
+        "is this still the plan? the whole of it?",
+    );
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 1",
+        "the question to land",
+    );
+    assert_eq!(
+        s.server().last_event_of_type("chat.sent")["data"]["opened_revision"],
+        1,
+        "written against revision 1, and it says so"
+    );
+
+    // And the next one, started after the swap, carries the new revision.
+    page.type_into(".pv-panel-composer textarea", "and now?");
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 2",
+        "the second question",
+    );
+    assert_eq!(
+        s.server().last_event_of_type("chat.sent")["data"]["opened_revision"],
+        2
+    );
+}
+
+#[test]
 fn a_push_while_typing_keeps_the_draft_and_sends_the_revision_it_opened_against() {
     let Some(browser) = Browser::launch() else {
         return;
@@ -5285,38 +5343,29 @@ fn the_agent_can_stop_the_page_when_it_is_blocked() {
         "and the page scrolls again"
     );
 
-    // A different interrupt gets through: the event's sequence number is its
-    // identity, not the cause.
-    page.eval(
-        &REPLAY
-            .replace("SEQ", "9001")
-            .replace("TITLE", "Still blocked"),
-    );
-    page.wait_until(
-        "document.querySelector('.ag-interrupt-title') && \
-           document.querySelector('.ag-interrupt-title').textContent === 'Still blocked'",
-        "the second interrupt",
-    );
-    page.click(".ag-interrupt-not");
-    page.wait_until("!document.querySelector('.ag-dim')", "the dialog to close");
-
-    // And the same one does not come back. A reconnect replays the frames it
-    // never acknowledged; saying "I have stopped" twice for one stop would
-    // make the dialog something a reviewer learns to dismiss.
-    page.eval(
-        &REPLAY
-            .replace("SEQ", "9001")
-            .replace("TITLE", "Still blocked"),
-    );
-    assert_eq!(
-        page.eval("!!document.querySelector('.ag-dim')"),
-        false,
-        "a replayed frame raises nothing"
-    );
+    // A second stop gets through, and so does a third that is word for word
+    // the same and carries the same sequence number. A nudge is never
+    // written to the log, so `seq` on it is whatever the cursor happened to
+    // be: two questions sent with nothing logged in between carry the same
+    // number, and keying "said once" on that swallowed the second in
+    // silence. The agent chose to interrupt; the page shows it.
+    for title in ["Still blocked", "Still blocked"] {
+        page.eval(&REPLAY.replace("SEQ", "9001").replace("TITLE", title));
+        page.wait_until(
+            &format!(
+                "document.querySelector('.ag-interrupt-title') && \
+                   document.querySelector('.ag-interrupt-title').textContent === '{title}'"
+            ),
+            "the next stop, whatever the sequence number says",
+        );
+        page.click(".ag-interrupt-not");
+        page.wait_until("!document.querySelector('.ag-dim')", "the dialog to close");
+    }
 }
 
 /// One nudge-with-interrupt frame, as the socket would deliver it. `SEQ` is
-/// the event's sequence number, which is what the page keys "said once" on.
+/// the event's sequence number, which the page deliberately does not treat
+/// as an identity: see the test above.
 const REPLAY: &str =
     "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: SEQ, events: [{ \
            format: 'artefacto.event/1', actor: 'agent', artifact: 'plan:demo', revision: 1, \

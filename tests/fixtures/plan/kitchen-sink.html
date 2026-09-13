@@ -5303,7 +5303,10 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
     function savePanelDraft() {
       try { window.sessionStorage.setItem(PANEL_DRAFT_KEY, JSON.stringify(S.ui.panel)); } catch (e) { /* best effort */ }
     }
-    S.ui.panel = Object.assign({ text: "", ref: null, thread: null, quote: null }, loadPanelDraft());
+    S.ui.panel = Object.assign(
+      { text: "", ref: null, thread: null, quote: null, revision: null },
+      loadPanelDraft()
+    );
     S.ui.panelEvents = [];
     /* The interrupt on screen, and the causes this page has already shown:
        an interrupt the reviewer dismissed does not come back for the same
@@ -5730,7 +5733,15 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
             if (stop) {
               panelEvent("nudge", text);
               interrupt("blocked", {
-                key: String(e.seq),
+                /* No key. The two causes the page works out for itself are
+                   re-derived on every render and need one; this one does
+                   not. A nudge is never written to the log, so it is never
+                   replayed -- and `seq` on an unlogged event is whatever
+                   the cursor happened to be, so two different questions
+                   sent with nothing logged between them carry the same
+                   number. Keying on it swallowed the second one in
+                   silence, which is the one failure an interrupt must not
+                   have. The agent chose to interrupt; the page shows it. */
                 title: stop.title || "The agent needs an answer",
                 body: text,
                 ref: stop.ref || null,
@@ -6636,7 +6647,17 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       ta.value = S.ui.panel.text || "";
       const grow = function () { ta.rows = Math.min(6, ta.value.split("\n").length); };
       grow();
-      ta.addEventListener("input", function () { S.ui.panel.text = ta.value; savePanelDraft(); grow(); });
+      ta.addEventListener("input", function () {
+        /* Spec 4.3: what the reviewer writes carries the revision it was
+           written against, not the one showing when they press send. The
+           stamp is taken the moment they start writing, because that is
+           the plan they were reading. */
+        if (!S.ui.panel.text && ta.value) S.ui.panel.revision = S.state.revision;
+        if (!ta.value) S.ui.panel.revision = null;
+        S.ui.panel.text = ta.value;
+        savePanelDraft();
+        grow();
+      });
       ta.addEventListener("keydown", function (ev) {
         if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); sendPanel(); }
       });
@@ -6680,7 +6701,10 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       const text = ta ? ta.value.trim() : "";
       if (!text || S.ui.panelSending) return;
       const p = S.ui.panel;
-      const cmd = { cmd: "chat.send", text: text, opened_revision: S.state.revision };
+      const cmd = {
+        cmd: "chat.send", text: text,
+        opened_revision: p.revision || S.state.revision,
+      };
       const existing = p.ref && !p.thread ? askedThreadOn(p.ref) : null;
       if (p.thread) {
         cmd.thread = p.thread;
@@ -6696,7 +6720,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       send(cmd)
         .then(function () {
           S.ui.panelSending = false;
-          S.ui.panel = { text: "", ref: null, thread: null, quote: null };
+          S.ui.panel = { text: "", ref: null, thread: null, quote: null, revision: null };
           savePanelDraft();
           markAsked();
           renderPanelComposer();
@@ -6803,7 +6827,13 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       const o = opts || {};
       const spec = INTERRUPT[cause];
       if (!spec) return;
-      if (S.ui.interrupted[cause + ":" + (o.key || "")]) return;
+      /* A cause with a key is one the page works out for itself and would
+         otherwise raise on every render; a cause without one is the agent
+         deciding to interrupt, and that is never second-guessed. An empty
+         key is not a key: keyed as one it made every stop after the first
+         disappear. */
+      const said = o.key ? cause + ":" + o.key : null;
+      if (said && S.ui.interrupted[said]) return;
       /* One dialog at a time, but the second is not thrown away: the agent
          says it has stopped once, and the nudge that carried it is never
          logged, so dropping it loses the message. It waits in one slot and
@@ -6817,7 +6847,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
         return;
       }
       S.ui.interrupt = cause;
-      S.ui.interrupted[cause + ":" + (o.key || "")] = true;
+      if (said) S.ui.interrupted[said] = true;
       /* "claude is blocked" rather than "the agent is blocked": the reviewer
          is talking to a session with a name, and the dialog is the loudest
          place to say which one. */
@@ -7218,6 +7248,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
           const box = document.querySelector(".pv-panel-composer textarea");
           if (d.text && !S.ui.panel.text && box && !box.value) {
             S.ui.panel.text = d.text;
+            S.ui.panel.revision = d.revision || S.state.revision;
             savePanelDraft();
             box.value = d.text;
             box.rows = Math.min(6, d.text.split("\n").length);
