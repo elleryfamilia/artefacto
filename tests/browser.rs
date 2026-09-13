@@ -4849,6 +4849,21 @@ fn a_revision_that_moves_what_you_commented_on_stops_the_page() {
         "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 996, events: [] })",
     );
     assert_eq!(page.eval("!!document.querySelector('.ag-dim')"), false);
+
+    // A later revision that moves something else is a new thing to say, so
+    // the dialog comes back: dismissing one is not dismissing them all.
+    comment(&mut page, "task:t-b", "and this one needs a rollback step");
+    s.edit_plan("\"id\": \"t-b\"", "\"id\": \"t-c\"");
+    s.push(2, &[]);
+    page.wait_until(
+        "!!document.querySelector('.ag-interrupt')",
+        "the dialog for the next revision",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-title').textContent"),
+        "A revision moved 2 things you commented on",
+        "and it counts everything still hanging"
+    );
 }
 
 #[test]
@@ -4891,5 +4906,84 @@ fn a_review_left_hanging_says_so_once() {
         page.eval("!!document.querySelector('.ag-dim')"),
         false,
         "said once"
+    );
+}
+
+#[test]
+fn a_sent_review_is_never_called_hanging() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // Same plan and same quiet spell as the test above, with one difference:
+    // the verdict has been sent. The agent is not waiting on anything, so
+    // nothing stops the page, blocking question or not.
+    page.click(".pv-panel-handle");
+    page.click(".feedback-bar-approve");
+    page.wait_until(
+        "document.querySelector('.pv-panel-foot').classList.contains('is-sent')",
+        "the review to be sent",
+    );
+    page.eval(
+        "(function(){ window.artefactoPlan.settings.hangingAfterMs = 200; \
+           window.artefactoPlan.settings.hangingCheckMs = 100; \
+           window.artefactoPlan.restartHangingCheck(); return true; })()",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-dim')"),
+        false,
+        "a sent review is not a hanging one"
+    );
+}
+
+#[test]
+fn nobody_is_waiting_when_no_agent_holds_the_lease() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // The blocking question is open and no verdict has been sent, but the
+    // lease has expired: there is no agent to be waiting, so nothing stops
+    // the page.
+    s.server()
+        .age_lease(artefacto::server::lease::TTL + std::time::Duration::from_secs(1));
+    page.wait_until(
+        "document.querySelector('.pv-presence').textContent === 'no agent'",
+        "the pill to say the agent is gone",
+    );
+    page.eval(
+        "(function(){ window.artefactoPlan.settings.hangingAfterMs = 200; \
+           window.artefactoPlan.settings.hangingCheckMs = 100; \
+           window.artefactoPlan.settings.hangingDismissMs = 60000; \
+           window.artefactoPlan.restartHangingCheck(); return true; })()",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-dim')"),
+        false,
+        "no agent, nobody waiting"
+    );
+
+    // An agent takes the lease: now there is someone to be kept waiting.
+    s.repo
+        .run(&[
+            "await",
+            "--timeout",
+            "1s",
+            "--agent",
+            "claude",
+            "--takeover",
+        ])
+        .success();
+    page.wait_until(
+        "!!document.querySelector('.ag-interrupt')",
+        "the dialog once an agent is back",
     );
 }

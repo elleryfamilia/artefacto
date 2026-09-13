@@ -852,6 +852,16 @@
     return el.getBoundingClientRect().top + window.scrollY;
   }
 
+  /* A part's share of the strip: proportional to how much of the document
+     it holds, with a floor so a part is never a sliver. The phases carry
+     their numerals, so their floor is the wider one -- collapsed phases are
+     a short section holding most of the plan's controls. Both the first
+     build and every remeasure go through here, so the strip cannot end up
+     sized two different ways. */
+  function partGrow(p, span, group) {
+    return String(Math.max(group ? 0.34 : 0.08, p.height / span));
+  }
+
   /* A phase worth a flag in the strip: one holding a blocked task or a high
      risk, which is what the phase's own chip says on the page. */
   function mapPhases(root) {
@@ -888,11 +898,7 @@
       const part = document.createElement(group ? "div" : "a");
       part.className = "pv-map-part" + (group ? " is-group" : "");
       part.setAttribute("data-map-part", p.part);
-      /* Proportional to the document, with a floor so a part is never a
-         sliver: the phases carry their numerals, so their floor is the
-         wider one. Collapsed phases are a short section holding most of
-         the plan's controls. */
-      part.style.flexGrow = String(Math.max(group ? 0.34 : 0.08, p.height / span));
+      part.style.flexGrow = partGrow(p, span, group);
       part.style.flexBasis = "0";
       if (!group) {
         part.href = "#";
@@ -1014,7 +1020,7 @@
     const span = last.top + last.height - parts[0].top;
     parts.forEach(function (p) {
       const node = track.querySelector('[data-map-part="' + p.part + '"]');
-      if (node) node.style.flexGrow = String(Math.max(node.classList.contains("is-group") ? 0.34 : 0.08, p.height / span));
+      if (node) node.style.flexGrow = partGrow(p, span, node.classList.contains("is-group"));
     });
     mapState.parts = parts;
     renderMap();
@@ -3575,8 +3581,10 @@
           : "A revision moved " + orphans.length + " things you commented on",
         body: "Revision " + S.state.revision + " no longer has the element your "
           + (t.asked ? "question" : "comment") + " was about. It is kept, with what you wrote.",
+        /* No `gone` flag: an unanchored thread's element is, by the same
+           rule the server folds by, not in the plan the page is showing,
+           so the chip finds nothing and says so on its own. */
         ref: t.target,
-        gone: true,
         onGo: function () {
           if (t.asked) {
             if (!S.ui.chatOpen) setPanelOpen(true);

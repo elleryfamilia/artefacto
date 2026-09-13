@@ -415,6 +415,77 @@ fn a_nudge_reaches_the_page_as_a_banner_and_is_not_logged() {
     );
 }
 
+#[test]
+fn an_interrupt_is_a_nudge_that_carries_what_the_dialog_needs() {
+    let l = start();
+    let mut page = l.server.connect_page();
+    page.hello();
+
+    l.repo
+        .run(&[
+            "reply",
+            "--session",
+            &l.session,
+            "--nudge",
+            "--interrupt",
+            "--title",
+            "Which store should Redis replace?",
+            "--ref",
+            "task:t-a",
+            "I have stopped: the trait boundary depends on your answer.",
+        ])
+        .success();
+
+    let frame = page.next_frame();
+    let event = &frame["events"][0];
+    assert_eq!(event["type"], "nudge", "an interrupt is still a nudge");
+    assert_eq!(
+        event["data"]["text"], "I have stopped: the trait boundary depends on your answer.",
+        "so a page that predates the flag still shows the line"
+    );
+    assert_eq!(event["data"]["interrupt"]["kind"], "blocked");
+    assert_eq!(
+        event["data"]["interrupt"]["title"],
+        "Which store should Redis replace?"
+    );
+    assert_eq!(event["data"]["interrupt"]["ref"], "task:t-a");
+}
+
+#[test]
+fn a_plain_nudge_carries_no_interrupt() {
+    let l = start();
+    let mut page = l.server.connect_page();
+    page.hello();
+
+    l.repo
+        .run(&["reply", "--session", &l.session, "--nudge", "when you can"])
+        .success();
+
+    let frame = page.next_frame();
+    assert!(
+        frame["events"][0]["data"]["interrupt"].is_null(),
+        "a nudge waits its turn; only an interrupt stops the page"
+    );
+}
+
+#[test]
+fn stopping_the_page_is_only_ever_a_nudge() {
+    let l = start();
+    // --interrupt without --nudge, and its two details without --interrupt:
+    // there is no way to stop the page except the one the skill describes.
+    for args in [
+        vec!["--interrupt"],
+        vec!["--title", "Which store?"],
+        vec!["--ref", "task:t-a"],
+    ] {
+        let mut argv = vec!["reply", "--session", &l.session];
+        argv.extend(args.iter().copied());
+        argv.push("I have stopped.");
+        let out = l.repo.run(&argv);
+        assert_ne!(out.code, 0, "{argv:?} was accepted: {}", out.stdout);
+    }
+}
+
 // --- the agent's write verbs ------------------------------------------------
 
 #[test]
