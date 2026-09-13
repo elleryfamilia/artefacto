@@ -1969,7 +1969,7 @@ browser still fails it. Gate: 550 tests.
 
 The right-hand table in the summary read `1s · 2m · 2 medium` per phase --
 the estimate mix and the risk heat. Two problems, both raised from the
-rendered page (`b1e2d3c`):
+rendered page (`9ac7283`):
 
 - **The numbers were a code with no key.** `1s · 2m · 1l` is "one small, two
   medium, one large task", three numbers deep, in the narrowest column on
