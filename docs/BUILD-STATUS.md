@@ -1675,6 +1675,73 @@ guard: `aimPanel` already sets the thread when the mark is clicked, and
 the fallback only matters for a composer aimed by a path that does not.
 Kept, as a guard.
 
+### Review round twenty: the panel, reviewed fresh
+
+A fresh session reviewed the four panel commits in a detached worktree,
+wrote fourteen probing browser tests, and reported eighteen findings. The
+first reviewer of this round ran out of its model's quota before starting;
+the second ran on Opus. What it found, and what was done:
+
+1. **A question asked from a comment thread never appeared anywhere.** The
+   thread's *Ask the agent* aimed the panel into that comment thread, and
+   the server leaves such a thread a comment, so the log (which reads
+   `asked` threads) filtered the message out. It now hands off the way the
+   design says: aimed at the same element, where the element's conversation
+   is or is opened. The comment stays a comment where it was left.
+2. **Opening the panel landed on the oldest message**: the log was scrolled
+   before the dock's `display: none` was lifted, so it had no height to
+   scroll. Shown first, then scrolled.
+3. **The one-second grain from the last fix reordered same-second
+   messages**, sorting every page-level message above every thread message
+   in that second. Each source carries a running maximum instead, which
+   keeps an answer behind its question without flattening the finer stamps.
+4. **The sheet was flush against the left edge at 1440** and 1026px wide.
+   It narrows to the reading measure the phase asked for, and the pair is
+   centred; the test now checks the measure and the gutter rather than
+   "less than 1100".
+5. **At 1280 the overlay covers the sheet's right-hand side.** Kept: the
+   design's caption for that width is "nothing reflows", and the panel is
+   a drawer you close. The test says so now.
+6. **An empty log left the foot half way up the panel**, because hiding the
+   only `flex: 1` child collapsed the column. The log keeps its place.
+7. **The verdict is inside a panel that starts closed**, and five tests
+   clicked it through `display: none` because `Page::click` calls
+   `el.click()`. The banner sends the reviewer to the conversation, the
+   handle carries its name until this browser has opened the panel once,
+   and a test hit-tests a verdict button rather than clicking a hidden one.
+8. **The element's preview opened whichever conversation came first**: the
+   thread was closed over when the button was built. It is read off the
+   node each render.
+9. **Every acceptance row repeated the count and the spine**, because the
+   rows share their task's ref. Both belong to the first element carrying
+   the ref, as threads and composers already did.
+10. **The panel never said the agent arrived or left.** It does, once per
+    change, and nothing before the first snapshot.
+11. **A chip whose element left in a revision was a dead control showing a
+    raw ref.** It says "element gone" and is not a button.
+12. **Revision and presence lines are page-side and do not survive a
+    reload.** Kept, and the spec says so.
+13. **A page-level draft from the build with a floating chat became a
+    permanent recovery row.** It is folded into the panel's composer.
+14. **A synchronous throw from `fetch` wedged the composer**, since neither
+    `then` nor `catch` ran. The send starts inside a promise.
+15. Dead code from the inline question thread and the floating chat, in
+    both the script and the stylesheet: removed.
+16. Print kept the panel link, the previews and the spine, and pinned the
+    sheet to 1180px: fixed.
+17. Test defects: a duplicated click, two weak viewport assertions, no
+    coverage of the scroll position. Fixed with the findings above.
+18. Docs that described what the page no longer does: the spec block and
+    the skill's chat section.
+
+Six new browser tests and twenty-two mutations, all caught in the end.
+Five survived on the first pass and each named a real gap: a scroll
+mutation that left the correct line in place, a badge guard that was dead
+because creation was already gated, a `hidden` flag the stylesheet no
+longer honoured, a shell padding the flex centring already provided, and a
+presence line that was logged twice because the page reports the agent
+arriving before its first snapshot. Gate: 529 tests.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
