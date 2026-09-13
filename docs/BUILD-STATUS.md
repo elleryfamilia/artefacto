@@ -2022,6 +2022,66 @@ guard only covered what the other missed, so neither could be mutated alone.
 It compares whole refs now, which is also the version a plan whose question
 id is the tail of another element's ref cannot fool. Gate: 553 tests.
 
+### Review round twenty-two: the whole branch, before the PR
+
+Two reviewers, because the first ran out of budget. The Codex CLI read the
+branch diff and named two things before it stopped; a fresh Opus session in
+a detached worktree covered what it never reached and proved five more in a
+running browser. Fixed in `b5abd91` and `cfdd7f7`.
+
+What Codex found:
+
+- **An interrupt keyed its identity on the log cursor.** A nudge is never
+  written to the log, so `seq` on one is whatever `last_seq` happened to be
+  when it was announced: two questions sent with nothing logged between them
+  carry the same number, and the "said once" check swallowed the second in
+  silence. The agent's own cause carries no key now. Fixing it exposed a
+  second layer -- an empty string used as a key made every stop after the
+  first disappear.
+- **The conversation's composer read the revision at send time.** Every
+  element composer records the revision it was opened against (spec 4.3);
+  the panel did not, so a push landing mid-sentence told the agent the
+  reviewer had read a plan they had not.
+
+What the fresh session found:
+
+- **Every "Use as your answer" click threw.** The handler called a function
+  that does not exist. The answer still landed, because `send` had already
+  rendered, so the feature looked right while logging an uncaught error. The
+  test that clicks the button never checked `page.errors()`.
+- **The conversation's composer threw away anything typed while a send was
+  in the air.** The box stays editable during the round-trip and the success
+  handler cleared it regardless. Proved with the held-`/cmd` shim.
+- **The sent notice could say "2 of 1 tasks reviewed."** It counted every
+  mark the log remembers, including elements a revision removed, against the
+  tasks on screen, so it contradicted the bar beside it.
+- **An answer to a question the plan does not have was accepted.** The one
+  ref-bearing command with no existence check: it reached the log and the
+  agent's feedback document while rendering nowhere.
+- **The page's fold cleared the verdict on a revision; the server's keeps
+  it.** Invisible today, and a trap for whatever reads it next.
+
+Three test gaps, each proved by a mutation that stayed green: a phase's own
+status in the revision summary, the whole-ref comparison behind the answer
+offer, and the ledger's dropped-column path, which lost its only assertion
+in an earlier rewrite. The session also ran positive controls on two other
+mutations to show the suite does bite where it claims to.
+
+Two smaller things fixed: the working row was the one place in the panel
+that would not say the agent's name, and the strip test scrolled to an
+element and asserted a numeral that only holds in a narrow band on that
+plan, which is what made it flake under load.
+
+Left alone and worth knowing: `chipFor`'s `gone` argument cannot change what
+it renders, because a thread is unanchored precisely when its ref is absent
+and the lookup has already failed -- unverified, so not churned this late.
+`renderAll` calls `renderRecovery` twice so a legacy draft does not flash,
+and `restoreDrafts` re-reads the whole draft map on every render, which is
+every socket frame.
+
+Twelve mutations on the fixes, all caught in the end; two survived the first
+pass and both named a test that read stronger than it was. Gate: 560 tests.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
