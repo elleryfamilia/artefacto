@@ -342,6 +342,15 @@ Grotesque, Space Mono, Bungee, embedded like Newsreader and JetBrains Mono),
 squares every corner, and doubles every structural rule; radii and the
 rule weight are tokens for that reason.
 
+**The header (the third design round, 2026-09-13).** The bar carries the
+brand, the conversation, the presence pill, one link out, the plan's
+identity, and the theme. Only one of those leaves the document, so only one
+of them is a link: *All artifacts* has a grid mark, the action colour, a rule
+under it, and a divider between it and the plan's id. The theme is a
+preference rather than part of the review, so it is one glyph at the end of
+the bar with the four choices behind it, closed by Escape or a click outside;
+the glyph's label says which theme is showing.
+
 **Where you are in the plan (the third design round, 2026-09-13).** The
 header carries a strip: one segment per section the plan has (summary, open
 questions, risks, phases, phase dependencies), each as wide as that
@@ -352,10 +361,14 @@ segment. One number drives all of it: how far the reader has scrolled, as a
 fraction of what there is to scroll. That fraction fills the line behind the
 segments, places a caret, says which segment the reader is in, and positions
 the scrubber. The phases segment is a group: it carries a numeral per phase
-up to six and dense ticks past that, counts *N of M* for the phase the read
-line is in, and flags a phase that holds a blocked task or a high risk. A
-click on a segment scrolls the section under the header, not behind it, and
-flashes it. The strip is not printed.
+up to six and dense ticks past that, and flags a phase that holds a blocked
+task or a high risk. The numeral is the count; the strip does not also spell
+out *N of M* beside it, and the glyph on a segment is navigation furniture
+that never takes a colour in any state. A click on a segment scrolls the
+section under the header, not behind it, and flashes it. Anchor jumps clear
+the header too: `plan.js` measures the bar into `--bar-h` and the page's
+`scroll-margin-top` follows it, because the strip made the header two rows
+tall and a fixed margin no longer cleared it. The strip is not printed.
 
 **When the agent needs to stop the page (the third design round,
 2026-09-13).** A panel message waits; an interrupt does not. The page dims,

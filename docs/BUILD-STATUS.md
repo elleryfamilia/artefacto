@@ -1884,6 +1884,38 @@ on the viewport width, the floor shows as squeezed numerals rather than a
 sliver, and the dialog fits a 420px viewport once its message is capped, so
 the backdrop's own scrolling needed a 240px one. Gate: 547 tests.
 
+### The owner's pass over the header
+
+Four notes after looking at the built page, all in `41a7ee9`:
+
+- The strip no longer spells out *2 of 2*. The numeral already says which
+  phase the reader is in.
+- The strip's glyphs never take a colour. They are navigation furniture, and
+  the action tint on hover read as a status the segment does not have. A
+  render test holds every `.pv-map-icon` rule to the neutral family.
+- The theme is put away behind one glyph at the end of the bar. Four buttons
+  standing open, one of them a solid black chip, made the loudest thing in
+  the header the one thing with nothing to do with the plan. Escape and a
+  click outside close the menu, and the glyph's label says which theme is
+  showing.
+- *All artifacts* looks like the way out. It was mono capitals in a row of
+  mono capitals, so the one control that leaves the document read as another
+  label. It has a grid mark, the action colour, a rule under it, and a
+  divider before the plan's own identity.
+
+Two things the check turned up. `display: flex` on a class outranks the
+browser's own `[hidden]` rule, so the theme menu painted while its property
+said closed -- and the test believed the property, so it passed with the menu
+on screen. The assertions read `getComputedStyle(...).display` now. And the
+fetch stub the error-path tests use counted the page's thirty-second ping as
+a write, which made "nothing else was sent" true only until the next ping
+landed; that is what failed one full run and passed the next. The stub lets a
+ping through and does not count it.
+
+Nine mutations on the four changes, one of which survived: asserting the
+link's mark by its class alone passes with no mark in the markup, because the
+stylesheet names the class too. Gate: 548 tests.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
