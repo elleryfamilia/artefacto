@@ -2380,6 +2380,16 @@
       const pill = document.querySelector(".pv-presence");
       if (!pill) return;
       const l = presenceLabel();
+      /* The agent coming and going is part of the conversation: the panel
+         says so once per change. Nothing is said until the page has its
+         first snapshot, or a load would report the agent arriving. */
+      const here = !!S.state.presence;
+      if (!S.syncing && S.state.lastSeq > 0) {
+        if (S.ui.agentHere !== undefined && S.ui.agentHere !== here) {
+          panelEvent("presence", here ? "the agent is here" : "the agent left");
+        }
+        S.ui.agentHere = here;
+      }
       pill.querySelector(".pv-presence-text").textContent = l.text;
       pill.setAttribute("data-mode", l.mode);
       setMarkState(pill.querySelector(".ag-mark"), markStateFor(l.mode));
@@ -2484,14 +2494,8 @@
       const open = t.status === "open" || t.status === "unanchored";
       node.querySelector(".thread-edit").hidden = !open;
       node.querySelector(".thread-delete").hidden = !open;
-      /* On a question thread every follow-up is for the agent, and a Reply
-         there would wait for the sent review: the trap this thread kind
-         exists to remove. The persistent input is the one way to write in
-         it, so the Ask button goes too. */
-      node.querySelector(".thread-reply").hidden = !!t.asked;
-      node.querySelector(".thread-ask").hidden = !!t.asked;
-      /* A question thread is not rendered here at all: it lives in the
-         conversation panel. */
+      /* Only comment threads are rendered on an element: a question is a
+         conversation, and it lives in the panel. */
     }
 
     function threadNode(t) {
@@ -2704,7 +2708,7 @@
           return;
         }
         const actorRow = el("span", { class: "thread-actor" }, document.createTextNode(actorLabel(e.actor)));
-        if (e.ref) actorRow.appendChild(chipFor(e.ref));
+        if (e.ref) actorRow.appendChild(chipFor(e.ref, e.unanchored));
         if (e.note) actorRow.appendChild(el("span", { class: "pv-ctx is-resolution", text: e.status }));
         actorRow.appendChild(el("span", { class: "thread-when", text: whenLabel(e.ts) }));
         const attrs = { class: "pv-panel-msg" + (e.key === "page" ? " pv-chat-msg" : ""), dataset: { actor: e.actor }, title: e.ts };
@@ -2737,14 +2741,6 @@
       document.querySelectorAll(".pv-panel-count").forEach(function (n) { n.textContent = String(messages); });
       if (S.ui.panelFollow !== false) log.scrollTop = log.scrollHeight;
       renderPanelComposer();
-    }
-
-    /* An open panel always has somewhere to write. A body swap rebuilds
-       the panel and restores composers from drafts only; a composer nobody
-       has typed into has no draft, so it is opened again here — after the
-       drafts, so a stored one is not joined by an empty twin. */
-    function ensureChatComposer() {
-      /* The panel's composer is built with the panel; nothing to open. */
     }
 
     /* One line, until the reviewer says they have read it: the difference
@@ -2786,7 +2782,7 @@
         b.classList.toggle("has-thread", !!askedThreadOn(ref));
         let badge = b.querySelector(".ask-count");
         if (count && first && !badge) { badge = el("span", { class: "ask-count" }); b.appendChild(badge); }
-        if (badge) { if (count && first) badge.textContent = String(count); else badge.remove(); }
+        if (badge) { if (count) badge.textContent = String(count); else badge.remove(); }
         /* The element with a discussion: a spine, and a one-line preview of
            the last message after the controls (not on criterion rows, which
            have no room). */
@@ -2838,9 +2834,6 @@
 
     function setPanelOpen(open) {
       S.ui.chatOpen = open;
-      /* The reviewer has seen the panel; a draft in it no longer opens it
-         on their behalf. */
-      S.ui.chatDraftShown = true;
       try { window.localStorage.setItem(PANEL_KEY, open ? "open" : "closed"); } catch (e) { /* best effort */ }
       document.querySelectorAll(".pv-panel-handle.is-labelled").forEach(function (h) { h.classList.remove("is-labelled"); });
       renderChat();
@@ -2890,11 +2883,18 @@
 
     /* The context chip: which element a message is about. A link into the
        page: it scrolls the element into view and flashes it. */
-    function chipFor(ref) {
+    function chipFor(ref, gone) {
       const target = ref ? findRef(S.root, ref) : null;
       const title = target ? elementQuote(target) : ref || "";
+      if (gone || !target) {
+        /* The element left in a revision: the chip says so rather than
+           offering a jump to nowhere. */
+        return el("span", { class: "pv-ctx is-gone", title: ref || "" },
+          el("span", { class: "pv-ctx-kind", text: ref ? refKind(ref) : "plan" }),
+          el("span", { class: "pv-ctx-title", text: "element gone" }));
+      }
       const chip = el("button", { type: "button", class: "pv-ctx", title: ref || "" },
-        el("span", { class: "pv-ctx-kind", text: ref ? refKind(ref) : "plan" }),
+        el("span", { class: "pv-ctx-kind", text: refKind(ref) }),
         el("span", { class: "pv-ctx-title", text: title.slice(0, 48) }));
       chip.addEventListener("click", function () { jumpTo(ref); });
       return chip;
@@ -2977,7 +2977,7 @@
         const thread = p.thread ? S.state.threads.find(function (t) { return t.id === p.thread; }) : null;
         const ref = p.ref || (thread ? thread.target : null);
         const chipHost = line.querySelector(".pv-panel-target-chip");
-        chipHost.replaceChildren(chipFor(ref));
+        chipHost.replaceChildren(chipFor(ref, thread && thread.status === "unanchored"));
       }
       composer.querySelector(".thread-composer-hint").textContent = S.state.presence ? "Enter to send" : "waits for an agent";
       setMarkState(composer.querySelector(".thread-composer .ag-mark"), S.state.presence ? "" : "off");
@@ -3130,7 +3130,7 @@
       list.replaceChildren();
       drafts.forEach(function (d) {
         const row = el("div", { class: "pv-orphan-draft", dataset: { composer: d.id } });
-        row.appendChild(el("span", { class: "pv-orphan-draft-what", text: draftLabel(d) + (d.kind === "followup" ? " \u2014 its thread is gone" : " \u2014 its element is gone") }));
+        row.appendChild(el("span", { class: "pv-orphan-draft-what", text: draftLabel(d) + " \u2014 its element is gone" }));
         row.appendChild(el("p", { class: "thread-text", text: d.text }));
         row.appendChild(el("button", { type: "button", class: "pv-btn is-quiet", text: "Discard", onclick: function () {
           dropDraft(d.id);
@@ -3146,7 +3146,6 @@
         case "answer": return "Answer to " + d.ref;
         case "reply": return "Reply on " + d.thread;
         case "ask": return "Question on " + (d.thread || d.ref);
-        case "followup": return "Follow-up on a question";
         case "edit": return "Edit of " + d.thread;
         default: return "Message to the agent";
       }
@@ -3168,7 +3167,6 @@
        a reply. */
     function draftTarget(d) {
       if (!S.root) return null;
-      if (d.kind === "chat") return document.querySelector(".pv-chat-composers");
       if (d.kind === "comment" || d.kind === "answer" || (d.kind === "ask" && !d.thread)) {
         /* By ref, not by descent: a phase contains its tasks, and the
            first `.pv-composers` under a phase is its first task's. */
@@ -3277,7 +3275,6 @@
          close that one. */
       const close = function () {
         dropDraft(d.id);
-        if (S.ui.chatComposerId === d.id) S.ui.chatComposerId = null;
         document.querySelectorAll('[data-composer="' + d.id + '"]').forEach(function (n) { n.remove(); });
         renderRecovery();
       };
@@ -3286,7 +3283,6 @@
       const afterSend = function () {
         close();
         if (d.kind === "ask" || d.kind === "chat") markAsked();
-        if (d.kind === "chat") ensureChatComposer();
       };
       cancelBtn.addEventListener("click", function () {
         close();
@@ -3348,6 +3344,19 @@
       const map = loadDraftMap();
       for (const id in map) {
         const d = map[id];
+        /* A page-level draft from the build whose chat floated over the
+           bar: the panel is where it belongs now. */
+        if (d.kind === "chat") {
+          const box = document.querySelector(".pv-panel-composer textarea");
+          if (d.text && !S.ui.panel.text && box && !box.value) {
+            S.ui.panel.text = d.text;
+            savePanelDraft();
+            box.value = d.text;
+            box.rows = Math.min(6, d.text.split("\n").length);
+          }
+          dropDraft(id);
+          continue;
+        }
         if (!draftTarget(d)) continue;
         /* A message half-written is not hidden behind a closed panel:
            the first time the page finds it, the panel opens. Once. A
@@ -3484,7 +3493,6 @@
       renderNotices();
       renderRecovery();
       restoreDrafts();
-      ensureChatComposer();
       renderRecovery();
       if (S.ui.pendingFocus && applyFocus(S.ui.pendingFocus)) S.ui.pendingFocus = null;
     }

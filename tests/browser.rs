@@ -3635,6 +3635,18 @@ fn the_panel_says_when_no_agent_will_hear_it() {
         "waiting for an agent\u{2026}"
     );
     assert_eq!(
+        page.text(
+            "document.querySelector('.pv-panel-log .pv-panel-event:last-of-type').textContent"
+        ),
+        "the agent left",
+        "the agent going is part of the conversation"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-panel-event').length"),
+        1,
+        "said once, not on every render"
+    );
+    assert_eq!(
         page.text("document.querySelector('.pv-notice[data-kind=\"noagent\"] .pv-notice-text').textContent"),
         "No agent is attached. Your question waits for one."
     );
@@ -3662,6 +3674,21 @@ fn the_panel_says_when_no_agent_will_hear_it() {
     assert_eq!(
         page.text("document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-1\"] .thread-text').textContent"),
         "thinking\u{2026}"
+    );
+    assert_eq!(
+        page.text(
+            "document.querySelector('.pv-panel-log .pv-panel-event:last-of-type').textContent"
+        ),
+        "the agent is here",
+        "and so is the agent coming back"
+    );
+    page.eval(
+        "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 998, events: [] })",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-panel-event').length"),
+        2,
+        "one line per change, whatever else the page renders"
     );
 }
 
@@ -4128,6 +4155,16 @@ fn the_panel_composer_sends_once_and_keeps_its_place() {
         "!document.querySelector('.pv-panel-msg[data-thread=\"c-1\"]')",
         "the thread to go from the log",
     );
+    // The element loses what the conversation gave it, too.
+    assert_eq!(
+        page.eval(
+            "!document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-count') && \
+             !document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-preview') && \
+             !document.querySelector('[data-plan-ref=\"task:t-a\"]').classList.contains('is-discussed')"
+        ),
+        true,
+        "no count, no preview, no spine once the conversation is gone"
+    );
     assert_eq!(
         page.eval("document.querySelector('.pv-panel-target').hidden"),
         true,
@@ -4397,4 +4434,85 @@ fn a_send_that_cannot_leave_the_page_leaves_the_composer_usable() {
     );
     page.eval("(function(){ window.fetch = window.__fetch; return true; })()");
     let _ = s;
+}
+
+#[test]
+fn a_conversation_whose_element_left_says_so_and_keeps_its_draft() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    ask(&mut page, "task:t-a", "why this one first?", "c-1");
+    assert_eq!(
+        page.text(
+            "document.querySelector('.pv-panel-msg[data-thread=\"c-1\"] .pv-ctx').textContent"
+        ),
+        "taskTask A",
+        "the chip names the element while it is there"
+    );
+
+    // The next revision drops the task the conversation was about.
+    s.edit_plan("\"id\": \"t-a\"", "\"id\": \"t-b\"");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2' && !window.artefactoPlan.debug().syncing",
+        "revision 2",
+    );
+    page.click(".pv-panel-link");
+    assert_eq!(
+        page.text(
+            "document.querySelector('.pv-panel-msg[data-thread=\"c-1\"] .pv-ctx').textContent"
+        ),
+        "taskelement gone",
+        "the chip says the element left rather than offering a jump to nowhere"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-msg[data-thread=\"c-1\"] .pv-ctx').tagName"),
+        "SPAN",
+        "and it is not a control any more"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-panel-msg[data-thread=\"c-1\"]')"),
+        true,
+        "the conversation itself is still in the panel"
+    );
+}
+
+#[test]
+fn a_page_level_draft_from_the_old_chat_lands_in_the_panel() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // What the build with a floating chat panel left in session storage.
+    page.eval(
+        "(function(){ const key = Object.keys(sessionStorage).find(function (k) { return k.indexOf('artefacto:drafts:') === 0; }) \
+           || 'artefacto:drafts:plan:demo'; \
+         sessionStorage.setItem(key, JSON.stringify({ 'composer-old': { id: 'composer-old', clientId: 'cid-old', kind: 'chat', \
+           ref: null, thread: null, revision: 1, text: 'half a question from before' } })); return true; })()",
+    );
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    page.click(".feedback-bar-chat");
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
+        "half a question from before",
+        "the draft came back into the panel's composer"
+    );
+    assert_eq!(
+        page.eval("!document.querySelector('.pv-recovery')"),
+        true,
+        "and not into the recovery panel as an orphan"
+    );
+    assert_eq!(
+        page.eval("Object.keys(window.artefactoPlan.debug().drafts).length"),
+        0,
+        "the old draft is not left behind"
+    );
 }

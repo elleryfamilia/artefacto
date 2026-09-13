@@ -2504,34 +2504,14 @@ pre code { font-size: 1em; }
   overflow-wrap: anywhere;
 }
 
-/* The served bar is two rows: the hint, then the main row with the state
-   line, the counts, and the actions. The static bar keeps the one-row
-   layout of the base rule. */
-.feedback-bar.is-served { flex-direction: column; align-items: stretch; gap: 0; padding: 0; }
-.feedback-bar.is-served .feedback-bar-hint { flex: none; padding: 0.5rem 0.875rem; border-bottom: var(--rule-w) solid var(--rule); }
-.feedback-bar-main {
-  display: flex;
-  align-items: center;
-  gap: 0.875rem 1.25rem;
-  flex-wrap: wrap;
-  padding: 0.625rem 0.625rem 0.625rem 0.875rem;
-}
+/* The state line, the counts and the verdict group: the served page shows
+   them in the panel's foot, the static export in its own bar. */
 .feedback-bar-state { display: inline-flex; align-items: center; gap: 0.5rem; color: var(--ink-3); }
 .feedback-bar-state .pv-dot { border-radius: 50%; background: var(--ok); }
 .feedback-bar-state.is-saving .pv-dot { background: var(--warn); }
 .feedback-bar-counts { display: inline-flex; gap: 1rem; color: var(--ink); font-weight: 500; }
 .feedback-bar-counts .feedback-bar-blocking { color: var(--alarm); }
 .feedback-bar-counts .feedback-bar-blocking:empty { display: none; }
-.feedback-bar-actions {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-.feedback-bar-actions .pv-btn.is-lg { font-size: 0.719rem; }
-.feedback-bar .ask-btn.is-labelled { height: 2.125rem; }
 .feedback-bar-verdict { display: inline-flex; border: 1px solid var(--action-rule); border-radius: var(--radius); overflow: hidden; }
 .feedback-bar-verdict .pv-btn { border: 0; border-radius: 0; background: transparent; }
 .feedback-bar-verdict .pv-btn + .pv-btn { border-left: 1px solid var(--action-rule); }
@@ -2541,7 +2521,6 @@ pre code { font-size: 1em; }
 .feedback-bar-verdict .pv-btn.is-alarm.is-filled { background: var(--alarm); color: var(--alarm-ink); }
 .feedback-bar-verdict .pv-btn.is-alarm.is-filled:hover { filter: brightness(1.08); }
 .feedback-bar-verdict .pv-btn.is-sent { animation: pv-pop var(--t-mid) var(--ease); }
-.feedback-bar.is-sent .feedback-bar-main { color: var(--ink-2); }
 .feedback-bar-sent { color: var(--ok); font-weight: 500; }
 .feedback-bar-sent:empty { display: none; }
 
@@ -2560,7 +2539,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
    margin and the sheet keeps its measure. Closed, it is a handle. */
 /* Docked, the plan narrows to a reading measure and the pair is centred
    with a gutter; with the panel closed the sheet is the whole sheet again. */
-.pv-shell { display: flex; align-items: flex-start; justify-content: center; gap: 0; padding: 0 1.5rem; }
+.pv-shell { display: flex; align-items: flex-start; justify-content: center; gap: 0; }
 .pv-shell .pv-sheet { flex: 0 1 800px; min-width: 0; margin: 0; }
 .pv-shell:has(.pv-dock.is-hidden) .pv-sheet { flex-basis: 1180px; }
 .pv-dock {
@@ -2577,7 +2556,6 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
   /* The panel floats here, so it takes no room from the plan and opening it
      reflows nothing: the sheet keeps its measure and the panel sits over its
      right-hand side until it is closed again. */
-  .pv-shell { padding: 0; }
   .pv-shell .pv-sheet,
   .pv-shell:has(.pv-dock.is-hidden) .pv-sheet { flex-basis: 1180px; }
   .pv-dock {
@@ -2656,6 +2634,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
 .pv-ctx:hover { background: var(--action); color: var(--action-ink); }
 .pv-ctx .pv-ctx-kind { color: inherit; opacity: 0.7; text-transform: uppercase; }
 .pv-ctx.is-resolution { border-color: var(--ok); color: var(--ok); background: var(--ok-wash); cursor: default; }
+.pv-ctx.is-gone { border-color: var(--warn-rule); border-style: dashed; color: var(--warn); background: transparent; cursor: default; }
 .pv-panel-nudge {
   padding: 0.625rem 0.75rem;
   border-left: 3px solid var(--agent);

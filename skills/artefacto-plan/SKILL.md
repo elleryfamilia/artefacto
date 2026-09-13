@@ -145,7 +145,8 @@ mark beside every *Comment* button aims the panel at that element, and a
 question asked that way on an element with no thread yet opens one in the
 same event, so `data.thread` names the new thread and `data.ref` the
 element. Answer it in that thread; the reviewer sees the answer in the
-panel, next to the element it is about. Such a thread is `asked: true` in
+panel, with a chip naming the element it is about. A reply into a comment
+thread is a reply on that element, not part of the panel's conversation. Such a thread is `asked: true` in
 `status --json` and in the feedback document.
 
 1. **Check first**: the frame may be a redelivery after a crash, and a

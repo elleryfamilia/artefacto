@@ -265,8 +265,12 @@ Behaviour added in server mode:
   sends, the aim and the text survive a swap and a reload, one send is in
   flight at a time. Question threads are not rendered on their elements;
   the element carries a spine, a count on its mark, and a one-line preview
-  of the last message. Comment threads stay on their elements, and their
-  *Ask the agent* aims the panel at that thread
+  of the last message. Comment threads stay on their elements: a comment is
+  feedback for the review, and their *Ask the agent* hands off to the panel
+  aimed at the same element, where the element's conversation is. A message
+  whose element left in a revision keeps its place in the log and says so.
+  The revision and presence lines are the page's own, so a reload starts the
+  log from what the server holds: the messages, not the events between them
 - notices through one component (the mark, a kicker naming who speaks, the
   text, the actions): a nudge, a new revision, a sent review, no agent with
   a question waiting, the server stopping or gone, signed out
