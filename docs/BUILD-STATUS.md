@@ -1361,6 +1361,781 @@ had hidden, artefacto's non-zero exit for a stale render read as an invalid
 plan, and a harness trap: a mutation pass leaves the last mutation's build
 in `target/debug`, so a hand-drive must rebuild first.
 
+## The first real review, from Claude Code
+
+After plan 4 merged, the owner asked for plan 6 to be re-planned. The
+re-plan was written as an artefacto plan (`docs/plans/2026-09-12-plan-6-replan.plan.json`),
+pushed from a Claude Code session that followed `skills/artefacto-plan/SKILL.md`
+as written, with the owner as the reviewer on the page. It is the first time
+a real agent session ran the skill. What the run found, in order:
+
+1. **The skill's nudge line fails when the server holds two artifacts.**
+   `reply --nudge` as written in the skill exits 2 with "this server has
+   several artifacts; name one with --artifact". The frame names the
+   artifact. The skill now says to add `--artifact`. Process slip on the
+   agent's side: the frame was acknowledged before the nudge had landed,
+   because the two commands were chained without `&&`.
+2. **The session token reaches the chat.** The first line of the follow is
+   the session record, and Claude Code's Monitor delivers it as a
+   notification; `ack` and `reply` echo the session in their JSON. Not
+   fixed. The token is loopback-only and the reviewer is the owner, but the
+   skill's rule is to keep it out of anything shown, and a monitor that
+   prints it is at odds with that.
+3. **The skill assumes `artefacto` is on PATH.** A build-only install needs
+   the path set inside the Monitor command.
+4. **A comment does not reach the agent, and the reviewer expected it to.**
+   The reviewer typed a comment and asked in the terminal whether the
+   agent saw it. In digest mode a `thread.opened` alone is passive; the
+   agent only found it through `status --json`. This is `--passive live`
+   (spec 6.3) in practice, and the first real evidence a reviewer wants it.
+5. **The page never says "chat".** The agent told the reviewer to use "the
+   chat box"; the reviewer asked "what chat box?". The page's control is
+   *Ask the agent*, in the bottom bar and inside a thread beside *Reply*.
+   The skill names the button now.
+6. **Asking was not obvious or universal.** The reviewer: asking the agent
+   directly on the plan "is kinda brilliant, but it feels like it should
+   visually be more obvious and universal". *Ask the agent* existed in two
+   places only, and *Reply* and *Ask the agent* inside a thread looked
+   alike although only one wakes the agent. Built as the slice below.
+7. **What worked as written.** A page-level question reached the agent in
+   seconds and was answered on the page; `reviewer.idle` produced one
+   banner, `reviewer.away` one push notification, `reviewer.back` an
+   acknowledgement only; the sent review (verdict `comment`, one thread)
+   produced one revision with the thread resolved as changed and a note;
+   the page updated live on every push.
+
+### The slice: ask the agent from any element
+
+- **Server.** `chat.send` accepts `ref` (and `quote`) instead of `thread`.
+  The server checks the ref against the current revision, mints the thread
+  id the way `thread.open` does, and appends **one** `chat.sent` whose data
+  carries `thread`, `ref`, and `quote`. The fold opens the thread from that
+  event with `asked: true` and moves `next_thread_n` past it, so a replay
+  rebuilds it identically and there is never a `thread.opened` without the
+  question that was the point of it. `thread` and `ref` together are
+  refused; so is a ref not in the plan; nothing is logged for either.
+  `asked` is carried by `status --json`, the page's state snapshot, and the
+  feedback document, so an agent at review time can tell a question it
+  answered in place from a comment.
+- **Page.** Every element that offers *Comment* offers *Ask the agent*
+  beside it, the two in one `.el-actions` row placed where the comment
+  button alone was placed on the static page. Ask is outlined in the
+  accent at rest and fills on hover; inside a thread *Ask the agent* is
+  outlined the same way next to plain-text *Reply*. A thread opened by a
+  question is labelled *Question*. The served banner no longer says "the
+  agent hears you as you go", which was false in digest mode; it says
+  comments reach the agent with the review and *Ask the agent* reaches it
+  now. The bar carries the same sentence as a one-line hint with *Got it*;
+  it is stored in localStorage only on dismissal, so a page nobody
+  dismissed writes nothing (a test already asserts the store stays empty).
+- **Tests.** Two server tests (`tests/server_loop.rs`): the whole path
+  from `chat.send` with a ref to the feedback document, and the two
+  refusals. Three browser tests (`tests/browser.rs`): asking on a task
+  with no comment, the agent's answer joining the thread, and the label
+  surviving a reload; the hint's storage rule across a reload and the
+  banner sentence; and, on the kitchen-sink plan, one actions row per
+  comment button with the ask button right of it on the same line. Two
+  screenshots: `target/screenshots/ask-on-a-task.png` and
+  `ask-on-kitchen-sink.png`. The render golden was regenerated.
+
+### What the screenshot found
+
+The first cut stacked *Comment* above *Ask the agent* in prose columns (the
+summary, a risk's body), because each button was appended on its own to a
+flex column; the row wrapper fixed it. The second cut filled every ask
+button with the accent, and a page with a dozen of them read as a dozen
+warnings, because the blocking and high-risk chips are filled accent;
+outlined at rest, filled on hover. Neither would have been found by a
+read.
+
+### What the tests found
+
+The page's snapshot mapping (`fromSnapshot`) listed every thread field by
+name and dropped `asked`, so a question thread was labelled *Comment*
+after a reload; the browser test caught it on its first run. The index
+page inlines the plan stylesheet, and the new rules pushed it past
+tiny_http's chunked threshold, so `tests/server_clean.rs` failed on a
+substring that a chunk boundary now split ("Re" / "3e2" / "move from
+index"). The test support's `raw()` de-chunks responses. That was a latent
+flake: a chunk boundary inside a multibyte character would have made
+`read_to_string` fail and the whole response read as empty.
+
+### Mutations
+
+Fifteen, all caught: the fold never opening a thread from a ref, not
+marking it asked, not moving the counter; the server accepting thread and
+ref together, not checking the ref, dropping the quote; `asked` missing
+from status and from the feedback document; the snapshot dropping `asked`,
+the page's local event ignoring the assigned thread, the hint writing
+storage before dismissal, the two buttons not wrapped in one row, a
+question thread labelled *Comment*, the row stacking (CSS), and the banner
+still claiming the agent hears you as you go. Two mutations first hit the
+wrong occurrence of a repeated line (`let target = str_field(event,
+"ref")` appears three times in `fold.rs`) and passed for that reason; the
+occurrence was corrected and the mutation then bit. A mutation script must
+name the occurrence, not the first match.
+
+### Review round eighteen: the slice, reviewed fresh
+
+A fresh session reviewed `d9dd628` and `8de51bb` in a detached worktree with
+its own build cache, wrote probes (three server, five browser, all passing,
+kept only in the worktree), and found no correctness defect in the server
+path or the page: the fold invariant holds across ask, reply, resolve,
+delete, a question on a phase, and a push that removes the element; a
+restart rebuilds the same threads and the next id; a retried `client_id`
+assigns the same thread once, also after a restart; a second tab sees the
+question thread once; an ask draft with a ref survives a reload, lands in
+the recovery panel when its element goes, and sends after a restore; the
+twin rule holds; the reviewed toggle still follows the actions row; the
+static page is untouched. Five findings:
+
+1. **Reply on a question thread was a trap** (fixed, `eb4b5b9`). It sent a
+   passive `thread.replied`, so the follow-up waited for the sent review,
+   the exact confusion this thread kind exists to remove. A question thread
+   offers *Ask the agent* only; the browser test asks a follow-up from it
+   and sees the agent woken.
+2. **A question composer never said the question would wait when no agent
+   held the lease** (fixed). The chat panel had that line; the element and
+   thread composers did not, while the hint and the banner promised
+   "reaches the agent now" without qualification. Every question composer
+   carries the presence line, updated on change. The test expires the
+   lease under an open composer and watches the line change, opens a second
+   composer in the no-agent state, then brings an agent back.
+3. **The spec's feedback-document bullet omitted `asked`** (fixed).
+4. **Keyboard focus inside an element no longer lit its comment button on
+   a served page**, because the button moved into the actions row and the
+   rule used a child combinator (fixed with a second selector; not tested,
+   since a computed-style probe for a `:focus-within` rule is more harness
+   than rule).
+5. **`dechunk` drops a partial final chunk on a short read.** Only the
+   failure message of a timed-out read changes; left as is.
+
+The reviewer also noted that `applyEvent`'s header says every case is safe
+to run twice while the question branch, like `thread.replied`, would append
+the message again; the page never hands it the same event twice (its own
+client id is filtered, the snapshot cursor skips logged events, and a
+reply with seq 0 resyncs), so the comment overstates and the code is fine.
+
+Mutations on the fixes: Reply left on a question thread, the composer line
+not updated on a presence change, never added, and ignoring presence; all
+four caught. Gate: 514 tests, fmt and clippy clean.
+
+## The design port
+
+After the first real review, the owner ran a design pass in claude.ai/design
+from the brief in `docs/design/2026-09-12-design-pass-brief.md`. Its
+stylesheet (`artefacto.css`, kept beside the brief's inputs in the session
+scratchpad; the tool exposes no export) was the contract. The plan for the
+port (`docs/plans/2026-09-12-design-port.plan.json`) was itself reviewed on
+the artefacto page and approved at revision 2 with three decisions: vibe
+ships with its fonts embedded, *Request changes* stays enabled with nothing
+written, thread ids leave the page. Nine slices, each built, tested,
+screenshotted in light and dark, committed, and mutated before the next.
+
+### What was built
+
+1. **Colour roles** (`1fefa6f`). Four families that never mix: neutral,
+   status, action, agent; `--brand` for the square only. Every former
+   `--accent` use re-pointed by role (the index page's borrowed uses too).
+   Two render tests: no rule names `--accent`, and every ink and role reads
+   at 4.5:1 on the page in every theme, with each role's ink on its fill.
+2. **The mark, avatars, the card** (`ea1bf28`). One SVG for the agent in
+   four states; the presence pill is the mark plus a word (`none` became
+   `off`); avatars on every message; the thread id gone from the page; the
+   card's edge by kind and status; a resolved thread's note rendered as the
+   resolution line with its chip, not as one more turn.
+3. **Ask and answer** (`aa82e5f`). The ask control is the mark, labelled
+   until the first ask on this browser; tinted on an element with a
+   question, where a click goes to that thread's input; the working row
+   from accept to answer, timeboxed; the persistent input that sends on
+   Enter and keeps its draft across a swap; the hint line under a first
+   question saying who hears it.
+4. **One button family** (`89c8d4d`). `pv-btn` and its variants; the old
+   text-button class gone and kept gone by a render test; the composer's
+   foot row; the comment button tints rather than fills; a browser test
+   holds the count of filled controls at zero before a send.
+5. **The bar** (`35d634d`). Two rows; the state line (Saving, Saved · rev
+   N, and the leaving line); two verdicts in one group, the sent one
+   filled, the verdict carried by the snapshot so a reload keeps it; the
+   Approve checkbox and the green Send button gone.
+6. **Notices** (`a522eb3`). One component with the mark and a kicker; a
+   derived `noagent` kind while a question waits with nobody attached.
+7. **The static export** (`7562344`). The static editor's foot, the
+   clipboard button in the family, a print block that hides the agent.
+8. **Vibe** (`d3ebe12`). The third theme, its three families embedded (the
+   font tool now leaves a static family's instances alone), a fourth
+   toggle position that survives a reload, radii and the structural rule
+   weight as tokens.
+9. **Screenshots** (`110bd5e`). The kitchen-sink page with a question
+   thread, a blocking comment, a changed and a declined thread, in light,
+   dark, and vibe; the static export; all under `target/screenshots/`.
+
+### What the screenshots found
+
+The first cut stacked *Comment* above the mark in prose columns, and the
+second filled every ask control with the accent so a page read as a dozen
+warnings; both were fixed before the slice was committed. The dark
+screenshot was first taken mid-crossfade and showed a blend of both
+palettes; the test now waits for the theme animation class to clear.
+
+### What the tests found, and what they did not
+
+The page's snapshot mapping dropped `asked` (caught on the first run); the
+index page grew past tiny_http's chunked threshold (fixed by de-chunking in
+the test support); the `Served` helper's page URL assumed the demo fixture
+(found when the vibe reload check ran on the kitchen-sink plan); a
+`connected()` wait that evaluated `window.artefactoPlan.debug()` before the
+script had run.
+
+**Not found for eight commits: the first token rewrite dropped `--font-serif`
+and `--font-mono`.** Every rule kept referring to them, the browser fell back
+to its own serif and mono, and the screenshots looked plausible, because a
+Times-like serif and a Courier-like mono are what a reader expects to see.
+The render tests asserted that the fonts were embedded, never that the tokens
+named them. It surfaced only when the vibe slice went to add a display token
+next to two that were not there. A render test now pins that every type
+token names an embedded family, in the root and in vibe. Lesson for the
+record: a screenshot proves layout and colour; it does not prove a typeface
+unless someone looks for that typeface.
+
+### Mutations
+
+Thirty-one across the nine slices, all caught in the end. Six survived on
+the first try and each led to a stronger test: the count of ask controls
+included the bar's (counted in rows now); the alignment check compared
+tops of buttons of different heights (centres now); the no-id check read
+`innerText`, which is empty inside the page's content-visibility region
+(leaf `textContent` now); the no-filled-control check ran before any thread
+existed (after the threads now); "both verdicts fill" passed because the
+test never checked the other button after Approve; and a mutation aimed at
+`chat()` hit the first of three identical lines in `fold.rs` (the memory
+note from the ask slice, applied again).
+
+### Review round nineteen: the port, reviewed fresh
+
+A fresh session reviewed the twelve commits in a detached worktree, ran
+the lib, clippy, and the full browser suite in headless Chrome, wrote five
+probing browser tests, and confirmed four real defects with them. Twelve
+findings; fixed in `ea5c0a8` unless noted:
+
+1. **The working state never cleared when the answer arrived in a
+   snapshot** (an offline page, a resync), and **a reload or a second tab
+   showed no working state at all**, because the state lived in the page's
+   memory and was only moved by events. It is now reconciled from the
+   server's state before every render: a question thread whose last turn
+   is the reviewer's is waiting; anything else is not. The event stream
+   only says when a question was asked.
+2. **Resolving a question thread did not end its working state**, and the
+   derived no-agent notice then reported a waiting question for a resolved
+   thread. Same fix: a resolved thread is not open, so nothing waits.
+3. **A reviewer reply on a resolved thread erased the resolution line**,
+   because the line was the last agent message by guess. The server now
+   marks the closing note (`Message.note`) in the fold, the snapshot,
+   `status --json`, and the feedback document's replies, and the page
+   renders that message as the resolution wherever it sits.
+4. **A body swap during an in-flight follow-up kept the sent text and
+   Enter sent it again.** The send is keyed by thread now; the live input
+   is the one cleared and re-enabled when the reply lands.
+5. **Focus and caret in the persistent input were lost on a swap, and its
+   draft on a reload.** The view capture knows the input by its thread, the
+   render that creates the input applies a kept focus when the mount waits
+   on a snapshot, and drafts live in session storage.
+6. **A follow-up half-written when its thread was resolved vanished**, and
+   one whose thread was deleted was listed nowhere. The input stays while
+   it holds text, and an orphaned follow-up sits in the recovery panel.
+7. Three colour-family mixes: the page-level chat's agent label in `--ok`,
+   the static clipboard button filled `--ok`, a literal shadow on the
+   stuck topbar. Fixed. The mark's amber *waiting* state keeps borrowing
+   the status family on purpose and says so in the stylesheet.
+8. The contrast test read three of the five token blocks and only against
+   the page. It now finds every block by scanning and checks the surface
+   too; the print palette is excluded as a copy by construction.
+9. Print under dark or vibe put light ink on white paper. The print block
+   re-declares the light palette for every theme.
+10. Two dead rules for the working row, the ask label hidden on criterion
+    rows (kept: a one-line row has no room for a tooltip), and the poster's
+    kind chip borrowing the alarm ink for a brand fill. Fixed except the
+    criterion rows.
+11. Docs: the reference's verdict row listed `comment` as a page verdict.
+    Fixed; the served page sends `approve` or `request_changes`, the static
+    export `approve` or `comment`.
+
+Three new browser tests hold the fixes (`the_working_state_follows_the_servers_state`,
+`a_resolution_stays_the_resolution_after_a_reply`,
+`a_follow_up_sends_once_and_keeps_its_place`); ten mutations on them, all
+caught. One more thing the tests found on the way: a closed phase cannot
+hold focus, so a test that types into a thread's input opens the phases
+first, as a reviewer would have to. Gate: 522 tests, green.
+
+### Found live, after the port
+
+The reviewer asked a question on the design-port plan while three
+artifacts sat on the server, each with its own `c-1`. The skill's thread
+reply, `reply --thread c-1`, was refused with "c-1 exists on three
+artifacts; name one with --artifact", and the CLI then refused
+`--artifact` next to `--thread`, which it had declared as conflicting.
+The server already resolved the pair; only the flag rule stood in the
+way. Fixed: the two go together, a server test holds it with two
+artifacts that both own a `c-1`, and the skill says to add `--artifact`
+to a thread reply when the id is on more than one artifact.
+
+## The conversation panel
+
+The second design round (the *Auth Refactor Panel* page and section 08 of
+the sheet, its stylesheet saved beside the first as `artefacto-v2.css`)
+moved the conversation with the agent out of the elements and into one
+panel. The owner answered the one question the phase asked: closed by
+default, with something always in reach to pull it up. Four tasks, three
+slices, on top of the port:
+
+1. **The shell** (`731dfbb`). `mountPanel` wraps the sheet in `.pv-shell`
+   and docks `aside.pv-dock > .pv-panel` beside it: sticky from 1400px
+   (the sheet gives it room), a fixed overlay below (the sheet keeps its
+   measure); head with an X, log, composer, foot with the state line, the
+   counts, and the two verdicts, so the served page has no bottom bar. A
+   floating handle, the mark with the message count, and a *Conversation*
+   link in the top bar open it; the choice is kept per browser. The
+   floating page-level chat is gone; its log and composer are the panel's.
+   Found on the way: a `const` declared below its first read is in its
+   dead zone, and the guarded read answered "closed" whatever was stored.
+2. **The log, the composer, the echo** (`0dd182b`). One log in time order:
+   page-level chat, every question thread's messages with a context chip
+   that names the element and scrolls to it (and flashes it), the working
+   row after a pending thread's last turn, a revision line, the nudge as a
+   card, a resolution as a chip on the note. One composer: an element's
+   mark aims it (at the element, or at its existing thread), a comment
+   thread's *Ask the agent* aims it at that thread, Enter sends, the aim
+   and the text live in session storage, focus and caret come back after
+   a swap, one send at a time, an aim whose thread is deleted is dropped
+   with the text kept. Question threads left the elements; the element
+   carries a spine, a count on its mark, and a one-line preview of the
+   last message that opens the panel there. The inline persistent input
+   from the port, and its storage, were removed; the tests that drove it
+   drive the panel now.
+3. **Order** (`f6db311`). The kitchen-sink screenshot showed an answer
+   above the question it answered: the server stamps seconds, the page's
+   own events carry milliseconds, and the sort put the coarser stamp
+   first. The log orders at one-second grain and ties keep each thread's
+   order; a test pins the question before its answer.
+
+Screenshots: `panel-docked-1440.png`, `panel-overlay-1280.png`, and
+`ask-on-kitchen-sink.png` with the panel open beside a page that has a
+question thread, a blocking comment, a changed and a declined thread.
+
+Mutations: five on the shell and thirteen on the rest, seventeen caught.
+The one that survived, dropping the composer's fallback that routes a
+second question on an element to its existing thread, is a redundant
+guard: `aimPanel` already sets the thread when the mark is clicked, and
+the fallback only matters for a composer aimed by a path that does not.
+Kept, as a guard.
+
+### Review round twenty: the panel, reviewed fresh
+
+A fresh session reviewed the four panel commits in a detached worktree,
+wrote fourteen probing browser tests, and reported eighteen findings. The
+first reviewer of this round ran out of its model's quota before starting;
+the second ran on Opus. What it found, and what was done:
+
+1. **A question asked from a comment thread never appeared anywhere.** The
+   thread's *Ask the agent* aimed the panel into that comment thread, and
+   the server leaves such a thread a comment, so the log (which reads
+   `asked` threads) filtered the message out. It now hands off the way the
+   design says: aimed at the same element, where the element's conversation
+   is or is opened. The comment stays a comment where it was left.
+2. **Opening the panel landed on the oldest message**: the log was scrolled
+   before the dock's `display: none` was lifted, so it had no height to
+   scroll. Shown first, then scrolled.
+3. **The one-second grain from the last fix reordered same-second
+   messages**, sorting every page-level message above every thread message
+   in that second. Each source carries a running maximum instead, which
+   keeps an answer behind its question without flattening the finer stamps.
+4. **The sheet was flush against the left edge at 1440** and 1026px wide.
+   It narrows to the reading measure the phase asked for, and the pair is
+   centred; the test now checks the measure and the gutter rather than
+   "less than 1100".
+5. **At 1280 the overlay covers the sheet's right-hand side.** Kept: the
+   design's caption for that width is "nothing reflows", and the panel is
+   a drawer you close. The test says so now.
+6. **An empty log left the foot half way up the panel**, because hiding the
+   only `flex: 1` child collapsed the column. The log keeps its place.
+7. **The verdict is inside a panel that starts closed**, and five tests
+   clicked it through `display: none` because `Page::click` calls
+   `el.click()`. The banner sends the reviewer to the conversation, the
+   handle carries its name until this browser has opened the panel once,
+   and a test hit-tests a verdict button rather than clicking a hidden one.
+8. **The element's preview opened whichever conversation came first**: the
+   thread was closed over when the button was built. It is read off the
+   node each render.
+9. **Every acceptance row repeated the count and the spine**, because the
+   rows share their task's ref. Both belong to the first element carrying
+   the ref, as threads and composers already did.
+10. **The panel never said the agent arrived or left.** It does, once per
+    change, and nothing before the first snapshot.
+11. **A chip whose element left in a revision was a dead control showing a
+    raw ref.** It says "element gone" and is not a button.
+12. **Revision and presence lines are page-side and do not survive a
+    reload.** Kept, and the spec says so.
+13. **A page-level draft from the build with a floating chat became a
+    permanent recovery row.** It is folded into the panel's composer.
+14. **A synchronous throw from `fetch` wedged the composer**, since neither
+    `then` nor `catch` ran. The send starts inside a promise.
+15. Dead code from the inline question thread and the floating chat, in
+    both the script and the stylesheet: removed.
+16. Print kept the panel link, the previews and the spine, and pinned the
+    sheet to 1180px: fixed.
+17. Test defects: a duplicated click, two weak viewport assertions, no
+    coverage of the scroll position. Fixed with the findings above.
+18. Docs that described what the page no longer does: the spec block and
+    the skill's chat section.
+
+Six new browser tests and twenty-two mutations, all caught in the end.
+Five survived on the first pass and each named a real gap: a scroll
+mutation that left the correct line in place, a badge guard that was dead
+because creation was already gated, a `hidden` flag the stylesheet no
+longer honoured, a shell padding the flex centring already provided, and a
+presence line that was logged twice because the page reports the agent
+arriving before its first snapshot. Gate: 529 tests.
+
+## Where you are, and when the agent stops you
+
+The third design round (the *Plan Navigation* and *Agent Interrupt* pages,
+their stylesheet saved beside the others as `artefacto-v3.css`) added two
+things: a persistent place-in-the-plan in the header, and a dialog for the
+few times the agent needs the reviewer now rather than eventually. Two
+phases, on top of the panel:
+
+1. **The plan strip** (`1b1d797`). Every section rule carries `data-part`,
+   so the strip reads the rendered page: a plan with no risks has no risks
+   segment. Each segment is as wide as that section's share of the
+   document, with a floor so a short one is never a sliver. One number
+   drives the rest -- how far down the document the reader is, as a
+   fraction of what there is to scroll -- and it fills the line, places the
+   caret, picks the active segment, and positions the scrubber. The phases
+   segment carries a numeral per phase up to six, dense ticks past that,
+   *N of M* for the phase the read line is in, and a flag on a phase
+   holding a blocked task or a high risk. A click scrolls the section under
+   the header rather than behind it, and flashes it. Not printed.
+
+   Found on the way: a fixed read line a third down the viewport never
+   reached the last part on a short page, which is why one `readFraction()`
+   now drives everything; numerals collided in a narrow phases segment,
+   which is why that group has the wider floor; and the first flag rule
+   matched the dependency graph's legend, whose dots carry every status, so
+   it reads the phase's own chip and its task rails instead.
+
+2. **The interrupt** (`8ffed4e`). Three causes and no others. The agent
+   says it is blocked (`reply --nudge --interrupt --title ... --ref ...`);
+   a revision moved an element the reviewer commented on; a finished review
+   sits unsent while a blocking comment or question is open, an agent holds
+   the lease, and the page has been quiet for three minutes. Each dims the
+   page, leads with one sentence, offers one way into the conversation and
+   *Not now*. Escape and the backdrop are *Not now*, focus goes in and
+   comes back, and the plan behind does not scroll. One at a time, once per
+   cause.
+
+   Only the first needs the agent, and it rides on the existing `nudge`
+   event as `data.interrupt`, so a page built before this shows the nudge as
+   a line instead. `--interrupt` requires `--nudge`, and `--title` and
+   `--ref` require `--interrupt`: there is no other way for an agent to stop
+   the page.
+
+Screenshots: `plan-strip.png`, `plan-strip-dense.png` (a fourteen-phase
+plan, ticks instead of numerals), `interrupt-blocked.png`,
+`interrupt-revision.png`, `interrupt-hanging.png`.
+
+Mutations: twenty-six across both, four survived, and each named something
+real (`8315a2e`). The strip sized its segments in two places, so mutating
+one was overwritten by the other; one function answers that now. The
+revision interrupt passed a `gone` flag to a chip that already works it out
+from the element's absence; the flag is gone. And three rules had no test
+at all: a sent review is not a hanging one, no agent means nobody is
+waiting, and a second revision may interrupt again after the first was
+dismissed. The server side had no test of its own either, so it has three:
+what the event carries, that a plain nudge carries none, and that
+`--interrupt` cannot be used without `--nudge`.
+
+### What the screenshots found
+
+Three things, none of which a test was looking for:
+
+- **Printing mid-interrupt gave a dimmed first page and nothing after it**
+  (`fd75292`). The backdrop covered the plan and the scroll lock cut the
+  document to one page. The print block hides the backdrop and lifts the
+  lock; the test emulates print media to prove both.
+- **A chip quoted the whole row** (`f14b689`). An open question and a risk
+  have no heading, so the quote fell back to the row: its severity chip, the
+  buttons the page injects, and the answer box. The hanging dialog showed it
+  whole -- *QUESTION BlockingSession TTL? AnswerAsk the agentYour ans...*.
+  The quote now reads the row's head line, which is where the statement is.
+  This was in the stored thread quotes the agent reads, too.
+- **A revision that only marks work done said "no change to phases or
+  tasks"** (`3f2e594`). Found by pushing the revision that marked these two
+  phases done. The summary counted what was added, removed and retitled and
+  nothing else, so the most common revision a plan under review gets reached
+  the banner as a lie. It counts what became done, and every other status
+  move beside it.
+
+### Review round twenty-one: the strip and the interrupt, reviewed fresh
+
+A fresh session reviewed both slices in a detached worktree and reproduced
+everything in a running browser rather than reading it off the page. Five
+bugs and four weak tests, all fixed in `485e5e9` and `5269750`.
+
+The two a reviewer would have hit in ordinary use:
+
+- **A revision while an interrupt was up froze the page for good.** The
+  backdrop lived in the body, so `replaceChildren` destroyed it while the
+  scroll lock stayed on `documentElement`: no dialog, no scrolling, nothing
+  saying why, and `S.ui.interrupt` still set, so every later interrupt was
+  blocked for the life of the page. Escape was the only way out and nothing
+  said so. The reviewer drove real wheel and PageDown input through DevTools
+  to show it. The backdrop now lives on the root, and a body swap takes the
+  dialog down itself: whatever it was about, it was about the revision being
+  replaced.
+- **The strip made the header two rows tall and the scroll margin stayed at
+  one.** 98px became 172px; `scroll-margin-top` was still `5rem`. Every
+  fragment link the page renders -- a task's dependency, the phase ledger,
+  the summary's blocking-question link -- landed entirely behind the header.
+  The bar measures itself into `--bar-h` and the margin follows it, so the
+  next change to the header does not break it again.
+
+The other three:
+
+- **A second interrupt was dropped.** The guard returned before recording
+  anything, and the nudge that carries a blocked interrupt is never logged,
+  so the agent's "I have stopped" was lost. One waits in a slot now; a
+  blocked one displaces whatever is waiting.
+- **The caret pointed at one segment while another was lit.** The caret was
+  placed by a linear map of the document and the segments by flex-grow with
+  floors and gaps, so the two disagreed once a floor bit: at 70% through the
+  kitchen-sink plan the caret sat over Phases while Risks was active. Both
+  now work from the segments' measured boxes, and the scrubber inverts the
+  same walk.
+- **A long message pushed the buttons off a page that could not scroll.**
+  The agent writes the body and nothing bounded it. The backdrop scrolls and
+  the message is capped at 40vh.
+
+Smaller, from the same round: a phase's flag read the same fact twice (the
+high-risk chip counts the phase's high-risk tasks, which is the same as a
+high dot on a task's rail), the hanging dialog was keyed by the blocking
+item as well as the revision so adding a blocking comment raised it again in
+the same quiet spell, the strip set no `aria-current` and gave the flag no
+label, a plan that fits the viewport read as unstarted, `--ref` was passed
+through unchecked so an agent's typo reached the reviewer as "element gone",
+and `--title` had no bound.
+
+Four tests asserted less than they read. Both "it does not come back" checks
+injected an empty frame, which cannot raise a dialog under any
+implementation; they replay a real event now. The summary test had one of
+each count, so swapping the two branches produced the same sentence. The
+floor under a segment had no test. Two of the three flag clauses had no
+coverage, because the kitchen-sink phase that triggers one triggers all
+three.
+
+Twenty-one mutations on the fixes, five of which survived the first pass and
+each named a test that was weaker than it read -- the caret's drift depends
+on the viewport width, the floor shows as squeezed numerals rather than a
+sliver, and the dialog fits a 420px viewport once its message is capped, so
+the backdrop's own scrolling needed a 240px one. Gate: 547 tests.
+
+### The owner's pass over the header
+
+Four notes after looking at the built page, all in `41a7ee9`:
+
+- The strip no longer spells out *2 of 2*. The numeral already says which
+  phase the reader is in.
+- The strip's glyphs never take a colour. They are navigation furniture, and
+  the action tint on hover read as a status the segment does not have. A
+  render test holds every `.pv-map-icon` rule to the neutral family.
+- The theme is put away behind one glyph at the end of the bar. Four buttons
+  standing open, one of them a solid black chip, made the loudest thing in
+  the header the one thing with nothing to do with the plan. Escape and a
+  click outside close the menu, and the glyph's label says which theme is
+  showing.
+- *All artifacts* looks like the way out. It was mono capitals in a row of
+  mono capitals, so the one control that leaves the document read as another
+  label. It has a grid mark, the action colour, a rule under it, and a
+  divider before the plan's own identity.
+
+Two things the check turned up. `display: flex` on a class outranks the
+browser's own `[hidden]` rule, so the theme menu painted while its property
+said closed -- and the test believed the property, so it passed with the menu
+on screen. The assertions read `getComputedStyle(...).display` now. And the
+fetch stub the error-path tests use counted the page's thirty-second ping as
+a write, which made "nothing else was sent" true only until the next ping
+landed; that is what failed one full run and passed the next. The stub lets a
+ping through and does not count it.
+
+Nine mutations on the four changes, one of which survived: asserting the
+link's mark by its class alone passes with no mark in the markup, because the
+stylesheet names the class too. Gate: 548 tests.
+
+### The owner's second pass: who is speaking, and what the bar is for
+
+Four more notes (`0fcac43`), all about the header earning its place:
+
+- **The agent is named.** Every agent event now carries its lease name, the
+  server's fold and the page's own both keep it on the turn it wrote, and
+  the page says *claude* where it said *the agent*. Per turn, not per page:
+  reading the name off whoever holds the lease now would relabel an older
+  agent's messages when a second one takes over, which a browser test
+  drives with two sessions. A log written before this, and a static export,
+  still read *agent*.
+- **"Plan viewer" is "Plan".** The page shows many kinds of artifact; the
+  room is named after what is on screen.
+- **The presence pill speaks only when something is wrong.** It was saying
+  *agent live* on every page of every review. It now appears for no agent, a
+  dropped connection, a stopped server, or a signed-out page, and says which
+  agent left.
+- **Less in the bar.** The plan's id was in the bar and again in the eyebrow
+  under the title, so the bar keeps the revision alone. The conversation's
+  count shows only when something has been said.
+
+Eleven mutations, one survivor: a `[hidden]` rule on the conversation's
+count that the browser's own rule already covered, since that element
+declares no display of its own. Deleted. The presence pill's is
+`inline-flex` and does need its own. Gate: 549 tests.
+
+### The owner's third pass: the bar is the room
+
+Four more (`d401253`):
+
+- **The conversation left the bar.** The floating handle is always in reach
+  and steps aside when the panel is open, so a second way in was a second
+  thing to read.
+- **The revision moved to the plan's own line.** It is a fact about the
+  document, so it sits beside who wrote it and when. The bar now carries
+  nothing of the plan's at all.
+- **The orientation is read once.** First open of a plan in a browser, with
+  a way out on it, and never again; another plan is a first open again.
+  Kept as a banner rather than promoted to a dialog, because the modal is
+  reserved for the three things that stop the page.
+- **The phase dependencies are no longer a strip segment.** The label
+  truncated to "PHAS…" beside the phases it belongs to.
+
+Eight mutations, all caught. One test had to change its meaning rather than
+its numbers: the served page asserted `localStorage.length === 0` to prove
+the server is the only store, and the orientation's "seen once" note lives
+there. It now names the keys it expects, so review data leaking into the
+browser still fails it. Gate: 550 tests.
+
+### The owner's fourth pass: the summary's phase ledger
+
+The right-hand table in the summary read `1s · 2m · 2 medium` per phase --
+the estimate mix and the risk heat. Two problems, both raised from the
+rendered page (`9ac7283`):
+
+- **The numbers were a code with no key.** `1s · 2m · 1l` is "one small, two
+  medium, one large task", three numbers deep, in the narrowest column on
+  the page, and nothing on the page says so. The cell now counts the tasks:
+  `3 tasks`. The sizes are still on every task's own rail, spelled out,
+  where a reader who wants them is already looking.
+- **The risk column said something about every phase.** Medium and low were
+  called out beside high, so almost every row carried a risk word and none
+  of them stood out. Only high is called out now, and only that row is
+  marked hot.
+- **The text sat on the rules.** The cells had no horizontal padding, so a
+  phase name in the current row sat directly on the accent bar that row
+  draws down its left edge. The text is inset; the rules and the row's wash
+  still run the table's full width.
+
+Six mutations, all caught, including the singular "1 task" and which row
+gets the hot marker. Gate: 551 tests.
+
+### The owner's fifth pass: a question talked through is still a question
+
+Found from the live review. A resolution note on the `q-live` question read
+"Answered in this thread: batched is what runs today…" while that question's
+`answers` entry was empty. The note was wrong, and it was wrong because
+nothing in the product connects the two:
+
+- **The gap.** An open question has an answer field. A question thread is a
+  conversation about it. A reviewer can talk a question through at length
+  and leave it unanswered, and the page says nothing. Every message the
+  reviewer wrote in a thread anchored to an open question now carries one
+  action, *Use as your answer*, which records that text word for word.
+  Offered only on the reviewer's own messages: the answer is theirs, and
+  guessing what they decided from a conversation is not the page's to do.
+  Once taken, the action says so and the question shows the answer.
+- **The skill.** It now says plainly that a question is answered when
+  `status --json` carries it under `answers` and not before, and that a
+  conversation about it does not count.
+
+Two layout notes from the same look: the ledger's figure column is a step
+smaller so the phase names have room, and the strip's dense ticks take the
+same left margin the numerals do -- without it the first tick butted against
+the "PHASES" label and read as part of the word. A third followed: the risk
+in that cell reads `(1)` in the alarm colour with "1 high risk" on hover,
+rather than `· 1 high` spelled out, which took the room the phase name
+wanted. The count of tasks beside it stays neutral -- tinting the whole cell
+made "5 tasks" read as the alarm, and the number of tasks is not alarming.
+
+Eleven mutations. Two survived and were the same defect: `refQuestion`
+parsed the id out of the ref with a prefix check and a lookup, and each
+guard only covered what the other missed, so neither could be mutated alone.
+It compares whole refs now, which is also the version a plan whose question
+id is the tail of another element's ref cannot fool. Gate: 553 tests.
+
+### Review round twenty-two: the whole branch, before the PR
+
+Two reviewers, because the first ran out of budget. The Codex CLI read the
+branch diff and named two things before it stopped; a fresh Opus session in
+a detached worktree covered what it never reached and proved five more in a
+running browser. Fixed in `b5abd91` and `cfdd7f7`.
+
+What Codex found:
+
+- **An interrupt keyed its identity on the log cursor.** A nudge is never
+  written to the log, so `seq` on one is whatever `last_seq` happened to be
+  when it was announced: two questions sent with nothing logged between them
+  carry the same number, and the "said once" check swallowed the second in
+  silence. The agent's own cause carries no key now. Fixing it exposed a
+  second layer -- an empty string used as a key made every stop after the
+  first disappear.
+- **The conversation's composer read the revision at send time.** Every
+  element composer records the revision it was opened against (spec 4.3);
+  the panel did not, so a push landing mid-sentence told the agent the
+  reviewer had read a plan they had not.
+
+What the fresh session found:
+
+- **Every "Use as your answer" click threw.** The handler called a function
+  that does not exist. The answer still landed, because `send` had already
+  rendered, so the feature looked right while logging an uncaught error. The
+  test that clicks the button never checked `page.errors()`.
+- **The conversation's composer threw away anything typed while a send was
+  in the air.** The box stays editable during the round-trip and the success
+  handler cleared it regardless. Proved with the held-`/cmd` shim.
+- **The sent notice could say "2 of 1 tasks reviewed."** It counted every
+  mark the log remembers, including elements a revision removed, against the
+  tasks on screen, so it contradicted the bar beside it.
+- **An answer to a question the plan does not have was accepted.** The one
+  ref-bearing command with no existence check: it reached the log and the
+  agent's feedback document while rendering nowhere.
+- **The page's fold cleared the verdict on a revision; the server's keeps
+  it.** Invisible today, and a trap for whatever reads it next.
+
+Three test gaps, each proved by a mutation that stayed green: a phase's own
+status in the revision summary, the whole-ref comparison behind the answer
+offer, and the ledger's dropped-column path, which lost its only assertion
+in an earlier rewrite. The session also ran positive controls on two other
+mutations to show the suite does bite where it claims to.
+
+Two smaller things fixed: the working row was the one place in the panel
+that would not say the agent's name, and the strip test scrolled to an
+element and asserted a numeral that only holds in a narrow band on that
+plan, which is what made it flake under load.
+
+Left alone and worth knowing: `chipFor`'s `gone` argument cannot change what
+it renders, because a thread is unanchored precisely when its ref is absent
+and the lookup has already failed -- unverified, so not churned this late.
+`renderAll` calls `renderRecovery` twice so a legacy draft does not flash,
+and `restoreDrafts` re-reads the whole draft map on every render, which is
+every socket frame.
+
+Twelve mutations on the fixes, all caught in the end; two survived the first
+pass and both named a test that read stronger than it was. Gate: 560 tests.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart

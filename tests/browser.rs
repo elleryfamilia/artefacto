@@ -19,6 +19,8 @@ struct Served {
     server: InProcess,
     url: String,
     session: String,
+    /// The served artifact's id, `plan:<meta.id>`, whatever the fixture.
+    artifact: String,
 }
 
 impl Served {
@@ -28,7 +30,11 @@ impl Served {
 
     /// The page's tokenless address, for a second tab or a reload.
     fn page_url(&self) -> String {
-        format!("http://127.0.0.1:{}/a/plan:demo", self.server().port)
+        format!(
+            "http://127.0.0.1:{}/a/{}",
+            self.server().port,
+            self.artifact
+        )
     }
 
     /// Push the repository's plan.json as the next revision.
@@ -82,6 +88,7 @@ fn served(fixture: &str) -> Served {
         server,
         url: v["url"].as_str().expect("a bootstrap url").to_string(),
         session: v["session"].as_str().expect("a session").to_string(),
+        artifact: v["artifact"].as_str().expect("an artifact id").to_string(),
     }
 }
 
@@ -109,14 +116,16 @@ fn the_served_page_runs_its_script_under_the_nonce_policy() {
         "the inline script ran, so the nonce in the header matched the one on the tag"
     );
     assert_eq!(
-        page.eval("!!document.querySelector('.feedback-bar')"),
+        page.eval(
+            "!!document.querySelector('.pv-dock') && !document.querySelector('.feedback-bar')"
+        ),
         true,
-        "the page mounted its controls"
+        "the page mounted its controls: the conversation panel, no bottom bar"
     );
     let banner = page.text("document.querySelector('.pv-banner').textContent");
     assert!(
-        banner.contains("send your review"),
-        "a served page ends in Send review: {banner}"
+        banner.contains("give your verdict") && banner.contains("conversation"),
+        "a served page ends in a verdict, given in the conversation: {banner}"
     );
     assert!(
         !banner.contains("copy"),
@@ -141,7 +150,7 @@ fn debug(page: &mut support::browser::Page) -> serde_json::Value {
 
 fn connected(page: &mut support::browser::Page) {
     page.wait_until(
-        "window.artefactoPlan.debug() && window.artefactoPlan.debug().connected && !window.artefactoPlan.debug().syncing",
+        "!!window.artefactoPlan && window.artefactoPlan.debug() && window.artefactoPlan.debug().connected && !window.artefactoPlan.debug().syncing",
         "the socket to connect and the state to load",
     );
 }
@@ -174,10 +183,17 @@ fn the_page_connects_and_shows_who_holds_the_lease() {
     connected(&mut page);
     // The push that served this page took the lease before the page
     // existed, and presence is announced on change only. The hello frame
-    // is what tells a late page who is here.
+    // is what tells a late page who is here -- and an agent being here is
+    // the normal case, so the header says nothing about it.
+    assert_eq!(
+        page.text("getComputedStyle(document.querySelector('.pv-presence')).display"),
+        "none",
+        "an attached agent is not news"
+    );
     assert_eq!(
         page.text("document.querySelector('.pv-presence').textContent"),
-        "agent waiting"
+        "agent waiting",
+        "the pill still carries the state, for when it is worth showing"
     );
     let d = debug(&mut page);
     assert_eq!(d["revision"], 1);
@@ -187,12 +203,22 @@ fn the_page_connects_and_shows_who_holds_the_lease() {
     s.server()
         .age_lease(artefacto::server::lease::TTL + std::time::Duration::from_secs(1));
     page.wait_until(
-        "document.querySelector('.pv-presence').textContent === 'no agent'",
-        "the pill to say the agent is gone",
+        "document.querySelector('.pv-presence').textContent === 'agent left'",
+        "the pill to say the agent is gone, by name",
     );
     assert_eq!(
         page.text("document.querySelector('.pv-presence').dataset.mode"),
-        "none"
+        "off"
+    );
+    assert_eq!(
+        page.eval("getComputedStyle(document.querySelector('.pv-presence')).display !== 'none'"),
+        true,
+        "and to be on screen: this is the case worth a word"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-presence .ag-mark').classList.contains('is-off')"),
+        true,
+        "the mark hollows out when nobody holds the lease"
     );
 
     // And a new agent polling: the pill changes without the page doing anything.
@@ -207,8 +233,8 @@ fn the_page_connects_and_shows_who_holds_the_lease() {
         ])
         .success();
     page.wait_until(
-        "document.querySelector('.pv-presence').textContent === 'agent waiting'",
-        "the pill to say the agent is waiting",
+        "getComputedStyle(document.querySelector('.pv-presence')).display === 'none'",
+        "the pill to step aside once an agent is back",
     );
     assert_eq!(
         page.text("document.querySelector('.pv-presence').dataset.mode"),
@@ -217,6 +243,13 @@ fn the_page_connects_and_shows_who_holds_the_lease() {
     assert_eq!(
         page.text("document.querySelector('.pv-presence').title"),
         "claude holds the lease"
+    );
+    assert_eq!(
+        page.eval(
+            "document.querySelector('.pv-presence .ag-mark').classList.contains('is-waiting')"
+        ),
+        true,
+        "the mark turns amber for a polling agent"
     );
     let errors = page.errors();
     assert!(errors.is_empty(), "{}", errors.join("\n"));
@@ -231,6 +264,15 @@ fn a_comment_typed_into_the_page_is_logged_and_shown_once() {
     let mut page = browser.new_page();
     page.navigate(&s.url);
     connected(&mut page);
+    // The composer's foot carries the blocking toggle beside the actions.
+    page.click("[data-plan-ref=\"task:t-a\"] .comment-btn");
+    assert_eq!(
+        page.eval("!!document.querySelector('[data-plan-ref=\"task:t-a\"] .composer .comment-box-foot .comment-box-blocking') && \
+                   !!document.querySelector('[data-plan-ref=\"task:t-a\"] .composer .comment-box-foot .composer-send.pv-btn')"),
+        true,
+        "one foot row: the toggle, then the actions as pv-btns"
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .composer .composer-cancel");
 
     comment(&mut page, "task:t-a", "why a trait here?");
 
@@ -325,11 +367,21 @@ fn release_path(page: &mut support::browser::Page, path: &str) {
 
 /// Make the page's `fetch` answer `path` with `status` and an empty body,
 /// `times` times, then pass requests through; counts calls in `window.__calls`.
+/// Make the next `times` writes to `path` answer with `status`, and count
+/// them in `window.__calls`.
+///
+/// A ping is neither intercepted nor counted. The page sends one every thirty
+/// seconds to say the reviewer is here, it goes to the same `/cmd` route as a
+/// write, and counting it made "no further calls happened" true only until the
+/// next ping landed -- which is a test that fails once in a while for a reason
+/// that has nothing to do with what it is checking.
 fn answer_with(page: &mut support::browser::Page, path: &str, status: u16, times: u64) {
     page.eval(&format!(
         "(function(){{ const prev = window.fetch; let left = {times}; window.__calls = 0; \
           window.fetch = function (u, o) {{ \
             if (!String(u).endsWith({path})) return prev(u, o); \
+            const body = o && typeof o.body === 'string' ? o.body : ''; \
+            if (body.indexOf('\"ping\"') >= 0) return prev(u, o); \
             window.__calls++; \
             if (left <= 0) return prev(u, o); left--; \
             return Promise.resolve(new Response('{{}}', {{ status: {status} }})); \
@@ -386,8 +438,23 @@ fn an_agents_reply_appears_in_the_thread_without_a_reload() {
     );
     assert_eq!(
         page.eval("document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length"),
-        3,
-        "comment, reply, note"
+        2,
+        "comment and reply stay turns of the conversation"
+    );
+    assert_eq!(
+        page.eval(
+            "!document.querySelector('.thread[data-thread=\"c-1\"] .thread-resolution').hidden"
+        ),
+        true,
+        "the note is the resolution line"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .thread-resolution .pv-chip').textContent"),
+        "changed"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .thread-resolution .thread-text').textContent"),
+        "swapped it"
     );
 }
 
@@ -434,12 +501,7 @@ fn the_reviewer_approves_and_the_agent_receives_the_document() {
     connected(&mut page);
     comment(&mut page, "task:t-a", "fine by me");
 
-    page.click(".feedback-bar-approve input");
-    assert_eq!(
-        page.text("document.querySelector('.feedback-bar-send').textContent"),
-        "Send approval"
-    );
-    page.click(".feedback-bar-send");
+    page.click(".feedback-bar-approve");
     page.wait_until(
         "document.querySelector('.feedback-bar-sent').textContent.indexOf('review sent') === 0",
         "the bar to confirm the review was sent",
@@ -525,14 +587,15 @@ fn marking_reviewed_reaches_the_log_and_survives_a_reload() {
         "the server is the store: nothing was read from localStorage"
     );
     assert_eq!(
-        page.eval("window.localStorage.length"),
-        0,
-        "and nothing was written there either"
+        page.eval("Object.keys(window.localStorage).sort()"),
+        serde_json::json!(["artefacto.intro.plan:demo"]),
+        "and nothing of the review was written there: the one key is this \
+         browser's own note that it has read the orientation once"
     );
 }
 
 #[test]
-fn asking_the_agent_wakes_it_from_the_page_and_from_a_thread() {
+fn asking_the_agent_wakes_it_from_the_page_and_from_a_comment_thread() {
     let Some(browser) = Browser::launch() else {
         return;
     };
@@ -541,9 +604,16 @@ fn asking_the_agent_wakes_it_from_the_page_and_from_a_thread() {
     page.navigate(&s.url);
     connected(&mut page);
 
+    // Page level: the handle opens the panel, the composer is aimed at the
+    // plan as a whole.
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "is this the whole plan?");
-    page.click(".pv-chat .composer .composer-send");
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-target').hidden"),
+        true,
+        "no target: the whole plan"
+    );
+    page.type_into(".pv-panel-composer textarea", "is this the whole plan?");
+    enter(&mut page, ".pv-panel-composer textarea");
     page.wait_until(
         "document.querySelectorAll('.pv-chat-msg').length === 1",
         "the chat message to show",
@@ -555,13 +625,31 @@ fn asking_the_agent_wakes_it_from_the_page_and_from_a_thread() {
     assert_eq!(r["status"], "chat");
     let seq = r["seq"].to_string();
 
+    // A comment thread's Ask the agent hands off to the panel, aimed at the
+    // same element. The comment stays a comment where it was left; the
+    // question is its own conversation, and it shows in the panel.
     comment(&mut page, "task:t-a", "and this?");
     page.click(".thread[data-thread=\"c-1\"] .thread-ask");
-    page.type_into(".thread[data-thread=\"c-1\"] .composer textarea", "really?");
-    page.click(".thread[data-thread=\"c-1\"] .composer .composer-send");
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-target .pv-ctx').title"),
+        "task:t-a",
+        "aimed at the element, not into the comment"
+    );
+    page.type_into(".pv-panel-composer textarea", "really?");
+    enter(&mut page, ".pv-panel-composer textarea");
     page.wait_until(
-        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
-        "the question to join the thread",
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-2\"]:not(.thread-working)').length === 1",
+        "the question to open its own thread in the panel",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length"),
+        1,
+        "the comment is still a comment on its element"
+    );
+    assert_eq!(
+        page.eval("!document.querySelector('.thread[data-thread=\"c-2\"]')"),
+        true,
+        "and the question is not rendered there"
     );
     let out = s.repo.run(&[
         "await",
@@ -575,7 +663,8 @@ fn asking_the_agent_wakes_it_from_the_page_and_from_a_thread() {
     let r: serde_json::Value = serde_json::from_str(out.success().stdout.trim()).unwrap();
     assert_eq!(r["status"], "chat");
     let last = r["events"].as_array().unwrap().last().unwrap().clone();
-    assert_eq!(last["data"]["thread"], "c-1");
+    assert_eq!(last["data"]["thread"], "c-2");
+    assert_eq!(last["data"]["ref"], "task:t-a");
     assert_eq!(last["data"]["text"], "really?");
 }
 
@@ -607,6 +696,11 @@ fn a_nudge_and_the_stop_show_as_notices() {
             "document.querySelector('.pv-notice[data-kind=\"nudge\"] .pv-notice-text').textContent"
         ),
         "have a look at phase one"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"nudge\"] .ag-mark') && document.querySelector('.pv-notice[data-kind=\"nudge\"] .pv-notice-kicker').textContent === 'agent'"),
+        true,
+        "a nudge speaks in the agent's own name: the mark and the kicker"
     );
     page.click(".pv-notice[data-kind=\"nudge\"] .pv-notice-dismiss");
     assert_eq!(
@@ -651,10 +745,38 @@ fn the_static_export_selftest_passes_in_a_real_browser() {
         "the page's own harness failed:\n{result}"
     );
     assert_eq!(
-        page.eval("!!document.querySelector('.feedback-bar-copy')"),
+        page.eval("!!document.querySelector('.feedback-bar-copy.pv-btn')"),
         true,
-        "the static export keeps the clipboard flow"
+        "the static export keeps the clipboard flow, as a button of the same family"
     );
+    // The static editor is the served composer's twin: one foot row with the
+    // toggle and the actions as pv-btns, and no mark anywhere (no agent).
+    page.click("[data-plan-ref=\"task:t-session-store\"] .comment-btn");
+    assert_eq!(
+        page.eval("!!document.querySelector('[data-plan-ref=\"task:t-session-store\"] .comment-box .comment-box-foot .comment-box-blocking') && \
+                   !!document.querySelector('[data-plan-ref=\"task:t-session-store\"] .comment-box .comment-box-foot .composer-send.pv-btn')"),
+        true,
+        "the static editor has the served composer's foot"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.ag-mark, .ask-btn, .el-actions').length"),
+        0,
+        "nothing of the agent on a static page"
+    );
+    // The strip is chrome, not conversation: a page with no server has it.
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-map-part').length"),
+        4,
+        "the static export carries the plan strip"
+    );
+    page.eval(
+        "window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'instant' })",
+    );
+    page.wait_until(
+        "!!document.querySelector('.pv-map-part.is-past')",
+        "the strip to follow the reader with no server behind it",
+    );
+    page.screenshot(&screenshot_path("static-export"));
     assert_eq!(
         page.eval("!!document.querySelector('.pv-presence')"),
         false,
@@ -663,6 +785,173 @@ fn the_static_export_selftest_passes_in_a_real_browser() {
 }
 
 // --- the races a fake client cannot reach (spec 14) -------------------------
+
+#[test]
+fn the_sent_notice_counts_the_plan_on_screen() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    // Mark a task reviewed, then let a revision take that task away and mark
+    // the one that replaced it. The fold keeps both marks -- it does not
+    // prune what a revision removed -- so counting the state's own keys
+    // reported more tasks reviewed than the plan has.
+    page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle input");
+    support::wait_for(
+        || s.server().count_events("element.reviewed") == 1,
+        "the first mark",
+    );
+    s.edit_plan("\"id\": \"t-a\"", "\"id\": \"t-b\"");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "revision 2",
+    );
+    page.click("[data-plan-ref=\"task:t-b\"] .reviewed-toggle input");
+    support::wait_for(
+        || s.server().count_events("element.reviewed") == 2,
+        "the second mark",
+    );
+
+    page.click(".pv-panel-handle");
+    page.click(".feedback-bar-send");
+    page.wait_until(
+        "!!document.querySelector('.pv-notice[data-kind=\"sent\"]')",
+        "the sent notice",
+    );
+    let said = page.text(
+        "document.querySelector('.pv-notice[data-kind=\"sent\"] .pv-notice-text').textContent",
+    );
+    assert!(
+        said.contains("1 of 1 tasks reviewed"),
+        "the notice counts the plan on screen: {said}"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-reviewed').textContent"),
+        "1/1 reviewed",
+        "and the bar beside it agrees"
+    );
+}
+
+#[test]
+fn the_panel_keeps_what_was_typed_while_a_send_was_in_the_air() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".pv-panel-handle");
+    page.type_into(".pv-panel-composer textarea", "first question");
+
+    // The box stays editable while the send is in the air. A reviewer who
+    // keeps typing must not have it taken from them when the reply lands:
+    // that is the one failure this composer exists to prevent.
+    shape_fetch(&mut page, "/cmd", "hold-release", 0);
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "(window.__releasers || []).length > 0",
+        "the send to be held",
+    );
+    page.type_into(".pv-panel-composer textarea", "second question");
+    release_path(&mut page, "/cmd");
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 1",
+        "the first question to land",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
+        "second question",
+        "what was typed during the send is still there"
+    );
+    assert_eq!(
+        page.eval(
+            "(JSON.parse(window.sessionStorage.getItem('artefacto:panel:plan:demo') || '{}').text) === 'second question'"
+        ),
+        true,
+        "and it survives a reload"
+    );
+
+    // And it still sends: the composer is not stuck.
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "(window.__releasers || []).length > 0",
+        "the send to be held",
+    );
+    release_path(&mut page, "/cmd");
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 2",
+        "the second question",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
+        "",
+        "and the box clears when nothing new was typed"
+    );
+}
+
+#[test]
+fn the_panel_sends_the_revision_it_was_written_against() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".pv-panel-handle");
+    page.type_into(".pv-panel-composer textarea", "is this still the plan?");
+
+    // The agent pushes while the reviewer is mid-sentence. Spec 4.3: what
+    // they wrote was written against revision 1, and arrives saying so --
+    // reading the revision at send time would label it 2 and tell the agent
+    // the reviewer had seen a plan they had not.
+    s.edit_plan("Demo plan", "Demo plan, revised");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "the page to swap in revision 2",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
+        "is this still the plan?",
+        "the draft survives the swap"
+    );
+    // Finishing the sentence after the swap does not re-date it: the
+    // question was opened against revision 1, and the last keystroke is not
+    // when it was written.
+    page.type_into(
+        ".pv-panel-composer textarea",
+        "is this still the plan? the whole of it?",
+    );
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 1",
+        "the question to land",
+    );
+    assert_eq!(
+        s.server().last_event_of_type("chat.sent")["data"]["opened_revision"],
+        1,
+        "written against revision 1, and it says so"
+    );
+
+    // And the next one, started after the swap, carries the new revision.
+    page.type_into(".pv-panel-composer textarea", "and now?");
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 2",
+        "the second question",
+    );
+    assert_eq!(
+        s.server().last_event_of_type("chat.sent")["data"]["opened_revision"],
+        2
+    );
+}
 
 #[test]
 fn a_push_while_typing_keeps_the_draft_and_sends_the_revision_it_opened_against() {
@@ -698,7 +987,7 @@ fn a_push_while_typing_keeps_the_draft_and_sends_the_revision_it_opened_against(
         "the revision banner",
     );
     assert!(
-        page.text("document.querySelector('.pv-notice[data-kind=\"revision\"]').textContent")
+        page.text("document.querySelector('.pv-notice[data-kind=\"revision\"] .pv-notice-text').textContent")
             .starts_with("Revision 2 pushed"),
         "the banner names the revision"
     );
@@ -787,7 +1076,7 @@ fn a_draft_and_a_thread_whose_element_was_removed_land_in_the_recovery_panel() {
         "the server agrees"
     );
     assert!(
-        page.text("document.querySelector('.pv-notice[data-kind=\"revision\"]').textContent")
+        page.text("document.querySelector('.pv-notice[data-kind=\"revision\"] .pv-notice-text').textContent")
             .contains("1 thread lost its element"),
         "the banner says so"
     );
@@ -1384,8 +1673,8 @@ fn the_chat_panel_stays_open_and_focused_across_a_push() {
     page.navigate(&s.url);
     connected(&mut page);
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "half a question");
-    page.eval("(function(){ document.querySelector('.pv-chat .composer textarea').focus(); return true; })()");
+    page.type_into(".pv-panel-composer textarea", "half a question");
+    page.eval("(function(){ document.querySelector('.pv-panel-composer textarea').focus(); return true; })()");
 
     s.edit_plan("Demo plan", "Demo plan, revised");
     s.push(1, &[]);
@@ -1394,17 +1683,17 @@ fn the_chat_panel_stays_open_and_focused_across_a_push() {
         "revision 2",
     );
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         false,
         "still open"
     );
     assert_eq!(
-        page.text("document.querySelector('.pv-chat .composer textarea').value"),
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
         "half a question"
     );
     assert_eq!(
         page.eval(
-            "document.activeElement === document.querySelector('.pv-chat .composer textarea')"
+            "document.activeElement === document.querySelector('.pv-panel-composer textarea')"
         ),
         true
     );
@@ -1756,7 +2045,7 @@ fn send_review_cannot_be_sent_twice_while_in_flight() {
         "and only one"
     );
     page.wait_until(
-        "document.querySelector('.feedback-bar-send').textContent === 'Send again'",
+        "document.querySelector('.feedback-bar-send').classList.contains('is-filled')",
         "the button to settle after its pulse",
     );
 }
@@ -1788,8 +2077,9 @@ fn a_revision_learned_from_a_snapshot_reports_what_it_addressed() {
         "document.body.dataset.artefactoRevision === '2'",
         "revision 2",
     );
-    let banner =
-        page.text("document.querySelector('.pv-notice[data-kind=\"revision\"]').textContent");
+    let banner = page.text(
+        "document.querySelector('.pv-notice[data-kind=\"revision\"] .pv-notice-text').textContent",
+    );
     assert!(banner.starts_with("Revision 2 pushed"), "{banner}");
     assert!(banner.contains("1 addressed"), "{banner}");
     assert_eq!(
@@ -1813,16 +2103,16 @@ fn a_chat_draft_is_visible_after_a_reload() {
     page.navigate(&s.url);
     connected(&mut page);
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "half a question");
+    page.type_into(".pv-panel-composer textarea", "half a question");
     page.navigate(&s.page_url());
     connected(&mut page);
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         false,
         "the panel opens for its draft"
     );
     assert_eq!(
-        page.text("document.querySelector('.pv-chat .composer textarea').value"),
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
         "half a question"
     );
 }
@@ -1841,25 +2131,28 @@ fn the_chat_panel_stays_closed_once_the_reviewer_closes_it() {
     page.navigate(&s.url);
     connected(&mut page);
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "kept but closed");
+    page.type_into(".pv-panel-composer textarea", "kept but closed");
     page.click(".feedback-bar-chat");
-    assert_eq!(page.eval("document.querySelector('.pv-chat').hidden"), true);
+    assert_eq!(
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
+        true
+    );
     page.eval(
         "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 999, events: [] })",
     );
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         true,
         "a frame does not reopen it"
     );
     comment(&mut page, "task:t-a", "a comment");
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         true,
         "an own reply does not reopen it"
     );
     assert_eq!(
-        page.text("document.querySelector('.pv-chat .composer textarea').value"),
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
         "kept but closed",
         "the draft is kept"
     );
@@ -1868,11 +2161,14 @@ fn the_chat_panel_stays_closed_once_the_reviewer_closes_it() {
     page.click(".feedback-bar-chat");
     page.click(".feedback-bar-chat");
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "");
+    page.type_into(".pv-panel-composer textarea", "");
     page.click(".feedback-bar-chat");
     page.navigate(&s.page_url());
     connected(&mut page);
-    assert_eq!(page.eval("document.querySelector('.pv-chat').hidden"), true);
+    assert_eq!(
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
+        true
+    );
     assert_eq!(
         page.eval("Object.keys(window.artefactoPlan.debug().drafts).length"),
         0,
@@ -2306,7 +2602,9 @@ fn a_gone_artifact_found_by_the_probe_reads_as_lost_everywhere() {
         true
     );
     assert!(page
-        .text("document.querySelector('.pv-notice[data-kind=\"lost\"]').textContent")
+        .text(
+            "document.querySelector('.pv-notice[data-kind=\"lost\"] .pv-notice-text').textContent"
+        )
         .contains("no longer on the server"));
     assert_eq!(
         page.eval("window.artefactoPlan.debug().syncing"),
@@ -2351,8 +2649,9 @@ fn a_thread_that_goes_from_changed_to_declined_between_snapshots_is_counted() {
         "document.body.dataset.artefactoRevision === '3'",
         "revision 3 by snapshot",
     );
-    let banner =
-        page.text("document.querySelector('.pv-notice[data-kind=\"revision\"]').textContent");
+    let banner = page.text(
+        "document.querySelector('.pv-notice[data-kind=\"revision\"] .pv-notice-text').textContent",
+    );
     assert!(banner.contains("1 declined"), "{banner}");
 }
 
@@ -2375,7 +2674,9 @@ fn a_socket_that_opens_and_closes_at_once_still_gives_up() {
     artefacto::server::socket::close_all(&s.server().shared);
     page.wait_until("window.artefactoPlan.debug().gone", "the page to give up");
     assert!(page
-        .text("document.querySelector('.pv-notice[data-kind=\"gone\"]').textContent")
+        .text(
+            "document.querySelector('.pv-notice[data-kind=\"gone\"] .pv-notice-text').textContent"
+        )
         .contains("socket will not connect"));
 }
 
@@ -2389,23 +2690,23 @@ fn a_sent_chat_message_leaves_a_place_for_the_next() {
     page.navigate(&s.url);
     connected(&mut page);
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "first");
-    page.click(".pv-chat .composer .composer-send");
+    page.type_into(".pv-panel-composer textarea", "first");
+    page.click(".pv-panel-composer .thread-composer-send");
     page.wait_until(
         "document.querySelectorAll('.pv-chat-msg').length === 1",
         "the message shown",
     );
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         false
     );
     assert_eq!(
-        page.eval("!!document.querySelector('.pv-chat .composer textarea')"),
+        page.eval("!!document.querySelector('.pv-panel-composer textarea')"),
         true,
         "a fresh composer"
     );
     assert_eq!(
-        page.text("document.querySelector('.pv-chat .composer textarea').value"),
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
         ""
     );
     let _ = s;
@@ -2528,17 +2829,14 @@ fn buffered_replies_drain_in_log_order() {
         "the reply landed",
     );
     page.click(".thread[data-thread=\"c-1\"] .thread-ask");
-    page.type_into(
-        ".thread[data-thread=\"c-1\"] .composer[data-kind=\"ask\"] textarea",
-        "two",
-    );
-    page.click(".thread[data-thread=\"c-1\"] .composer[data-kind=\"ask\"] .composer-send");
+    page.type_into(".pv-panel-composer textarea", "two");
+    enter(&mut page, ".pv-panel-composer textarea");
     support::wait_for(
         || s.server().count_events("chat.sent") == 1,
         "the question landed",
     );
     page.wait_until(
-        "!document.querySelector('.composer[data-kind=\"ask\"]')",
+        "document.querySelector('.pv-panel-composer textarea').value === ''",
         "the question's reply to be in",
     );
     release_path(&mut page, "/cmd");
@@ -2553,11 +2851,16 @@ fn buffered_replies_drain_in_log_order() {
     );
     release_path(&mut page, "/state");
     connected(&mut page);
-    let messages = debug(&mut page)["threads"][0]["messages"].clone();
+    let threads = debug(&mut page)["threads"].clone();
     assert_eq!(
-        messages,
-        serde_json::json!(["reviewer: the comment", "reviewer: one", "reviewer: two"]),
+        threads[0]["messages"],
+        serde_json::json!(["reviewer: the comment", "reviewer: one"]),
         "log order, not arrival order"
+    );
+    assert_eq!(
+        threads[1]["messages"],
+        serde_json::json!(["reviewer: two"]),
+        "the question is its own thread on the same element"
     );
 }
 
@@ -2573,8 +2876,8 @@ fn a_push_after_a_sent_chat_message_leaves_the_panel_with_a_composer() {
     page.navigate(&s.url);
     connected(&mut page);
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "first");
-    page.click(".pv-chat .composer .composer-send");
+    page.type_into(".pv-panel-composer textarea", "first");
+    page.click(".pv-panel-composer .thread-composer-send");
     page.wait_until(
         "document.querySelectorAll('.pv-chat-msg').length === 1",
         "the message shown",
@@ -2591,17 +2894,17 @@ fn a_push_after_a_sent_chat_message_leaves_the_panel_with_a_composer() {
         "revision 2",
     );
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         false,
         "still open"
     );
     assert_eq!(
-        page.eval("!!document.querySelector('.pv-chat .composer textarea')"),
+        page.eval("!!document.querySelector('.pv-panel-composer textarea')"),
         true,
         "and still somewhere to write"
     );
     assert_eq!(
-        page.eval("document.querySelectorAll('.pv-chat .composer').length"),
+        page.eval("document.querySelectorAll('.pv-panel-composer').length"),
         1
     );
 }
@@ -2713,7 +3016,7 @@ fn a_lost_page_is_not_left_catching_up() {
 // --- the round-eleven fix slice, reviewed fresh --------------------------------
 
 #[test]
-fn focus_in_an_untyped_chat_composer_survives_a_push() {
+fn focus_in_the_panel_composer_survives_a_push() {
     let Some(browser) = Browser::launch() else {
         return;
     };
@@ -2722,15 +3025,14 @@ fn focus_in_an_untyped_chat_composer_survives_a_push() {
     page.navigate(&s.url);
     connected(&mut page);
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "first");
-    page.click(".pv-chat .composer .composer-send");
+    page.type_into(".pv-panel-composer textarea", "first");
+    page.click(".pv-panel-composer .thread-composer-send");
     page.wait_until(
         "document.querySelectorAll('.pv-chat-msg').length === 1",
-        "the message shown",
+        "the message to land",
     );
-    page.eval("(function(){ document.querySelector('.pv-chat .composer textarea').focus(); return true; })()");
-    let id = page.text("document.querySelector('.pv-chat .composer').dataset.composer");
-
+    // Nothing typed since: the cursor sits in the empty composer.
+    page.eval("(function(){ document.querySelector('.pv-panel-composer textarea').focus(); return true; })()");
     s.edit_plan("Demo plan", "Demo plan, revised");
     s.push(1, &[]);
     page.wait_until(
@@ -2738,16 +3040,21 @@ fn focus_in_an_untyped_chat_composer_survives_a_push() {
         "revision 2",
     );
     assert_eq!(
-        page.text("document.querySelector('.pv-chat .composer').dataset.composer"),
-        id,
-        "the same composer"
+        page.eval("!document.querySelector('.pv-dock').classList.contains('is-hidden')"),
+        true,
+        "the panel is still open"
     );
     assert_eq!(
         page.eval(
-            "document.activeElement === document.querySelector('.pv-chat .composer textarea')"
+            "document.activeElement === document.querySelector('.pv-panel-composer textarea')"
         ),
         true,
-        "focus came back to it"
+        "and the cursor is back in its composer"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-chat-msg').length"),
+        1,
+        "the log kept its message"
     );
 }
 
@@ -2778,7 +3085,7 @@ fn retry_clears_the_notice_and_the_pill() {
 }
 
 #[test]
-fn cancelling_the_chat_composer_closes_the_chat() {
+fn hiding_the_panel_keeps_what_was_typed() {
     let Some(browser) = Browser::launch() else {
         return;
     };
@@ -2787,28 +3094,28 @@ fn cancelling_the_chat_composer_closes_the_chat() {
     page.navigate(&s.url);
     connected(&mut page);
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "never mind");
-    page.click(".pv-chat .composer .composer-cancel");
+    page.type_into(".pv-panel-composer textarea", "never mind");
+    page.click(".pv-panel-hide");
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         true,
-        "Cancel closes the chat"
+        "the X hides the panel"
     );
     page.eval(
         "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 999, events: [] })",
     );
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         true,
-        "and it stays closed"
+        "and it stays hidden"
     );
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    page.click(".feedback-bar-chat");
     assert_eq!(
-        page.eval("document.querySelectorAll('.pv-chat .composer').length"),
-        0
-    );
-    assert_eq!(
-        page.eval("Object.keys(window.artefactoPlan.debug().drafts).length"),
-        0
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
+        "never mind",
+        "what was typed is still there after a reload"
     );
     let _ = s;
 }
@@ -2860,14 +3167,16 @@ fn a_sent_review_is_unmistakable() {
         "document.querySelector('.pv-notice[data-kind=\"sent\"]')",
         "the sent notice",
     );
-    let text = page.text("document.querySelector('.pv-notice[data-kind=\"sent\"]').textContent");
+    let text = page.text(
+        "document.querySelector('.pv-notice[data-kind=\"sent\"] .pv-notice-text').textContent",
+    );
     assert!(
         text.starts_with("Review sent for revision 1: 1 comment"),
         "{text}"
     );
     assert!(text.contains("The agent has it"), "{text}");
     page.wait_until(
-        "document.querySelector('.feedback-bar-send').textContent === 'Send again'",
+        "document.querySelector('.feedback-bar-send').classList.contains('is-filled')",
         "the button to say a second click is a second send",
     );
     assert!(page
@@ -2887,8 +3196,9 @@ fn a_sent_review_is_unmistakable() {
         false
     );
     assert_eq!(
-        page.text("document.querySelector('.feedback-bar-send').textContent"),
-        "Send review"
+        page.eval("document.querySelector('.feedback-bar-send').classList.contains('is-filled') || document.querySelector('.pv-panel-foot').classList.contains('is-sent')"),
+        false,
+        "a new revision reopens the review: no verdict is filled"
     );
 }
 
@@ -3070,4 +3380,2589 @@ fn the_index_page_lists_artifacts_and_removes_a_row_in_a_real_browser() {
     );
     assert!(page.errors().is_empty(), "{:?}", page.errors());
     drop(server);
+}
+
+#[test]
+fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    // Every element that offers Comment offers the mark beside it, labelled
+    // until the first question on this browser.
+    assert_eq!(
+        page.eval(
+            "document.querySelectorAll('.el-actions .ask-btn').length > 0 && \
+             document.querySelectorAll('.el-actions .ask-btn').length === document.querySelectorAll('.comment-btn').length"
+        ),
+        true,
+        "one mark per comment button"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('[data-plan-ref] .ask-btn.is-labelled').length > 0"),
+        true,
+        "the ask control is labelled before the first ask"
+    );
+
+    // The mark opens the panel aimed at the task; Enter opens the thread.
+    page.click("[data-plan-ref=\"task:t-a\"] .ask-btn");
+    page.wait_until(
+        "!document.querySelector('.pv-dock').classList.contains('is-hidden')",
+        "the panel to open",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-target .pv-ctx').title"),
+        "task:t-a",
+        "the composer is aimed at the task"
+    );
+    assert_eq!(
+        page.eval(
+            "document.activeElement === document.querySelector('.pv-panel-composer textarea')"
+        ),
+        true,
+        "and focused"
+    );
+    page.type_into(".pv-panel-composer textarea", "is this the whole plan?");
+    enter(&mut page, ".pv-panel-composer textarea");
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]:not(.thread-working)').length === 1",
+        "the question to open its thread in the log",
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-target').hidden"),
+        true,
+        "the target clears after the send"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
+        "",
+        "and so does the text"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-msg[data-thread=\"c-1\"] .pv-ctx').title"),
+        "task:t-a",
+        "the message carries its context chip"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.thread[data-thread=\"c-1\"]')"),
+        false,
+        "a question thread is not rendered on the element"
+    );
+
+    // From the question until the answer: the working row in the log, the
+    // pill at work, the mark tinted and counted, the element spined, and the
+    // labels gone from the element rows.
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-1\"] .thread-text').textContent"),
+        "thinking\u{2026}"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-presence').dataset.mode"),
+        "working"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-btn').classList.contains('has-thread')"),
+        true
+    );
+    assert_eq!(page.text("document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-btn .ask-count').textContent"), "1");
+    assert_eq!(page.eval("document.querySelector('[data-plan-ref=\"task:t-a\"]').classList.contains('is-discussed')"), true);
+    assert_eq!(
+        page.eval("document.querySelectorAll('[data-plan-ref] .ask-btn.is-labelled').length"),
+        0,
+        "after the first ask the mark alone is the control"
+    );
+
+    let out = s
+        .repo
+        .run(&["await", "--timeout", "5s", "--session", &s.session]);
+    let r: serde_json::Value = serde_json::from_str(out.success().stdout.trim()).unwrap();
+    assert_eq!(r["status"], "chat");
+    let seq = r["seq"].to_string();
+    let last = r["events"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["data"]["thread"], "c-1");
+    assert_eq!(last["data"]["ref"], "task:t-a");
+    assert_eq!(last["data"]["text"], "is this the whole plan?");
+
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--thread",
+            "c-1",
+            "yes, all of it",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]:not(.thread-working)').length === 2",
+        "the answer to join the log",
+    );
+    assert_eq!(
+        page.eval("!document.querySelector('.pv-panel-msg.thread-working')"),
+        true,
+        "the answer ends the working row"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-msg[data-thread=\"c-1\"]').dataset.actor"),
+        "reviewer",
+        "the question comes before its answer, even within the same second"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-presence').dataset.mode"),
+        "waiting"
+    );
+    assert_eq!(
+        page.text(
+            "document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-preview-text').textContent"
+        ),
+        "yes, all of it",
+        "the element previews the last message"
+    );
+    assert_eq!(page.text("document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-btn .ask-count').textContent"), "2");
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-panel-msg[data-thread=\"c-1\"][data-actor=\"agent\"] .pv-avatar .ag-mark') && !!document.querySelector('.pv-panel-msg[data-thread=\"c-1\"][data-actor=\"reviewer\"] .pv-avatar.is-you')"),
+        true,
+        "circle for the agent, square for the reviewer"
+    );
+    assert_eq!(
+        page.eval("Array.from(document.querySelectorAll('.pv-panel-log *')).some(function (n) { return n.children.length === 0 && /c-[0-9]+/.test(n.textContent); })"),
+        false,
+        "no thread id is shown in the log"
+    );
+    page.screenshot(&screenshot_path("ask-on-a-task"));
+
+    // The chip is a link into the page.
+    page.click(".pv-panel-msg[data-thread=\"c-1\"] .pv-ctx");
+    assert_eq!(page.eval("document.querySelector('[data-plan-ref=\"task:t-a\"]').classList.contains('is-jumped')"), true, "the chip jumps to its element");
+
+    // A reload shows the same log from the server's state, and the mark
+    // aims a follow-up at the same thread.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    page.click(".pv-panel-handle");
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]').length"),
+        2
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .ask-btn");
+    assert_eq!(
+        page.eval("!document.querySelector('.pv-panel-target').hidden"),
+        true,
+        "aimed at the existing thread"
+    );
+    page.type_into(".pv-panel-composer textarea", "and the CLI layer?");
+    enter(&mut page, ".pv-panel-composer textarea");
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]:not(.thread-working)').length === 3",
+        "the follow-up to join the thread",
+    );
+    let out = s.repo.run(&[
+        "await",
+        "--timeout",
+        "5s",
+        "--session",
+        &s.session,
+        "--ack",
+        &seq,
+    ]);
+    let r: serde_json::Value = serde_json::from_str(out.success().stdout.trim()).unwrap();
+    assert_eq!(r["status"], "chat", "the follow-up woke the agent: {r}");
+    let last = r["events"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(
+        last["data"]["thread"], "c-1",
+        "a second question on the element goes to the same thread"
+    );
+    assert_eq!(last["data"]["text"], "and the CLI layer?");
+}
+
+#[test]
+fn the_hint_line_shows_until_dismissed_and_stores_nothing_before() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    page.click(".pv-panel-handle");
+    let hint = page.text("document.querySelector('.feedback-bar-hint-text').textContent");
+    assert!(
+        hint.contains("Comments wait") && hint.contains("reaches the agent now"),
+        "the hint names both behaviours: {hint}"
+    );
+    let banner = page.text("document.querySelector('.pv-banner-text').textContent");
+    assert!(
+        banner.contains("ask the agent in the conversation") && banner.contains("saved as you go"),
+        "the banner sends the reviewer to the conversation and says nothing is lost: {banner}"
+    );
+    assert_eq!(
+        page.eval("window.localStorage.getItem('artefacto.hint.ask')"),
+        serde_json::Value::Null,
+        "nothing is stored for the hint until the reviewer dismisses it"
+    );
+    page.click(".feedback-bar-hint-dismiss");
+    assert_eq!(
+        page.eval("!document.querySelector('.feedback-bar-hint')"),
+        true,
+        "dismissed"
+    );
+
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    page.click(".pv-panel-handle");
+    assert_eq!(
+        page.eval("!document.querySelector('.feedback-bar-hint')"),
+        true,
+        "dismissed stays dismissed across a reload"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.feedback-bar-chat')"),
+        true,
+        "the rest of the bar is untouched"
+    );
+}
+
+#[test]
+fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // The first control under the phases heading is "expand all".
+    page.click("#phases-actions .pv-btn");
+
+    // Wherever a comment button is, the ask button is beside it, on the same
+    // line, whether the host is a heading row or a prose column.
+    assert_eq!(
+        page.eval(
+            "document.querySelectorAll('.el-actions').length > 0 && \
+             document.querySelectorAll('.el-actions').length === document.querySelectorAll('.comment-btn').length"
+        ),
+        true,
+        "every comment button is in an actions row with its ask button"
+    );
+    let misaligned = page.eval(
+        "Array.from(document.querySelectorAll('.el-actions')).filter(function (row) { \
+           const c = row.querySelector('.comment-btn'), a = row.querySelector('.ask-btn'); \
+           if (!c || !a) return true; \
+           const cb = c.getBoundingClientRect(), ab = a.getBoundingClientRect(); \
+           const mid = function (r) { return (r.top + r.bottom) / 2; }; \
+           return Math.abs(mid(cb) - mid(ab)) > 2 || ab.left <= cb.right; \
+         }).map(function (row) { return row.closest('[data-plan-ref]').getAttribute('data-plan-ref'); })",
+    );
+    assert_eq!(
+        misaligned,
+        serde_json::json!([]),
+        "every ask button sits right of its comment button on one line"
+    );
+
+    ask(
+        &mut page,
+        "task:t-session-store",
+        "why a trait rather than a plain struct here?",
+        "c-1",
+    );
+    // The task's acceptance rows share its ref and carry their own marks:
+    // the count and the spine belong to the element, once.
+    assert_eq!(
+        page.eval("document.querySelectorAll('[data-plan-ref=\"task:t-session-store\"] .ask-count').length"),
+        1,
+        "one count on the element, not one per criterion row"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.is-discussed').length"),
+        1,
+        "and one spine"
+    );
+    assert_eq!(
+        page.eval("!document.querySelector('.acceptance li.is-discussed') && !document.querySelector('.acceptance .ask-count')"),
+        true,
+        "nothing on a criterion row"
+    );
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--thread",
+            "c-1",
+            "So Redis can slot in without touching the call sites.",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]:not(.thread-working)').length === 2",
+        "the answer to join the log",
+    );
+    // Seed one thread of every other kind and status, so the screenshots
+    // show the card in each of its states: a blocking comment left open, a
+    // comment resolved as changed, one declined.
+    page.click("[data-plan-ref=\"task:t-redis\"] .comment-btn");
+    page.type_into(
+        "[data-plan-ref=\"task:t-redis\"] .pv-composers .composer textarea",
+        "This needs a rollback step before it ships.",
+    );
+    page.click(
+        "[data-plan-ref=\"task:t-redis\"] .pv-composers .composer .comment-box-blocking input",
+    );
+    page.click("[data-plan-ref=\"task:t-redis\"] .pv-composers .composer .composer-send");
+    page.wait_until(
+        "!!document.querySelector('.thread[data-thread=\"c-2\"].is-blocking')",
+        "the blocking thread",
+    );
+    comment(
+        &mut page,
+        "task:t-cleanup",
+        "Fold this into the trait task.",
+    );
+    comment(
+        &mut page,
+        "task:t-bench",
+        "Do we still need benchmarks at all?",
+    );
+    for (thread, verdict, note) in [
+        (
+            "c-3",
+            "--changed",
+            "Folded into t-session-store; this task is gone in the next revision.",
+        ),
+        (
+            "c-4",
+            "--declined",
+            "Kept: the benchmarks are what tell us the trait costs nothing.",
+        ),
+    ] {
+        s.repo
+            .run(&[
+                "resolve",
+                thread,
+                "--session",
+                &s.session,
+                verdict,
+                "--note",
+                note,
+            ])
+            .success();
+    }
+    page.wait_until(
+        "document.querySelector('.thread[data-thread=\"c-4\"]').dataset.status === 'declined' && document.querySelector('.thread[data-thread=\"c-3\"]').dataset.status === 'changed'",
+        "the resolutions to land",
+    );
+    // With threads, composers, and the bar all on the page and no verdict
+    // sent, nothing is a filled control.
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-btn.is-filled').length"),
+        0,
+        "only the chosen verdict is ever filled"
+    );
+    // The panel open beside the sheet, scrolled to the blocking comment.
+    page.click(".pv-panel-handle");
+    page.eval("document.querySelector('.thread[data-thread=\"c-2\"]').scrollIntoView({ block: 'center' })");
+    page.screenshot(&screenshot_path("ask-on-kitchen-sink"));
+    // The same page in the dark theme, from the control, so both palettes are
+    // looked at whenever the page changes. The theme is a preference rather
+    // than part of the review, so it sits behind one glyph at the end of the
+    // bar and the four choices are not standing open beside the plan's name.
+    assert_eq!(
+        page.text("getComputedStyle(document.querySelector('.pv-theme-menu')).display"),
+        "none",
+        "the choices are put away until they are asked for"
+    );
+    page.click(".pv-theme-open");
+    assert_eq!(
+        page.eval(
+            "getComputedStyle(document.querySelector('.pv-theme-menu')).display !== 'none' && \
+               document.querySelector('.pv-theme-open').getAttribute('aria-expanded') === 'true'"
+        ),
+        true,
+        "the glyph opens them"
+    );
+    page.click("[data-theme-set=\"dark\"]");
+    assert_eq!(
+        page.text("getComputedStyle(document.querySelector('.pv-theme-menu')).display"),
+        "none",
+        "and choosing puts them away again"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-theme-open').title"),
+        "Colour theme: Dark",
+        "the glyph says which theme is showing"
+    );
+    page.wait_until(
+        "document.documentElement.getAttribute('data-theme') === 'dark' && !document.documentElement.classList.contains('theme-anim')",
+        "the dark theme to apply and its crossfade to end",
+    );
+    page.screenshot(&screenshot_path("ask-on-kitchen-sink-dark"));
+    // And the third theme, which also has to survive a reload.
+    page.click(".pv-theme-open");
+    page.click("[data-theme-set=\"vibe\"]");
+    page.wait_until(
+        "document.documentElement.getAttribute('data-theme') === 'vibe' && !document.documentElement.classList.contains('theme-anim')",
+        "the vibe theme to apply",
+    );
+    page.screenshot(&screenshot_path("ask-on-kitchen-sink-vibe"));
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.text("document.documentElement.getAttribute('data-theme')"),
+        "vibe",
+        "the choice survives a reload"
+    );
+    // Escape closes the menu without changing anything, and so does a click
+    // anywhere else: it is a preference, not a decision to be trapped in.
+    page.click(".pv-theme-open");
+    page.eval(
+        "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))",
+    );
+    assert_eq!(
+        page.eval(
+            "getComputedStyle(document.querySelector('.pv-theme-menu')).display === 'none' && \
+               document.documentElement.getAttribute('data-theme') === 'vibe'"
+        ),
+        true,
+        "Escape closes it and leaves the theme alone"
+    );
+    page.click(".pv-theme-open");
+    page.eval("document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))");
+    assert_eq!(
+        page.text("getComputedStyle(document.querySelector('.pv-theme-menu')).display"),
+        "none",
+        "so does a click outside it"
+    );
+    page.click(".pv-theme-open");
+    page.click("[data-theme-set=\"\"]");
+}
+
+#[test]
+fn a_turn_keeps_the_name_of_whoever_took_it() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".pv-panel-handle");
+
+    // The agent that pushed this plan answers first.
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--artifact",
+            "plan:demo",
+            "reading it now",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg').length === 1",
+        "the first answer",
+    );
+
+    // A different session takes the lease and answers second.
+    let out = s
+        .repo
+        .run(&["await", "--timeout", "1s", "--agent", "codex", "--takeover"]);
+    let second: serde_json::Value = serde_json::from_str(&out.stdout).expect("json");
+    let session = second["session"].as_str().expect("a session").to_string();
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &session,
+            "--artifact",
+            "plan:demo",
+            "picking it up from here",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg:not(.thread-working)').length === 2",
+        "the second answer",
+    );
+
+    // Each turn keeps the name that wrote it. Reading the name off whoever
+    // holds the lease now would relabel the first message as codex.
+    assert_eq!(
+        page.eval(
+            "Array.from(document.querySelectorAll('.pv-panel-msg .thread-actor')).map(function (n) { \
+               return n.firstChild.textContent; })"
+        ),
+        serde_json::json!(["agent", "codex"]),
+        "the conversation says who said what"
+    );
+    assert_eq!(
+        page.eval(
+            "Array.from(document.querySelectorAll('.pv-panel-msg .pv-avatar')).map(function (n) { \
+               return n.title; })"
+        ),
+        serde_json::json!(["agent", "codex"]),
+        "and so does the mark beside it"
+    );
+
+    // The row that says an answer is being waited for is about now, not
+    // about a past turn, so it takes the name of whoever holds the lease.
+    page.type_into(".pv-panel-composer textarea", "and the TTL?");
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "!!document.querySelector('.pv-panel-msg.thread-working')",
+        "the working row",
+    );
+    assert_eq!(
+        page.text(
+            "document.querySelector('.pv-panel-msg.thread-working .thread-actor').textContent"
+        ),
+        "codex",
+        "the row waiting on an answer says who is being waited for"
+    );
+
+    // The page survives a reload with the names intact: they come from the
+    // server's snapshot, not from anything the page remembered.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    page.click(".pv-panel-handle");
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg:not(.thread-working)').length === 3",
+        "both answers and the question after a reload",
+    );
+    assert_eq!(
+        page.eval(
+            "Array.from(document.querySelectorAll('.pv-panel-msg:not(.thread-working) .thread-actor')).map(function (n) { \
+               return n.firstChild.textContent; })"
+        ),
+        serde_json::json!(["agent", "codex", "you"])
+    );
+}
+
+#[test]
+fn what_you_said_about_a_question_can_become_the_answer() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    // Talking a question through with the agent is not answering it: the
+    // conversation and the answer field are two different places.
+    page.click("[data-plan-ref=\"question:q-ttl\"] .ask-btn");
+    page.type_into(
+        ".pv-panel-composer textarea",
+        "thirty days, matching the refresh token",
+    );
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "!!document.querySelector('.pv-panel-lift-btn')",
+        "the offer to make it the answer",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-lift-btn').textContent"),
+        "Use as your answer"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('[data-plan-ref=\"question:q-ttl\"] .pv-answer').hidden"),
+        true,
+        "and until it is taken, the question is still unanswered"
+    );
+
+    // A question asked on something that is not an open question carries no
+    // offer: there is no answer field for it to go into.
+    page.click("[data-plan-ref=\"task:t-redis\"] .ask-btn");
+    page.type_into(".pv-panel-composer textarea", "is this the only backend?");
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg:not(.thread-working)').length === 2",
+        "the second question",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-panel-lift-btn').length"),
+        1,
+        "only the one about an open question"
+    );
+
+    // The agent answers in the same thread. Its words are not the
+    // reviewer's answer, so they carry no offer: an answer is the
+    // reviewer's to give.
+    let thread =
+        page.text("document.querySelector('.pv-panel-msg:has(.pv-panel-lift-btn)').dataset.thread");
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--thread",
+            &thread,
+            "thirty days matches the refresh token, yes",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg:not(.thread-working)').length === 3",
+        "the agent's reply",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-panel-lift-btn').length"),
+        1,
+        "only the reviewer's own message can become their answer"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-msg:has(.pv-panel-lift-btn)').dataset.actor"),
+        "reviewer"
+    );
+
+    // One click records it, word for word, as the reviewer's own answer.
+    page.click(".pv-panel-lift-btn");
+    page.wait_until(
+        "document.querySelector('.pv-panel-lift-btn').disabled",
+        "the offer to say it has been taken",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-lift-btn').textContent"),
+        "This is your answer"
+    );
+    assert_eq!(
+        s.server().last_event_of_type("question.answered")["data"]["text"],
+        "thirty days, matching the refresh token",
+        "and the agent reads it where answers live"
+    );
+    assert_eq!(
+        page.text(
+            "document.querySelector('[data-plan-ref=\"question:q-ttl\"] .pv-answer-text').textContent"
+        ),
+        "thirty days, matching the refresh token",
+        "and it shows on the question, word for word"
+    );
+
+    // It survives a reload, because it is the server's now.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    page.click(".pv-panel-handle");
+    page.wait_until(
+        "!!document.querySelector('.pv-panel-lift-btn')",
+        "the message and its offer after a reload",
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-lift-btn').disabled"),
+        true,
+        "still taken"
+    );
+
+    // A revision takes the question away. The conversation stays, but there
+    // is no longer anywhere for an answer to go, so the offer goes with it.
+    // The check is against the questions the plan now holds, not against the
+    // shape of the ref: a ref that merely starts with `question:` is not
+    // enough, and the server refuses an answer to a question that is gone.
+    s.edit_plan("\"id\": \"q-ttl\"", "\"id\": \"q-later\"");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2' && !window.artefactoPlan.debug().syncing",
+        "revision 2",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-panel-lift-btn').length"),
+        0,
+        "no offer for a question the plan no longer has"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-panel-msg[data-thread=\"c-1\"]')"),
+        true,
+        "the conversation itself is still there"
+    );
+    let errors = page.errors();
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+#[test]
+fn the_panel_says_when_no_agent_will_hear_it() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    ask(&mut page, "phase:p-one", "how long?", "c-1");
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-1\"]')"),
+        true,
+        "the question waits"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-composer .thread-composer-hint').textContent"),
+        "Enter to send"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-head .pv-chat-hint').textContent"),
+        "agent hears this at once."
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"noagent\"]')"),
+        false,
+        "an agent holds the lease"
+    );
+
+    // The lease expires while the question waits: the composer, the head,
+    // the working row, and a notice all say so.
+    s.server()
+        .age_lease(artefacto::server::lease::TTL + std::time::Duration::from_secs(1));
+    page.wait_until(
+        "document.querySelector('.pv-panel-composer .thread-composer-hint').textContent === 'waits for an agent'",
+        "the composer to say the question will wait",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-head .pv-chat-hint').textContent"),
+        "No agent is attached. Your message will wait for one."
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-1\"] .thread-text').textContent"),
+        "waiting for an agent\u{2026}"
+    );
+    assert_eq!(
+        page.text(
+            "document.querySelector('.pv-panel-log .pv-panel-event:last-of-type').textContent"
+        ),
+        "agent left",
+        "the agent going is part of the conversation, by name"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-panel-event').length"),
+        1,
+        "said once, not on every render"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-notice[data-kind=\"noagent\"] .pv-notice-text').textContent"),
+        "No agent is attached. Your question waits for one."
+    );
+
+    // An agent arriving restores the promise everywhere.
+    s.repo
+        .run(&[
+            "await",
+            "--timeout",
+            "1s",
+            "--agent",
+            "claude",
+            "--takeover",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelector('.pv-panel-composer .thread-composer-hint').textContent === 'Enter to send'",
+        "the composer to say the agent hears it",
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"noagent\"]')"),
+        false,
+        "the notice goes with the agent's arrival"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-1\"] .thread-text').textContent"),
+        "thinking\u{2026}"
+    );
+    assert_eq!(
+        page.text(
+            "document.querySelector('.pv-panel-log .pv-panel-event:last-of-type').textContent"
+        ),
+        "claude is here",
+        "and so is the agent coming back -- under the name that took the lease"
+    );
+    page.eval(
+        "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 998, events: [] })",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-panel-event').length"),
+        2,
+        "one line per change, whatever else the page renders"
+    );
+}
+
+#[test]
+fn two_verdicts_one_filled_and_leaving_is_not_losing() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    let steps = page.text("document.querySelector('.pv-banner-steps').textContent");
+    assert!(
+        steps.contains("verdict"),
+        "the third step is the verdict: {steps}"
+    );
+    // The verdict lives in the panel, and the panel starts closed: the
+    // handle says what it is until this browser has opened it once.
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-handle').classList.contains('is-labelled')"),
+        true,
+        "the handle carries its name on a first visit"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.feedback-bar-approve').getBoundingClientRect().width"),
+        0,
+        "and the verdict is not reachable until it is opened"
+    );
+    page.click(".pv-panel-handle");
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-handle').classList.contains('is-labelled')"),
+        false,
+        "once opened, the mark and the count are enough"
+    );
+    assert_eq!(
+        page.eval(
+            "(function(){ const r = document.querySelector('.feedback-bar-approve').getBoundingClientRect(); \
+               const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); \
+               return r.width > 0 && r.height > 0 && !!el && el.closest('.feedback-bar-verdict') !== null; })()"
+        ),
+        true,
+        "the verdict buttons are visible and hittable in the open panel"
+    );
+
+    // While a write is on its way the line says Saving; once answered, Saved.
+    shape_fetch(&mut page, "/cmd", "hold-response", 900);
+    page.click("[data-plan-ref=\"task:t-a\"] .comment-btn");
+    page.type_into(
+        "[data-plan-ref=\"task:t-a\"] .pv-composers .composer textarea",
+        "needs a rollback step",
+    );
+    page.click("[data-plan-ref=\"task:t-a\"] .pv-composers .composer .composer-send");
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-state-text').textContent"),
+        "Saving\u{2026}"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.feedback-bar-state').classList.contains('is-saving')"),
+        true
+    );
+    page.wait_until(
+        "!document.querySelector('[data-plan-ref=\"task:t-a\"] .pv-composers .composer')",
+        "the comment to be accepted",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-state-text').textContent"),
+        "Saved \u{b7} rev 1"
+    );
+    // Leaving with unsent work: the line says nothing is lost, for a moment.
+    page.eval("window.dispatchEvent(new Event('pagehide'))");
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-state-text').textContent"),
+        "Saved. The agent sees your notes when you send them."
+    );
+
+    // Request changes is one verdict, Approve the other; the sent one fills.
+    page.click(".feedback-bar-send");
+    page.wait_until(
+        "document.querySelector('.pv-panel-foot').classList.contains('is-sent')",
+        "the bar to show the review as sent",
+    );
+    assert_eq!(
+        s.server().last_event_of_type("review.submitted")["data"]["verdict"],
+        "request_changes"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.feedback-bar-send').classList.contains('is-filled') && !document.querySelector('.feedback-bar-approve').classList.contains('is-filled')"),
+        true,
+        "Request changes is the filled control"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-btn.is-filled').length"),
+        1,
+        "and the only one"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.feedback-bar-approve input')"),
+        false,
+        "no Approve checkbox"
+    );
+
+    // A new revision reopens the review; Approve sends the other verdict.
+    s.edit_plan("Demo plan", "Demo plan, revised");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2' && !document.querySelector('.pv-panel-foot').classList.contains('is-sent')",
+        "revision 2 to reopen the review",
+    );
+    // Reopened, but not forgotten: the last verdict given is still the last
+    // verdict given. The server's fold keeps it across a revision, and the
+    // page's fold is that fold in another language -- a live page and a
+    // reloaded one must not disagree about a field the snapshot carries.
+    assert_eq!(
+        page.text("String(window.artefactoPlan.debug().verdict)"),
+        "request_changes",
+        "the page keeps the verdict the server keeps"
+    );
+    assert_eq!(
+        artefacto::server::http::with_review(&s.server().shared, |r| {
+            r.artifacts["plan:demo"].verdict.clone()
+        }),
+        Some("request_changes".to_string()),
+        "and that is what a reload would be handed"
+    );
+    page.click(".feedback-bar-approve");
+    page.wait_until(
+        "document.querySelector('.feedback-bar-approve').classList.contains('is-filled')",
+        "Approve to be the filled control",
+    );
+    assert_eq!(
+        s.server().last_event_of_type("review.submitted")["data"]["verdict"],
+        "approve"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-btn.is-filled').length === 1 && !document.querySelector('.feedback-bar-send').classList.contains('is-filled')"),
+        true,
+        "the other verdict is not filled"
+    );
+    assert!(page
+        .text(
+            "document.querySelector('.pv-notice[data-kind=\"sent\"] .pv-notice-text').textContent"
+        )
+        .starts_with("Approval sent for revision 2"),);
+
+    // The verdict survives a reload: it comes from the server's snapshot.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.eval(
+            "document.querySelector('.feedback-bar-approve').classList.contains('is-filled')"
+        ),
+        true,
+        "the snapshot carries the verdict"
+    );
+}
+
+/// Ask a question about `target` from the panel and wait for it in the log
+/// as thread `c-N`. The element's mark aims the panel; Enter sends.
+fn ask(page: &mut support::browser::Page, target: &str, text: &str, thread: &str) {
+    page.click(&format!("[data-plan-ref=\"{target}\"] .ask-btn"));
+    page.wait_until(
+        "!document.querySelector('.pv-dock').classList.contains('is-hidden') && !document.querySelector('.pv-panel-target').hidden",
+        "the panel to open, aimed at the element",
+    );
+    page.type_into(".pv-panel-composer textarea", text);
+    enter(page, ".pv-panel-composer textarea");
+    page.wait_until(
+        &format!("document.querySelectorAll('.pv-panel-msg[data-thread=\"{thread}\"]:not(.thread-working)').length === 1"),
+        "the question to appear in the log",
+    );
+}
+
+/// Press Enter in an input, the way the panel's composer sends.
+fn enter(page: &mut support::browser::Page, selector: &str) {
+    page.eval(&format!(
+        "document.querySelector({sel}).dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', bubbles: true }}))",
+        sel = serde_json::to_string(selector).unwrap()
+    ));
+}
+
+#[test]
+fn the_working_state_follows_the_servers_state() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    let working = "!!document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-1\"]')";
+    ask(&mut page, "task:t-a", "is this the whole plan?", "c-1");
+    assert_eq!(page.eval(working), true);
+
+    // A reload shows the question still waiting: the state says so.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    page.click(".pv-panel-handle");
+    assert_eq!(
+        page.eval(working),
+        true,
+        "the working row is derived from the state, not from this page's memory"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-presence').dataset.mode"),
+        "working"
+    );
+
+    // The answer arrives while the page is offline, so it comes back in a
+    // snapshot rather than as a frame: the working state ends all the same.
+    page.set_offline(true);
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--thread",
+            "c-1",
+            "yes, all of it",
+        ])
+        .success();
+    page.set_offline(false);
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]:not(.thread-working)').length === 2",
+        "the answer to arrive in the snapshot",
+    );
+    assert_eq!(
+        page.eval(working),
+        false,
+        "an answer carried by a snapshot ends the working row"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-presence').dataset.mode"),
+        "waiting"
+    );
+
+    // A second question, resolved by the agent without an answer: resolving
+    // it ends the working state too, shows as a chip, and no no-agent
+    // notice follows.
+    ask(&mut page, "phase:p-one", "how long?", "c-2");
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-2\"]')"),
+        true
+    );
+    s.repo
+        .run(&[
+            "resolve",
+            "c-2",
+            "--session",
+            &s.session,
+            "--declined",
+            "--note",
+            "Answered in the summary.",
+        ])
+        .success();
+    page.wait_until(
+        "!!document.querySelector('.pv-panel-msg[data-thread=\"c-2\"] .pv-ctx.is-resolution')",
+        "the resolution to land in the log",
+    );
+    assert_eq!(page.text("document.querySelector('.pv-panel-msg[data-thread=\"c-2\"] .pv-ctx.is-resolution').textContent"), "declined");
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-2\"]')"),
+        false
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-presence').dataset.mode"),
+        "waiting"
+    );
+    s.server()
+        .age_lease(artefacto::server::lease::TTL + std::time::Duration::from_secs(1));
+    page.wait_until(
+        "document.querySelector('.pv-presence').dataset.mode === 'off'",
+        "the lease to expire",
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"noagent\"]')"),
+        false,
+        "nothing is waiting"
+    );
+}
+
+#[test]
+fn a_resolution_stays_the_resolution_after_a_reply() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    comment(&mut page, "task:t-a", "needs a rollback step");
+    s.repo
+        .run(&[
+            "resolve",
+            "c-1",
+            "--session",
+            &s.session,
+            "--changed",
+            "--note",
+            "Added t-rollback.",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelector('.thread[data-thread=\"c-1\"]').dataset.status === 'changed'",
+        "the resolution",
+    );
+    // The reviewer replies after the resolution; the agent replies again.
+    reply(&mut page, "c-1", "thanks");
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--thread",
+            "c-1",
+            "any time",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 3",
+        "comment, thanks, any time",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .thread-resolution .thread-text').textContent"),
+        "Added t-rollback.",
+        "the note is the resolution because the server marked it, not because it was last"
+    );
+    // And after a reload, from the snapshot.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .thread-resolution .thread-text').textContent"),
+        "Added t-rollback."
+    );
+    let status = s.repo.json(&["status", "--json"]);
+    let notes: Vec<bool> = status["artifacts"][0]["threads"][0]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["note"].as_bool().unwrap_or(false))
+        .collect();
+    assert_eq!(
+        notes,
+        vec![false, true, false, false],
+        "only the note is a note"
+    );
+}
+
+#[test]
+fn the_panel_composer_sends_once_and_keeps_its_place() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    ask(&mut page, "task:t-a", "is this the whole plan?", "c-1");
+    s.repo
+        .run(&["reply", "--session", &s.session, "--thread", "c-1", "yes"])
+        .success();
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]:not(.thread-working)').length === 2",
+        "the answer",
+    );
+    let input = ".pv-panel-composer textarea";
+
+    // Aimed at the thread, with text and a caret: all three survive a swap,
+    // and the text and the aim survive a reload.
+    page.click("[data-plan-ref=\"task:t-a\"] .ask-btn");
+    page.type_into(input, "and the CLI layer?");
+    page.eval(&format!("(function(){{ const t = document.querySelector('{input}'); t.focus(); t.setSelectionRange(4, 7); return true; }})()"));
+    let plan = s.repo.path().join("plan.json");
+    s.repo
+        .run(&[
+            "plan",
+            "push",
+            plan.to_str().unwrap(),
+            "--json",
+            "--session",
+            &s.session,
+            "--base-revision",
+            "1",
+        ])
+        .success();
+    page.wait_until(
+        "window.artefactoPlan.debug().revision === 2 && !window.artefactoPlan.debug().syncing",
+        "revision 2",
+    );
+    assert_eq!(
+        page.eval(&format!("document.activeElement === document.querySelector('{input}') && document.activeElement.selectionStart === 4 && document.activeElement.selectionEnd === 7")),
+        true,
+        "focus and caret came back after the swap"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-target .pv-ctx').title"),
+        "task:t-a",
+        "still aimed"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-panel-event.is-revision')"),
+        true,
+        "the revision is in the log"
+    );
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.text(&format!("document.querySelector('{input}').value")),
+        "and the CLI layer?",
+        "the draft survived a reload"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-target .pv-ctx').title"),
+        "task:t-a",
+        "and so did the aim"
+    );
+
+    // A swap while the send is in flight: it sends once, and the live input
+    // is cleared and re-enabled when the reply lands.
+    shape_fetch(&mut page, "/cmd", "hold-response", 1200);
+    enter(&mut page, input);
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-composer .thread-composer-send').disabled"),
+        true,
+        "disabled in flight"
+    );
+    s.repo
+        .run(&[
+            "plan",
+            "push",
+            plan.to_str().unwrap(),
+            "--json",
+            "--session",
+            &s.session,
+            "--base-revision",
+            "2",
+        ])
+        .success();
+    page.wait_until(
+        "window.artefactoPlan.debug().revision === 3 && !window.artefactoPlan.debug().syncing",
+        "revision 3",
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-composer .thread-composer-send').disabled"),
+        true,
+        "still disabled after the swap"
+    );
+    enter(&mut page, input);
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]:not(.thread-working)').length === 3",
+        "the follow-up to land",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(
+        s.server().count_events("chat.sent"),
+        2,
+        "the question and one follow-up, not two"
+    );
+    assert_eq!(
+        page.text(&format!("document.querySelector('{input}').value")),
+        "",
+        "the live input was cleared"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-composer .thread-composer-send').disabled"),
+        false
+    );
+
+    // Aimed at a thread that is then deleted: the aim is dropped, the text
+    // stays, and it sends to the plan as a whole.
+    page.click("[data-plan-ref=\"task:t-a\"] .ask-btn");
+    page.type_into(input, "one more thing");
+    let cookie = s.server().session_cookie("plan:demo");
+    s.server().post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({ "cmd": "thread.delete", "client_id": "cid-del", "thread": "c-1" }),
+    );
+    page.wait_until(
+        "!document.querySelector('.pv-panel-msg[data-thread=\"c-1\"]')",
+        "the thread to go from the log",
+    );
+    // The element loses what the conversation gave it, too.
+    assert_eq!(
+        page.eval(
+            "!document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-count') && \
+             !document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-preview') && \
+             !document.querySelector('[data-plan-ref=\"task:t-a\"]').classList.contains('is-discussed')"
+        ),
+        true,
+        "no count, no preview, no spine once the conversation is gone"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-target').hidden"),
+        true,
+        "the aim is dropped with the thread"
+    );
+    assert_eq!(
+        page.text(&format!("document.querySelector('{input}').value")),
+        "one more thing",
+        "the text stays"
+    );
+    enter(&mut page, input);
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 1",
+        "it went to the plan as a whole",
+    );
+}
+
+#[test]
+fn the_orientation_is_read_once_and_then_gets_out_of_the_way() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // A reviewer opening a plan cold has no other way to know the page
+    // collects comments, so it is said once.
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-banner')"),
+        true,
+        "the first open explains the page"
+    );
+    assert!(page
+        .text("document.querySelector('.pv-banner-text').textContent")
+        .starts_with("This plan is under live review."));
+
+    // And not again. A second open of the same plan in the same browser
+    // goes straight to the plan.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-banner')"),
+        false,
+        "and the second open does not"
+    );
+
+    // A different plan is a first open again: it is the reviewer who has
+    // read it, for that plan.
+    let other = served("kitchen-sink.json");
+    page.navigate(&other.url);
+    connected(&mut page);
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-banner')"),
+        true,
+        "another plan explains itself too"
+    );
+    // Its dismiss takes it away now rather than at the next open.
+    page.click(".pv-banner-dismiss");
+    assert_eq!(page.eval("!!document.querySelector('.pv-banner')"), false);
+    let _ = other;
+}
+
+#[test]
+fn the_conversation_panel_starts_closed_docks_and_comes_back() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    let closed = "document.querySelector('.pv-dock').classList.contains('is-hidden') && !document.querySelector('.pv-panel-handle').hidden";
+    assert_eq!(
+        page.eval(closed),
+        true,
+        "closed by default, with the handle in reach"
+    );
+    assert_eq!(
+        page.eval(
+            "document.querySelector('.pv-panel-handle .pv-panel-count').textContent === '' && \
+               getComputedStyle(document.querySelector('.pv-panel-handle .pv-panel-count')).display === 'none'"
+        ),
+        true,
+        "nothing said yet is a word without a tally beside it"
+    );
+    assert_eq!(
+        page.eval("!document.querySelector('.feedback-bar')"),
+        true,
+        "no bottom bar on a served page"
+    );
+
+    page.click(".pv-panel-handle");
+    assert_eq!(page.eval("!document.querySelector('.pv-dock').classList.contains('is-hidden') && document.querySelector('.pv-panel-handle').hidden"), true, "the handle opens it and steps aside");
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-panel-foot .feedback-bar-send') && !!document.querySelector('.pv-panel-foot .feedback-bar-approve')"),
+        true,
+        "both verdicts live in the panel's foot"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-foot .feedback-bar-state-text').textContent"),
+        "Saved \u{b7} rev 1"
+    );
+
+    // Wide: docked and sticky, the sheet gives it room. Narrow: it floats and
+    // the sheet keeps its measure.
+    page.call("Emulation.setDeviceMetricsOverride", serde_json::json!({ "width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": false }));
+    assert_eq!(
+        page.text("getComputedStyle(document.querySelector('.pv-dock')).position"),
+        "sticky"
+    );
+    let sheet = page.eval(
+        "(function(){ const r = document.querySelector('.pv-sheet').getBoundingClientRect(); \
+           return { left: Math.round(r.left), width: Math.round(r.width) }; })()",
+    );
+    assert_eq!(
+        sheet["width"], 800,
+        "the sheet narrows to a reading measure for the dock: {sheet}"
+    );
+    assert!(
+        sheet["left"].as_f64().unwrap_or(0.0) > 24.0,
+        "and keeps a gutter from the edge: {sheet}"
+    );
+    page.screenshot(&screenshot_path("panel-docked-1440"));
+    page.call("Emulation.setDeviceMetricsOverride", serde_json::json!({ "width": 1280, "height": 900, "deviceScaleFactor": 1, "mobile": false }));
+    assert_eq!(
+        page.text("getComputedStyle(document.querySelector('.pv-dock')).position"),
+        "fixed"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-sheet').getBoundingClientRect().width >= 1170"),
+        true,
+        "the sheet keeps its measure under the overlay: opening it reflows nothing"
+    );
+    page.screenshot(&screenshot_path("panel-overlay-1280"));
+    // Closing gives the page back whole, at either width.
+    page.click(".pv-panel-hide");
+    assert_eq!(
+        page.eval("document.querySelector('.pv-sheet').getBoundingClientRect().width >= 1170"),
+        true,
+        "closed, the sheet is the whole sheet"
+    );
+    page.click(".pv-panel-handle");
+    page.call(
+        "Emulation.clearDeviceMetricsOverride",
+        serde_json::json!({}),
+    );
+
+    // A question from the panel counts on the handle and the top-bar link.
+    page.type_into(".pv-panel-composer textarea", "is this the whole plan?");
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 1",
+        "the question in the log",
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-topbar .pv-panel-count')"),
+        false,
+        "the bar carries nothing about the conversation: the handle does"
+    );
+
+    // The choice survives a reload; hiding returns to the handle, and that
+    // survives too.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.eval("!document.querySelector('.pv-dock').classList.contains('is-hidden')"),
+        true,
+        "open stays open"
+    );
+    page.click(".pv-panel-hide");
+    assert_eq!(page.eval(closed), true, "the X returns to the handle");
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-handle .pv-panel-count').textContent"),
+        "1"
+    );
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(page.eval(closed), true, "closed stays closed");
+    page.click(".pv-panel-handle");
+    assert_eq!(
+        page.eval(
+            "!document.querySelector('.pv-dock').classList.contains('is-hidden') && \
+               document.querySelector('.pv-panel-handle').hidden"
+        ),
+        true,
+        "the handle opens it and steps aside, and is the only way in"
+    );
+}
+
+#[test]
+fn the_panel_opens_at_the_newest_message_and_keeps_its_foot_at_the_bottom() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    // Nothing said yet: the log is empty and the foot still sits at the
+    // bottom of the panel rather than half way up an empty box.
+    page.click(".feedback-bar-chat");
+    let gap = page.eval(
+        "(function(){ const p = document.querySelector('.pv-panel').getBoundingClientRect(); \
+           const f = document.querySelector('.pv-panel-foot').getBoundingClientRect(); \
+           return Math.round(p.bottom - f.bottom); })()",
+    );
+    assert!(
+        gap.as_f64().unwrap_or(999.0) < 8.0,
+        "the foot is at the bottom of the panel, not {gap} above it"
+    );
+
+    // A conversation long enough to scroll, arriving while the panel is
+    // closed: opening shows the newest message, not the oldest.
+    ask(&mut page, "task:t-a", "is this the whole plan?", "c-1");
+    page.click(".pv-panel-hide");
+    for i in 0..14 {
+        s.repo
+            .run(&[
+                "reply",
+                "--session",
+                &s.session,
+                "--thread",
+                "c-1",
+                &format!("answer number {i}, long enough to take a line of its own in the log"),
+            ])
+            .success();
+    }
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]').length === 15",
+        "every answer to land while the panel is closed",
+    );
+    page.click(".feedback-bar-chat");
+    let at = page.eval(
+        "(function(){ const l = document.querySelector('.pv-panel-log'); \
+           return { top: Math.round(l.scrollTop), max: Math.round(l.scrollHeight - l.clientHeight) }; })()",
+    );
+    let top = at["top"].as_f64().unwrap_or(0.0);
+    let max = at["max"].as_f64().unwrap_or(0.0);
+    assert!(max > 0.0, "the log scrolls: {at}");
+    assert!(
+        top >= max - 8.0,
+        "opening lands on the newest message, not the oldest: {at}"
+    );
+}
+
+#[test]
+fn the_preview_opens_the_newest_conversation_on_its_element() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    ask(&mut page, "task:t-a", "first question", "c-1");
+    s.repo
+        .run(&[
+            "resolve",
+            "c-1",
+            "--session",
+            &s.session,
+            "--declined",
+            "--note",
+            "Answered elsewhere.",
+        ])
+        .success();
+    page.wait_until(
+        "!!document.querySelector('.pv-panel-msg[data-thread=\"c-1\"] .pv-ctx.is-resolution')",
+        "the first conversation to close",
+    );
+    // A resolved conversation is closed: the next question is its own.
+    ask(&mut page, "task:t-a", "second question", "c-2");
+    assert_eq!(
+        page.text("document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-preview .ask-preview-text').textContent"),
+        "second question"
+    );
+    assert_eq!(
+        page.text(
+            "document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-preview').dataset.thread"
+        ),
+        "c-2",
+        "the preview follows the newest conversation, not whichever came first"
+    );
+}
+
+#[test]
+fn a_send_that_cannot_leave_the_page_leaves_the_composer_usable() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".feedback-bar-chat");
+    // A fetch that throws where it stands, the way a policy or an extension
+    // can: the send must fail like any other, not wedge the composer.
+    page.eval("(function(){ window.__fetch = window.fetch; window.fetch = function () { throw new Error('blocked'); }; return true; })()");
+    page.type_into(".pv-panel-composer textarea", "does this go anywhere?");
+    enter(&mut page, ".pv-panel-composer textarea");
+    page.wait_until(
+        "!!document.querySelector('.pv-panel-composer .pv-error')",
+        "the composer to say it was not sent",
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-composer .thread-composer-send').disabled"),
+        false,
+        "and to let the reviewer try again"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
+        "does this go anywhere?",
+        "with what they wrote still there"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-state-text').textContent"),
+        "Saved \u{b7} rev 1",
+        "the state line is not stuck saying Saving"
+    );
+    page.eval("(function(){ window.fetch = window.__fetch; return true; })()");
+    let _ = s;
+}
+
+#[test]
+fn a_conversation_whose_element_left_says_so_and_keeps_its_draft() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    ask(&mut page, "task:t-a", "why this one first?", "c-1");
+    assert_eq!(
+        page.text(
+            "document.querySelector('.pv-panel-msg[data-thread=\"c-1\"] .pv-ctx').textContent"
+        ),
+        "taskTask A",
+        "the chip names the element while it is there"
+    );
+
+    // The next revision drops the task the conversation was about.
+    s.edit_plan("\"id\": \"t-a\"", "\"id\": \"t-b\"");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2' && !window.artefactoPlan.debug().syncing",
+        "revision 2",
+    );
+    page.click(".pv-panel-handle");
+    assert_eq!(
+        page.text(
+            "document.querySelector('.pv-panel-msg[data-thread=\"c-1\"] .pv-ctx').textContent"
+        ),
+        "taskelement gone",
+        "the chip says the element left rather than offering a jump to nowhere"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-msg[data-thread=\"c-1\"] .pv-ctx').tagName"),
+        "SPAN",
+        "and it is not a control any more"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-panel-msg[data-thread=\"c-1\"]')"),
+        true,
+        "the conversation itself is still in the panel"
+    );
+}
+
+#[test]
+fn a_page_level_draft_from_the_old_chat_lands_in_the_panel() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // What the build with a floating chat panel left in session storage.
+    page.eval(
+        "(function(){ const key = Object.keys(sessionStorage).find(function (k) { return k.indexOf('artefacto:drafts:') === 0; }) \
+           || 'artefacto:drafts:plan:demo'; \
+         sessionStorage.setItem(key, JSON.stringify({ 'composer-old': { id: 'composer-old', clientId: 'cid-old', kind: 'chat', \
+           ref: null, thread: null, revision: 1, text: 'half a question from before' } })); return true; })()",
+    );
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    page.click(".feedback-bar-chat");
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
+        "half a question from before",
+        "the draft came back into the panel's composer"
+    );
+    assert_eq!(
+        page.eval("!document.querySelector('.pv-recovery')"),
+        true,
+        "and not into the recovery panel as an orphan"
+    );
+    assert_eq!(
+        page.eval("Object.keys(window.artefactoPlan.debug().drafts).length"),
+        0,
+        "the old draft is not left behind"
+    );
+}
+
+#[test]
+fn the_plan_strip_says_where_you_are_and_takes_you_there() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // Everything below measures the document, and the orientation banner is
+    // part of it on a first open only. Load it twice so the page under test
+    // is the one a returning reviewer sees, whatever this browser has seen
+    // before.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-banner')"),
+        false,
+        "the second open has no banner, so the measurements below are stable"
+    );
+
+    // One segment per section the plan has, sized by how much of the
+    // document each holds, in the order they appear.
+    let parts = page.eval(
+        "Array.from(document.querySelectorAll('.pv-map-part')).map(function (p) { \
+           return { part: p.dataset.mapPart, grow: Math.round(parseFloat(getComputedStyle(p).flexGrow) * 100) / 100 }; })",
+    );
+    let names: Vec<String> = parts
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["part"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["summary", "questions", "risks", "phases"],
+        "the plan's parts, in the document's order"
+    );
+    let phases = parts.as_array().unwrap()[3]["grow"].as_f64().unwrap();
+    let risks = parts.as_array().unwrap()[2]["grow"].as_f64().unwrap();
+    assert!(
+        phases > risks,
+        "the phases hold more of the page than the risks: {parts}"
+    );
+
+    // Where you are: the summary at the top, the phases once you are in them.
+    assert_eq!(
+        page.text("document.querySelector('.pv-map-part.is-active').dataset.mapPart"),
+        "summary"
+    );
+    page.eval("document.querySelector('[data-plan-ref=\"phase:p-backend\"]').scrollIntoView({ block: 'start' })");
+    page.wait_until(
+        "document.querySelector('.pv-map-part.is-active') && document.querySelector('.pv-map-part.is-active').dataset.mapPart === 'phases'",
+        "the phases part to become the one you are in",
+    );
+    assert_eq!(
+        page.eval(
+            "document.querySelector('[data-map-part=\"summary\"]').classList.contains('is-past')"
+        ),
+        true,
+        "and the summary to be behind you"
+    );
+    // The numeral itself says which phase you are in; the strip does not
+    // also spell out "1 of 2" beside it. Scrolled to an explicit fraction
+    // rather than to an element: the read line is a fraction of the whole
+    // document, so where `scrollIntoView` lands in it depends on the
+    // document's height, and on this plan the first phase owns a narrow band
+    // near the end.
+    page.eval(
+        "window.scrollTo({ top: 0.8 * (document.documentElement.scrollHeight - window.innerHeight), behavior: 'instant' })",
+    );
+    page.wait_until(
+        "document.querySelector('.pv-map-ph.is-active') && \
+           document.querySelector('.pv-map-ph.is-active').textContent === '01'",
+        "the numeral for the phase the read line is in",
+    );
+    page.eval("window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' })");
+    page.wait_until(
+        "document.querySelector('.pv-map-ph.is-active').textContent === '02'",
+        "the numeral to follow the reader to the last phase",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-map-ph.is-past').length"),
+        1,
+        "and the one behind it is past"
+    );
+    assert_eq!(
+        page.eval(
+            "/\\bof\\b/i.test(document.querySelector('[data-map-part=\"phases\"]').textContent)"
+        ),
+        false,
+        "the numerals say it; the strip does not also spell out N of M"
+    );
+    let fill = page.eval(
+        "(function(){ const f = document.querySelector('.pv-map-fill'), t = document.querySelector('.pv-map-track'); \
+           return Math.round(100 * f.getBoundingClientRect().width / t.getBoundingClientRect().width); })()",
+    );
+    assert!(
+        fill.as_f64().unwrap_or(0.0) > 30.0,
+        "the line fills to the read position: {fill}%"
+    );
+
+    // A width the numbers below were measured at. The strip is a row of
+    // boxes whose sizes depend on the viewport, so these all pin one.
+    page.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({ "width": 900, "height": 900, "deviceScaleFactor": 1, "mobile": false }),
+    );
+    page.wait_until(
+        "document.querySelector('.pv-map-part').getBoundingClientRect().width > 1",
+        "the strip to settle at the new width",
+    );
+
+    // Nothing in the strip is clipped, and the phases keep room for their
+    // numerals. This is what the floor under a segment's share buys: without
+    // it the phases group is squeezed to 121px at this width and its
+    // numerals are cut to nothing.
+    assert_eq!(
+        page.eval(
+            "Array.from(document.querySelectorAll('.pv-map-head')).every(function (h) { \
+               return h.scrollWidth <= h.clientWidth; })"
+        ),
+        true,
+        "no segment is squeezed past its contents"
+    );
+    assert_eq!(
+        page.eval(
+            "(function(){ const ph = document.querySelector('.pv-map-phases'); \
+               return ph.clientWidth > 0 && ph.scrollWidth <= ph.clientWidth; })()"
+        ),
+        true,
+        "the phases have room for their numerals"
+    );
+
+    // The caret is drawn in the same space the segments are laid out in.
+    // They are not the same as a straight linear map of the document: a
+    // segment has a floor under its width and a gap beside it, so a caret
+    // placed by fraction alone drifts into the neighbouring segment. Two
+    // widths, because how far the floors push things apart depends on how
+    // much room there is.
+    for width in [1280, 900] {
+        page.call(
+            "Emulation.setDeviceMetricsOverride",
+            serde_json::json!({ "width": width, "height": 900, "deviceScaleFactor": 1, "mobile": false }),
+        );
+        for tenth in 1..=9 {
+            page.eval(&format!(
+                "window.scrollTo({{ top: 0.{tenth} * (document.documentElement.scrollHeight - window.innerHeight), behavior: 'instant' }})"
+            ));
+            page.wait_until(
+                "(function(){ const c = document.querySelector('.pv-map-caret').getBoundingClientRect(); \
+                   const a = document.querySelector('.pv-map-part.is-active').getBoundingClientRect(); \
+                   const mid = (c.left + c.right) / 2; \
+                   return mid >= a.left - 1 && mid <= a.right + 1; })()",
+                "the caret to sit inside the segment that is lit",
+            );
+        }
+    }
+
+    // And a drag lands where it was dropped: the scrubber inverts the same
+    // walk, so letting go over the risks bar puts you in the risks.
+    page.eval(
+        "(function(){ const p = document.querySelector('[data-map-part=\"risks\"]').getBoundingClientRect(); \
+           const scrub = document.querySelector('.pv-map-scrub'); \
+           scrub.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, \
+             clientX: p.left + p.width / 2, clientY: scrub.getBoundingClientRect().top + 2 })); \
+           return true; })()",
+    );
+    page.wait_until(
+        "document.querySelector('.pv-map-part.is-active').dataset.mapPart === 'risks'",
+        "the scrub to land in the segment it was dropped on",
+    );
+    page.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({ "width": 900, "height": 900, "deviceScaleFactor": 1, "mobile": false }),
+    );
+
+    // Where you are, for a reader who gets neither colour nor spacing.
+    assert_eq!(
+        page.eval(
+            "document.querySelectorAll('.pv-map-part[aria-current]').length === 1 && \
+               document.querySelector('.pv-map-part[aria-current]') === document.querySelector('.pv-map-part.is-active')"
+        ),
+        true,
+        "the segment you are in is the current one"
+    );
+
+    // A fragment link lands under the header, not behind it. The strip made
+    // the header two rows tall, so a fixed scroll margin no longer clears it.
+    page.eval("document.querySelector('a[href=\"#question-q-ttl\"]').click()");
+    page.wait_until(
+        "(function(){ const r = document.getElementById('question-q-ttl').getBoundingClientRect(); \
+           const bar = document.querySelector('.pv-topbar').getBoundingClientRect(); \
+           return r.top >= bar.bottom - 1; })()",
+        "the question the summary links to to clear the header",
+    );
+    page.call(
+        "Emulation.clearDeviceMetricsOverride",
+        serde_json::json!({}),
+    );
+
+    // A phase with a high risk carries a flag; the other does not.
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-map-ph .pv-map-flag').length"),
+        1,
+        "one phase holds a high risk"
+    );
+
+    // Clicking a part takes you there and says which one it landed on.
+    page.click("[data-map-part=\"risks\"]");
+    page.wait_until(
+        "!!document.querySelector('.pv-aimed')",
+        "the section it landed on to flash",
+    );
+    assert_eq!(
+        page.eval(
+            "(function(){ const r = document.querySelector('.pv-rule[data-part=\"risks\"]').getBoundingClientRect(); \
+               const bar = document.querySelector('.pv-topbar').getBoundingClientRect(); \
+               return r.top >= bar.bottom - 4 && r.top < bar.bottom + 40; })()"
+        ),
+        true,
+        "the risks are under the header, not behind it"
+    );
+    page.screenshot(&screenshot_path("plan-strip"));
+}
+
+#[test]
+fn a_long_plan_gets_ticks_instead_of_numerals() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let repo = Repo::new();
+    let server = InProcess::start_in(&repo);
+    // A plan with more phases than the strip can spell out.
+    let mut phases = Vec::new();
+    // Two phases earn a flag, for the two different reasons a phase can:
+    // phase 5 holds a high-risk task, phase 9 holds a blocked one. Neither
+    // holds both, so each clause of the rule is on its own here.
+    for i in 1..=14 {
+        phases.push(format!(
+            r#"{{"id":"p-{i}","title":"Phase {i}","tasks":[{{"id":"t-{i}","title":"Task {i}","status":"{status}"{risk}}}]}}"#,
+            status = if i == 9 { "blocked" } else { "planned" },
+            risk = if i == 5 { r#","risk":"high""# } else { "" }
+        ));
+    }
+    let plan = repo.path().join("plan.json");
+    std::fs::write(
+        &plan,
+        format!(
+            r#"{{"format":"artefacto.plan/1","meta":{{"id":"long","title":"A long plan"}},"phases":[{}]}}"#,
+            phases.join(",")
+        ),
+    )
+    .unwrap();
+    let out = repo.run(&[
+        "plan",
+        "push",
+        plan.to_str().unwrap(),
+        "--json",
+        "--no-open",
+    ]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let v: serde_json::Value = serde_json::from_str(&out.stdout).expect("json");
+    let mut page = browser.new_page();
+    page.navigate(v["url"].as_str().unwrap());
+    connected(&mut page);
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-map-tick').length"),
+        14,
+        "one tick per phase"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-map-ph').length"),
+        0,
+        "and no numerals to run out of room"
+    );
+    // The first tick keeps clear of the label: against it, it reads as part
+    // of the word rather than as the first phase.
+    assert_eq!(
+        page.eval(
+            "(function(){ const label = document.querySelector('[data-map-part=\"phases\"] .pv-map-label'); \
+               const first = document.querySelector('.pv-map-tick'); \
+               return first.getBoundingClientRect().left - label.getBoundingClientRect().right >= 8; })()"
+        ),
+        true,
+        "the ticks start clear of the phases label"
+    );
+    assert_eq!(
+        page.eval(
+            "Array.from(document.querySelectorAll('.pv-map-tick.has-flag')).map(function (t) { \
+               return t.dataset.mapPhase; })"
+        ),
+        serde_json::json!(["phase-p-5", "phase-p-9"]),
+        "the high-risk phase and the blocked phase each carry a flag"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-map-tick.has-flag').title"),
+        "Phase 05 \u{2014} a blocked task or a high risk in this phase",
+        "and a reader who cannot see the dot is told why"
+    );
+    // A viewport short enough that fourteen collapsed phases scroll.
+    page.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({ "width": 1280, "height": 520, "deviceScaleFactor": 1, "mobile": false }),
+    );
+    page.eval("window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' })");
+    page.wait_until(
+        "!!document.querySelector('.pv-map-tick.is-active')",
+        "the tick for the phase you are in",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-map-tick.is-active .pv-map-tick-num').textContent"),
+        "14",
+        "the last phase, and the only tick showing its number"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-map-tick.is-past').length"),
+        13,
+        "the ones behind it are past"
+    );
+    page.screenshot(&screenshot_path("plan-strip-dense"));
+    let _ = server;
+}
+
+#[test]
+fn the_agent_can_stop_the_page_when_it_is_blocked() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    // A plain nudge is a line in the panel and a notice: it waits.
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--artifact",
+            "plan:demo",
+            "--nudge",
+            "have a look at phase one",
+        ])
+        .success();
+    page.wait_until(
+        "!!document.querySelector('.pv-notice[data-kind=\"nudge\"]')",
+        "the nudge to land as a notice",
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-dim')"),
+        false,
+        "and not to stop the page"
+    );
+
+    // An interrupt does not wait.
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--artifact",
+            "plan:demo",
+            "--nudge",
+            "--interrupt",
+            "--title",
+            "Which store should Redis replace?",
+            "--ref",
+            "task:t-a",
+            "I have stopped: the trait boundary depends on your answer.",
+        ])
+        .success();
+    page.wait_until("!!document.querySelector('.ag-interrupt')", "the dialog");
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-title').textContent"),
+        "Which store should Redis replace?"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-body').textContent"),
+        "I have stopped: the trait boundary depends on your answer."
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt').dataset.kind"),
+        "blocking"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-ctx .pv-ctx').title"),
+        "task:t-a",
+        "the dialog says what it is about"
+    );
+    assert_eq!(
+        page.eval("document.activeElement === document.querySelector('.ag-interrupt-go')"),
+        true,
+        "focus moves into the dialog"
+    );
+    assert_eq!(
+        page.text("getComputedStyle(document.documentElement).overflow"),
+        "hidden",
+        "and the plan behind it does not scroll"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.ag-dim').parentElement === document.documentElement"),
+        true,
+        "the backdrop is on the root: a revision replaces the body's children"
+    );
+    page.screenshot(&screenshot_path("interrupt-blocked"));
+
+    // A dialog is on screen, not on paper. Printing mid-interrupt gives the
+    // plan, not a dimmed first page and nothing after it.
+    page.call(
+        "Emulation.setEmulatedMedia",
+        serde_json::json!({ "media": "print" }),
+    );
+    assert_eq!(
+        page.text("getComputedStyle(document.querySelector('.ag-dim')).display"),
+        "none",
+        "the dialog is not printed"
+    );
+    assert_eq!(
+        page.text("getComputedStyle(document.documentElement).overflow"),
+        "visible",
+        "and the scroll lock does not cut the paper to one page"
+    );
+    page.call(
+        "Emulation.setEmulatedMedia",
+        serde_json::json!({ "media": "screen" }),
+    );
+
+    // Its button opens the conversation, aimed at what the agent asked about.
+    page.click(".ag-interrupt-go");
+    page.wait_until("!document.querySelector('.ag-dim')", "the dialog to close");
+    assert_eq!(
+        page.eval("!document.querySelector('.pv-dock').classList.contains('is-hidden')"),
+        true,
+        "the conversation is open"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-target .pv-ctx').title"),
+        "task:t-a",
+        "aimed where the agent asked"
+    );
+    assert_eq!(
+        page.text("getComputedStyle(document.documentElement).overflow"),
+        "visible",
+        "and the page scrolls again"
+    );
+
+    // A second stop gets through, and so does a third that is word for word
+    // the same and carries the same sequence number. A nudge is never
+    // written to the log, so `seq` on it is whatever the cursor happened to
+    // be: two questions sent with nothing logged in between carry the same
+    // number, and keying "said once" on that swallowed the second in
+    // silence. The agent chose to interrupt; the page shows it.
+    for title in ["Still blocked", "Still blocked"] {
+        page.eval(&REPLAY.replace("SEQ", "9001").replace("TITLE", title));
+        page.wait_until(
+            &format!(
+                "document.querySelector('.ag-interrupt-title') && \
+                   document.querySelector('.ag-interrupt-title').textContent === '{title}'"
+            ),
+            "the next stop, whatever the sequence number says",
+        );
+        page.click(".ag-interrupt-not");
+        page.wait_until("!document.querySelector('.ag-dim')", "the dialog to close");
+    }
+}
+
+/// One nudge-with-interrupt frame, as the socket would deliver it. `SEQ` is
+/// the event's sequence number, which the page deliberately does not treat
+/// as an identity: see the test above.
+const REPLAY: &str =
+    "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: SEQ, events: [{ \
+           format: 'artefacto.event/1', actor: 'agent', artifact: 'plan:demo', revision: 1, \
+           seq: SEQ, ts: '2026-09-13T00:00:00Z', type: 'nudge', \
+           data: { agent: 'agent', text: 'I have stopped.', \
+                   interrupt: { kind: 'blocked', title: 'TITLE' } } }] })";
+
+#[test]
+fn a_revision_while_the_agent_has_stopped_you_leaves_the_page_working() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--artifact",
+            "plan:auth-refactor",
+            "--nudge",
+            "--interrupt",
+            "--title",
+            "Which store should Redis replace?",
+            "I have stopped.",
+        ])
+        .success();
+    page.wait_until("!!document.querySelector('.ag-interrupt')", "the dialog");
+
+    // The agent answers itself by pushing. The dialog was about the revision
+    // that is being replaced, so it goes -- and it must take the scroll lock
+    // with it, or the reviewer is left on a page that cannot move with
+    // nothing on screen to say why.
+    s.edit_plan("Auth refactor", "Auth refactor, revised");
+    s.push(1, &[]);
+    page.wait_until(
+        "document.body.dataset.artefactoRevision === '2'",
+        "revision 2 to land",
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-dim')"),
+        false,
+        "the dialog goes with the revision it was about"
+    );
+    assert_eq!(
+        page.text("getComputedStyle(document.documentElement).overflow"),
+        "visible",
+        "and the page scrolls again"
+    );
+    page.eval("window.scrollTo({ top: 400, behavior: 'instant' })");
+    page.wait_until("window.scrollY > 0", "the page to actually scroll");
+
+    // And the next thing the agent has to say still gets through.
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--artifact",
+            "plan:auth-refactor",
+            "--nudge",
+            "--interrupt",
+            "--title",
+            "Still blocked on the store",
+            "I have stopped again.",
+        ])
+        .success();
+    page.wait_until(
+        "!!document.querySelector('.ag-interrupt')",
+        "the next interrupt to reach the page",
+    );
+}
+
+#[test]
+fn a_second_interrupt_waits_its_turn_instead_of_vanishing() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // Put the hanging dialog up and keep it there: no countdown.
+    page.eval(
+        "(function(){ window.artefactoPlan.settings.hangingAfterMs = 200; \
+           window.artefactoPlan.settings.hangingCheckMs = 100; \
+           window.artefactoPlan.settings.hangingDismissMs = 0; \
+           window.artefactoPlan.restartHangingCheck(); return true; })()",
+    );
+    page.wait_until(
+        "document.querySelector('.ag-interrupt') && document.querySelector('.ag-interrupt').dataset.cause === 'hanging'",
+        "the hanging dialog",
+    );
+
+    // The agent says it has stopped. The nudge is never logged, so dropping
+    // it would lose the message for good.
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--artifact",
+            "plan:auth-refactor",
+            "--nudge",
+            "--interrupt",
+            "--title",
+            "Which store should Redis replace?",
+            "I have stopped.",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelector('.pv-panel-log') && \
+           document.querySelector('.pv-panel-log').textContent.indexOf('I have stopped.') >= 0",
+        "the nudge to reach the page's conversation",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt').dataset.cause"),
+        "hanging",
+        "one dialog at a time"
+    );
+
+    // Dismissing the first hands the page to the second.
+    page.click(".ag-interrupt-not");
+    page.wait_until(
+        "document.querySelector('.ag-interrupt') && document.querySelector('.ag-interrupt').dataset.cause === 'blocked'",
+        "the interrupt that was waiting",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-title').textContent"),
+        "Which store should Redis replace?"
+    );
+}
+
+#[test]
+fn a_long_message_keeps_the_dialog_reachable() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({ "width": 900, "height": 420, "deviceScaleFactor": 1, "mobile": false }),
+    );
+    let long = "The trait boundary depends on your answer. ".repeat(30);
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--artifact",
+            "plan:demo",
+            "--nudge",
+            "--interrupt",
+            "--title",
+            "Which store should Redis replace?",
+            &long,
+        ])
+        .success();
+    page.wait_until("!!document.querySelector('.ag-interrupt')", "the dialog");
+    // The agent writes the body and nothing bounds it. The page behind
+    // cannot scroll, so the dialog has to stay reachable on its own.
+    assert_eq!(
+        page.eval(
+            "(function(){ const b = document.querySelector('.ag-interrupt').getBoundingClientRect(); \
+               return b.top >= 0 && b.bottom <= window.innerHeight + 1; })()"
+        ),
+        true,
+        "the whole dialog is on screen"
+    );
+    assert_eq!(
+        page.eval(
+            "(function(){ const go = document.querySelector('.ag-interrupt-go').getBoundingClientRect(); \
+               return go.bottom > 0 && go.bottom <= window.innerHeight; })()"
+        ),
+        true,
+        "including the button it is about"
+    );
+    assert_eq!(
+        page.eval(
+            "(function(){ const b = document.querySelector('.ag-interrupt-body'); \
+               return b.scrollHeight > b.clientHeight; })()"
+        ),
+        true,
+        "the message itself is what scrolls"
+    );
+
+    // Shorter than the dialog can be made: now the backdrop is what scrolls,
+    // and the button is still reachable. Without that the reviewer's only way
+    // out of a dialog they cannot read is Escape.
+    page.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({ "width": 900, "height": 240, "deviceScaleFactor": 1, "mobile": false }),
+    );
+    page.wait_until(
+        "(function(){ const d = document.querySelector('.ag-dim'); \
+           return d.scrollHeight > d.clientHeight; })()",
+        "the backdrop to have somewhere to scroll",
+    );
+    page.eval(
+        "(function(){ const d = document.querySelector('.ag-dim'); d.scrollTop = d.scrollHeight; return true; })()",
+    );
+    assert_eq!(
+        page.eval(
+            "(function(){ const go = document.querySelector('.ag-interrupt-go').getBoundingClientRect(); \
+               return go.top >= 0 && go.bottom <= window.innerHeight + 1; })()"
+        ),
+        true,
+        "scrolling the backdrop reaches the button"
+    );
+    page.call(
+        "Emulation.clearDeviceMetricsOverride",
+        serde_json::json!({}),
+    );
+}
+
+#[test]
+fn a_revision_that_moves_what_you_commented_on_stops_the_page() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    comment(&mut page, "task:t-a", "this needs a rollback step");
+
+    s.edit_plan("\"id\": \"t-a\"", "\"id\": \"t-b\"");
+    s.push(1, &[]);
+    page.wait_until("!!document.querySelector('.ag-interrupt')", "the dialog");
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt').dataset.kind"),
+        "revision"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-title').textContent"),
+        "A revision moved what you commented on"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-ctx .pv-ctx').textContent"),
+        "taskelement gone",
+        "and says the element is gone"
+    );
+    page.screenshot(&screenshot_path("interrupt-revision"));
+
+    // Escape is Not now: the page comes back, with the comment kept.
+    page.eval(
+        "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))",
+    );
+    page.wait_until("!document.querySelector('.ag-dim')", "the dialog to close");
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-recovery .thread[data-thread=\"c-1\"]')"),
+        true,
+        "the comment is in the recovery panel"
+    );
+
+    // And it does not come back for the same revision: a later frame that
+    // orphans nothing new finds the same threads still unanchored.
+    page.eval(
+        "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 996, events: [{ \
+           format: 'artefacto.event/1', actor: 'reviewer', artifact: 'plan:demo', revision: 2, \
+           seq: 996, ts: '2026-09-13T00:00:00Z', type: 'element.reviewed', \
+           data: { ref: 'phase:p-one', reviewed: true } }] })",
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-dim')"),
+        false,
+        "the same orphans do not raise it twice"
+    );
+
+    // A later revision that moves something else is a new thing to say, so
+    // the dialog comes back: dismissing one is not dismissing them all.
+    comment(&mut page, "task:t-b", "and this one needs a rollback step");
+    s.edit_plan("\"id\": \"t-b\"", "\"id\": \"t-c\"");
+    s.push(2, &[]);
+    page.wait_until(
+        "!!document.querySelector('.ag-interrupt')",
+        "the dialog for the next revision",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-title').textContent"),
+        "A revision moved 2 things you commented on",
+        "and it counts everything still hanging"
+    );
+}
+
+#[test]
+fn a_review_left_hanging_says_so_once() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // The kitchen-sink plan has a blocking question; nobody has answered it
+    // and no verdict has been sent. Shorten the quiet spell to a moment.
+    page.eval(
+        "(function(){ window.artefactoPlan.settings.hangingAfterMs = 200; \
+           window.artefactoPlan.settings.hangingCheckMs = 100; \
+           window.artefactoPlan.settings.hangingDismissMs = 60000; return true; })()",
+    );
+    page.eval("window.artefactoPlan.debug().lastPing");
+    page.eval("(function(){ window.artefactoPlan.restartHangingCheck(); return true; })()");
+    page.wait_until(
+        "!!document.querySelector('.ag-interrupt')",
+        "the dialog after the quiet spell",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-title').textContent"),
+        "The agent is waiting on you"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-interrupt-timer span')"),
+        true,
+        "it counts itself down rather than standing in the way"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-ctx .pv-ctx').textContent"),
+        "questionSession TTL?",
+        "the chip quotes the question, not its chip, buttons and answer box"
+    );
+    page.screenshot(&screenshot_path("interrupt-hanging"));
+    page.click(".ag-interrupt-not");
+    page.wait_until("!document.querySelector('.ag-dim')", "the dialog to close");
+    // Not again for the same reason.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-dim')"),
+        false,
+        "said once"
+    );
+}
+
+#[test]
+fn a_sent_review_is_never_called_hanging() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // Same plan and same quiet spell as the test above, with one difference:
+    // the verdict has been sent. The agent is not waiting on anything, so
+    // nothing stops the page, blocking question or not.
+    page.click(".pv-panel-handle");
+    page.click(".feedback-bar-approve");
+    page.wait_until(
+        "document.querySelector('.pv-panel-foot').classList.contains('is-sent')",
+        "the review to be sent",
+    );
+    page.eval(
+        "(function(){ window.artefactoPlan.settings.hangingAfterMs = 200; \
+           window.artefactoPlan.settings.hangingCheckMs = 100; \
+           window.artefactoPlan.restartHangingCheck(); return true; })()",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-dim')"),
+        false,
+        "a sent review is not a hanging one"
+    );
+}
+
+#[test]
+fn nobody_is_waiting_when_no_agent_holds_the_lease() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // The blocking question is open and no verdict has been sent, but the
+    // lease has expired: there is no agent to be waiting, so nothing stops
+    // the page.
+    s.server()
+        .age_lease(artefacto::server::lease::TTL + std::time::Duration::from_secs(1));
+    page.wait_until(
+        "document.querySelector('.pv-presence').textContent === 'agent left'",
+        "the pill to say the agent is gone",
+    );
+    page.eval(
+        "(function(){ window.artefactoPlan.settings.hangingAfterMs = 200; \
+           window.artefactoPlan.settings.hangingCheckMs = 100; \
+           window.artefactoPlan.settings.hangingDismissMs = 60000; \
+           window.artefactoPlan.restartHangingCheck(); return true; })()",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-dim')"),
+        false,
+        "no agent, nobody waiting"
+    );
+
+    // An agent takes the lease: now there is someone to be kept waiting.
+    s.repo
+        .run(&[
+            "await",
+            "--timeout",
+            "1s",
+            "--agent",
+            "claude",
+            "--takeover",
+        ])
+        .success();
+    page.wait_until(
+        "!!document.querySelector('.ag-interrupt')",
+        "the dialog once an agent is back",
+    );
 }

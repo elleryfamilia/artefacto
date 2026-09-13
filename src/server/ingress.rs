@@ -95,6 +95,12 @@ pub enum Command {
         text: String,
         #[serde(default)]
         thread: Option<String>,
+        /// Asked on an element that has no thread yet: opens one. Spec 6.2
+        /// keeps `chat.sent` the active event; the thread is a side effect.
+        #[serde(default, rename = "ref")]
+        target: Option<String>,
+        #[serde(default)]
+        quote: Option<String>,
         opened_revision: u32,
     },
     #[serde(rename = "review.submit")]
@@ -445,6 +451,16 @@ fn build(review: &Review, artifact: &str, command: &Command) -> anyhow::Result<B
         } => {
             check_text(text)?;
             check_revision(*opened_revision)?;
+            /* Every other ref-bearing command checks that its element is in
+            the plan; this one did not, so an answer to a question the plan
+            does not have was accepted, written to the log, and handed to the
+            agent in the feedback document -- invisible on the page, because
+            there is no box to render it in. Empty text is let through: it is
+            how an answer is removed, and the question it was about may have
+            gone in the revision that prompted the removal. */
+            if !text.is_empty() && !refs.contains(&format!("question:{question}")) {
+                anyhow::bail!("no such element in this revision: question:{question}");
+            }
             Ok((
                 "question.answered",
                 serde_json::json!({ "question": question, "text": text, "opened_revision": opened_revision }),
@@ -464,19 +480,49 @@ fn build(review: &Review, artifact: &str, command: &Command) -> anyhow::Result<B
         Command::ChatSend {
             text,
             thread,
+            target,
+            quote,
             opened_revision,
             ..
         } => {
             check_text(text)?;
             check_revision(*opened_revision)?;
-            if let Some(t) = thread {
-                check_thread(t)?;
+            match (thread, target) {
+                (Some(t), None) => {
+                    check_thread(t)?;
+                    Ok((
+                        "chat.sent",
+                        serde_json::json!({ "text": text, "thread": t, "opened_revision": opened_revision }),
+                        Some(t.clone()),
+                    ))
+                }
+                (None, Some(target)) => {
+                    // A question on an element opens its thread and asks in
+                    // one command, so a page never holds a thread it opened
+                    // without the question that was the point of it.
+                    if !refs.contains(target) {
+                        anyhow::bail!("no such element in this revision: {target}");
+                    }
+                    let id = format!("c-{}", art.next_thread_n);
+                    Ok((
+                        "chat.sent",
+                        serde_json::json!({
+                            "text": text, "thread": id, "ref": target,
+                            "quote": quote.clone().unwrap_or_default(),
+                            "opened_revision": opened_revision,
+                        }),
+                        Some(id),
+                    ))
+                }
+                (Some(_), Some(_)) => {
+                    anyhow::bail!("a question goes to a thread or to an element, not both")
+                }
+                (None, None) => Ok((
+                    "chat.sent",
+                    serde_json::json!({ "text": text, "thread": null, "opened_revision": opened_revision }),
+                    None,
+                )),
             }
-            Ok((
-                "chat.sent",
-                serde_json::json!({ "text": text, "thread": thread, "opened_revision": opened_revision }),
-                thread.clone(),
-            ))
         }
         Command::ReviewSubmit {
             verdict,

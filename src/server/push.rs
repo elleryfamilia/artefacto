@@ -368,6 +368,26 @@ fn summarize(previous: &serde_json::Value, next: &serde_json::Value) -> String {
                 .is_some_and(|old| old != *title)
         })
         .count();
+    /* Progress is the most common revision a plan under review ever gets:
+    nothing is added, removed, or retitled, and eight tasks are now done.
+    Reporting that as "no change" is the one summary a reviewer would call
+    a lie. Done is counted on its own because it is the change they are
+    watching for; every other move is a status change. */
+    let before_status = statuses(previous);
+    let mut done = 0usize;
+    let mut restatused = 0usize;
+    for (reference, status) in statuses(next) {
+        match before_status.get(&reference) {
+            Some(was) if *was != status => {
+                if status == "done" {
+                    done += 1;
+                } else {
+                    restatused += 1;
+                }
+            }
+            _ => {}
+        }
+    }
 
     let mut parts = Vec::new();
     if added > 0 {
@@ -378,6 +398,12 @@ fn summarize(previous: &serde_json::Value, next: &serde_json::Value) -> String {
     }
     if retitled > 0 {
         parts.push(format!("{retitled} retitled"));
+    }
+    if done > 0 {
+        parts.push(format!("{done} done"));
+    }
+    if restatused > 0 {
+        parts.push(format!("{restatused} moved"));
     }
     if parts.is_empty() {
         return "no change to phases or tasks".to_string();
@@ -411,6 +437,41 @@ fn titles(plan: &serde_json::Value) -> std::collections::BTreeMap<String, String
                 task.get("title").and_then(|t| t.as_str()),
             ) {
                 out.insert(format!("task:{id}"), title.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Every phase and task's status, by ref. A missing `status` is `planned`,
+/// the same default the model parses, so a plan that never writes the field
+/// and one that writes `planned` everywhere compare equal.
+///
+/// A phase counts alongside its own tasks, so a phase marked done with its
+/// four tasks reads "5 done". That is what a reviewer sees change on the
+/// page -- five rows, not four -- and the alternative, counting only tasks,
+/// would report nothing at all for a plan whose phases carry the status.
+fn statuses(plan: &serde_json::Value) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let Some(phases) = plan.get("phases").and_then(|p| p.as_array()) else {
+        return out;
+    };
+    let read = |v: &serde_json::Value| {
+        v.get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("planned")
+            .to_string()
+    };
+    for phase in phases {
+        if let Some(id) = phase.get("id").and_then(|i| i.as_str()) {
+            out.insert(format!("phase:{id}"), read(phase));
+        }
+        let Some(tasks) = phase.get("tasks").and_then(|t| t.as_array()) else {
+            continue;
+        };
+        for task in tasks {
+            if let Some(id) = task.get("id").and_then(|i| i.as_str()) {
+                out.insert(format!("task:{id}"), read(task));
             }
         }
     }
@@ -499,6 +560,65 @@ mod tests {
         assert!(summary.contains("1 added"), "{summary}");
         assert!(summary.contains("1 removed"), "{summary}");
         assert!(summary.contains("1 retitled"), "{summary}");
+    }
+
+    #[test]
+    fn progress_is_a_change_and_is_counted_as_one() {
+        let before = plan(serde_json::json!([
+            { "id": "p-one", "title": "One", "tasks": [
+                { "id": "t-a", "title": "A" },
+                { "id": "t-b", "title": "B" },
+                { "id": "t-c", "title": "C" },
+                { "id": "t-d", "title": "D", "status": "planned" }
+            ] }
+        ]));
+        let after = plan(serde_json::json!([
+            { "id": "p-one", "title": "One", "tasks": [
+                { "id": "t-a", "title": "A", "status": "done" },
+                { "id": "t-b", "title": "B", "status": "done" },
+                { "id": "t-c", "title": "C", "status": "blocked" },
+                { "id": "t-d", "title": "D", "status": "planned" }
+            ] }
+        ]));
+        // The counts differ on purpose: with one of each, swapping the two
+        // branches would produce the same sentence.
+        assert_eq!(summarize(&before, &after), "2 done, 1 moved");
+    }
+
+    #[test]
+    fn a_phase_counts_beside_its_own_tasks() {
+        let before = plan(serde_json::json!([
+            { "id": "p-one", "title": "One", "tasks": [
+                { "id": "t-a", "title": "A" }, { "id": "t-b", "title": "B" }
+            ] }
+        ]));
+        let after = plan(serde_json::json!([
+            { "id": "p-one", "title": "One", "status": "done", "tasks": [
+                { "id": "t-a", "title": "A", "status": "done" },
+                { "id": "t-b", "title": "B", "status": "done" }
+            ] }
+        ]));
+        // Three rows changed on the page, so the summary says three. Counting
+        // only the tasks would report nothing at all for a plan whose phases
+        // carry the status and whose tasks do not.
+        assert_eq!(summarize(&before, &after), "3 done");
+    }
+
+    #[test]
+    fn a_missing_status_reads_as_planned() {
+        let without = plan(serde_json::json!([
+            { "id": "p-one", "title": "One", "tasks": [{ "id": "t-a", "title": "A" }] }
+        ]));
+        let with = plan(serde_json::json!([
+            { "id": "p-one", "title": "One", "tasks": [
+                { "id": "t-a", "title": "A", "status": "planned" }
+            ] }
+        ]));
+        assert_eq!(
+            summarize(&without, &with),
+            "no change to phases or tasks",
+            "writing the default out is not a change"
+        );
     }
 
     #[test]

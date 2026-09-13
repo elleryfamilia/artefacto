@@ -416,8 +416,12 @@ fn the_served_plan_page_links_to_the_index_and_the_static_export_does_not() {
         .get("/a/plan:auth-refactor", &[("Cookie", &cookie)]);
     assert_eq!(status_of(&page), 200);
     assert!(
-        page.contains("<a class=\"pv-topbar-link\" href=\"/\">All artifacts</a>"),
-        "{}",
+        page.contains("<a class=\"pv-topbar-link\" href=\"/\">")
+            && page.contains("All artifacts</a>")
+            // The `<svg` matters: the stylesheet names the class too, so
+            // looking for the class alone passes with no mark in the markup.
+            && page.contains("<svg class=\"pv-topbar-link-icon\""),
+        "the way out of the document is a link with a mark on it: {}",
         &page[..600.min(page.len())]
     );
     let export = std::fs::read_to_string(&m.static_page).unwrap();

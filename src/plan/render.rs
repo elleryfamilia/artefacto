@@ -217,9 +217,13 @@ fn dot_line(variant: &str, label: &str) -> Markup {
 /// gives `plan.js` a stable target to inject the expand/collapse controls into
 /// — the markup ships the empty container so scripting never has to build the
 /// surrounding structure (and `plan.css` hides it while it stays empty).
-fn section_rule(label: &str, actions_id: Option<&str>) -> Markup {
+/// `part` is what the header's plan strip reads: every rule that carries one
+/// becomes a segment of the strip, sized by how much of the document it holds.
+/// A rule inside a section (a task's acceptance, a phase's dependencies) is
+/// written inline without this helper and is not a part.
+fn section_rule(label: &str, actions_id: Option<&str>, part: Option<&str>) -> Markup {
     html! {
-        div.pv-rule {
+        div.pv-rule data-part=[part] {
             span.pv-label { (label) }
             span.pv-rule-line {}
             @if let Some(id) = actions_id {
@@ -395,35 +399,38 @@ fn summary_risk_line(plan: &Plan) -> Option<(String, bool)> {
 /// A phase's estimate distribution for the executive-summary rollup table,
 /// e.g. `"2 small, 1 medium"` — only sizes that occur, empty when no task in
 /// the phase carries an estimate.
-fn phase_estimate_dist(phase: &Phase) -> String {
-    let mut sizes = [0usize; 3]; // s, m, l
-    for t in &phase.tasks {
-        match t.estimate {
-            Some(Estimate::S) => sizes[0] += 1,
-            Some(Estimate::M) => sizes[1] += 1,
-            Some(Estimate::L) => sizes[2] += 1,
-            None => {}
-        }
+/// How much work a phase holds, for the summary ledger: how many tasks are
+/// in it.
+///
+/// The cell used to carry the estimate mix -- `1s · 2m · 1l` -- which is a
+/// code the page never gives the reader the key to, three numbers deep, in
+/// the narrowest column on the page. The sizes are still on every task's own
+/// rail, spelled out, where a reader who wants them is already looking.
+fn phase_task_count(phase: &Phase) -> String {
+    match phase.tasks.len() {
+        0 => String::new(),
+        1 => "1 task".to_string(),
+        n => format!("{n} tasks"),
     }
-    sizes
-        .iter()
-        .zip(["s", "m", "l"])
-        .filter(|(n, _)| **n > 0)
-        .map(|(n, label)| format!("{n}{label}"))
-        .collect::<Vec<_>>()
-        .join(" · ")
 }
 
 /// Whether the summary ledger's right-hand column would carry anything at
-/// all: true as soon as one phase has an estimate distribution or a risk
-/// heat. A plan whose tasks are all unestimated and unrated fills that column
-/// with nothing in every row, and an `EST · RISK` header over a stack of empty
-/// cells reads as a rendering failure rather than as "not stated" — so the
-/// column is dropped instead (see the ledger markup).
+/// all: true as soon as one phase has a task to count. A plan whose phases
+/// are all empty fills that column with nothing in every row, and a `TASKS`
+/// header over a stack of empty cells reads as a rendering failure rather
+/// than as "none yet" — so the column is dropped instead.
 fn ledger_has_figures(plan: &Plan) -> bool {
-    plan.phases
-        .iter()
-        .any(|p| !phase_estimate_dist(p).is_empty() || !phase_risk_heat(p).is_empty())
+    plan.phases.iter().any(|p| !p.tasks.is_empty())
+}
+
+/// What the bracketed count in the ledger means, for the tooltip and for a
+/// reader who never sees a tooltip.
+fn high_risk_label(n: usize) -> String {
+    if n == 1 {
+        "1 high risk".to_string()
+    } else {
+        format!("{n} high risks")
+    }
 }
 
 /// The rail's phase cell: the head of a `title — subtitle` name, capped for
@@ -434,28 +441,18 @@ fn short_phase_title(title: &str) -> String {
     truncate_chars(head, 28)
 }
 
-/// A phase's risk heat for the rollup table: the count of tasks at the
-/// *highest* risk severity present in the phase, e.g. `"1 high"`. A phase
-/// with one high-risk task and two medium-risk tasks reports only "1 high"
-/// — once a higher severity is present, the lower counts don't also need
-/// spelling out in this compact a cell. Empty when no task in the phase
-/// carries a risk rating.
-fn phase_risk_heat(phase: &Phase) -> String {
-    let mut counts = [0usize; 3]; // high, medium, low
-    for t in &phase.tasks {
-        match t.risk {
-            Some(RiskLevel::High) => counts[0] += 1,
-            Some(RiskLevel::Medium) => counts[1] += 1,
-            Some(RiskLevel::Low) => counts[2] += 1,
-            None => {}
-        }
-    }
-    counts
+/// How many high-risk tasks a phase holds.
+///
+/// Only high. Medium and low were called out here too, which put a risk word
+/// in almost every row: a column that says something about every phase says
+/// nothing about any of them. A reader scanning the ledger is looking for the
+/// phase that could go wrong, and the lower ratings are on each task's rail.
+fn phase_high_risk(phase: &Phase) -> usize {
+    phase
+        .tasks
         .iter()
-        .zip(["high", "medium", "low"])
-        .find(|(n, _)| **n > 0)
-        .map(|(n, label)| format!("{n} {label}"))
-        .unwrap_or_default()
+        .filter(|t| matches!(t.risk, Some(RiskLevel::High)))
+        .count()
 }
 
 /// One task: a body column (heading, markdown summary, files, acceptance
@@ -607,7 +604,9 @@ pub fn render(plan: &Plan) -> String {
                     // route alike — and carries the plan's identity so it
                     // stays on screen through a long scroll. Brand first,
                     // surface second (same hierarchy as studio's topbar):
-                    // "artefacto" is the product, "Plan viewer" is a room in it.
+                    // "artefacto" is the product, "Plan" is a room in it -- it
+                    // views many kinds of artifact, so the room is named after
+                    // what is on screen rather than after the act of viewing.
                     // Static markup only; the theme toggle is injected by
                     // plan.js, since a control that does nothing without
                     // scripting has no business in the served HTML.
@@ -615,14 +614,15 @@ pub fn render(plan: &Plan) -> String {
                         div.pv-brand {
                             span.pv-brand-mark aria-hidden="true" {}
                             span.pv-brand-name { "artefacto" }
-                            span.pv-brand-surface { "Plan viewer" }
+                            span.pv-brand-surface { "Plan" }
                         }
-                        div.pv-topbar-right {
-                            span.pv-topbar-id {
-                                (plan.meta.id)
-                                @if let Some(rev) = plan.meta.revision { " · rev " (rev) }
-                            }
-                        }
+                        // Nothing of the plan's own here. Its name is the
+                        // title, its id and its revision are the line above
+                        // the title, and the bar is the room, not the
+                        // document. What lands in here is injected by
+                        // `plan.js` and by the server: the way out to the
+                        // index, and the theme.
+                        div.pv-topbar-right {}
                     }
                     // Orientation banner: what this page is and what to do
                     // with it. A reviewer opening a rendered plan cold has no
@@ -649,6 +649,14 @@ pub fn render(plan: &Plan) -> String {
                                 @if plan.meta.agent.is_none() && plan.meta.created.is_none() {
                                     "plan " code { (plan.meta.id) }
                                 }
+                                // Which version of the plan this is. It
+                                // belongs to the document, beside who wrote
+                                // it and when, rather than to the chrome.
+                                @if let Some(rev) = plan.meta.revision {
+                                    @if plan.meta.agent.is_some() || plan.meta.created.is_some()
+                                        || plan.meta.agent.is_none() && plan.meta.created.is_none() { " · " }
+                                    span.pv-eyebrow-rev { "revision " (rev) }
+                                }
                             }
                             h1 { (plan.meta.title) }
                             @if plan.meta.goal_md.is_some() {
@@ -667,7 +675,7 @@ pub fn render(plan: &Plan) -> String {
                                 }
                             }
                         }
-                        (section_rule("Summary", None))
+                        (section_rule("Summary", None, Some("summary")))
                         // The `meta:` comment anchor lives on the summary
                         // itself (not the tiny byline above): "comment on the
                         // plan as a whole" reads as commenting on the
@@ -703,7 +711,7 @@ pub fn render(plan: &Plan) -> String {
                                             thead {
                                                 tr {
                                                     th { "Phase" }
-                                                    @if figures { th { "Est · risk" } }
+                                                    @if figures { th { "Tasks" } }
                                                 }
                                             }
                                             tbody {
@@ -715,16 +723,23 @@ pub fn render(plan: &Plan) -> String {
                                                             }
                                                         }
                                                         @if figures {
-                                                            @let heat = phase_risk_heat(phase);
-                                                            td class=(
-                                                                if heat.contains("high") {
-                                                                    "pv-ledger-fig is-hot"
-                                                                } else {
-                                                                    "pv-ledger-fig"
+                                                            @let high = phase_high_risk(phase);
+                                                            td.pv-ledger-fig {
+                                                                (phase_task_count(phase))
+                                                                // A count in brackets, tinted, with
+                                                                // the word on hover. Spelling out
+                                                                // "· 1 high" beside the task count
+                                                                // took room from the phase name,
+                                                                // which is what a reader scanning
+                                                                // this column is actually reading.
+                                                                @if high > 0 {
+                                                                    " "
+                                                                    span.pv-ledger-risk
+                                                                        title=(high_risk_label(high))
+                                                                        aria-label=(high_risk_label(high)) {
+                                                                        "(" (high) ")"
+                                                                    }
                                                                 }
-                                                            ) {
-                                                                (phase_estimate_dist(phase))
-                                                                @if !heat.is_empty() { " · " (heat) }
                                                             }
                                                         }
                                                     }
@@ -801,7 +816,7 @@ pub fn render(plan: &Plan) -> String {
                         // are the same kind of statement and a reader should
                         // not have to learn two layouts for them.
                         @if !plan.open_questions.is_empty() {
-                            (section_rule("Open questions", None))
+                            (section_rule("Open questions", None, Some("questions")))
                             section.pv-rows.questions {
                                 @for q in &plan.open_questions {
                                     div.pv-row id=(format!("question-{}", q.id))
@@ -832,7 +847,7 @@ pub fn render(plan: &Plan) -> String {
                             }
                         }
                         @if !plan.risks.is_empty() {
-                            (section_rule("Risks", None))
+                            (section_rule("Risks", None, Some("risks")))
                             section.pv-rows.risks {
                                 @for r in &plan.risks {
                                     div.pv-row data-plan-ref=(format!("risk:{}", r.id)) {
@@ -854,7 +869,7 @@ pub fn render(plan: &Plan) -> String {
                         // they sit on the section divider rather than floating
                         // above the list as a stray toolbar.
                         @if !plan.phases.is_empty() {
-                            (section_rule("Phases", Some("phases-actions")))
+                            (section_rule("Phases", Some("phases-actions"), Some("phases")))
                         }
                         div.pv-phases {
                             @for (i, phase) in plan.phases.iter().enumerate() {
@@ -919,7 +934,13 @@ pub fn render(plan: &Plan) -> String {
                             }
                         }
                         @if let Some(g) = &phase_graph {
-                            (section_rule("Phase dependencies", None))
+                            // No `data-part`: the strip named this segment
+                            // "Phase dependencies", which truncates to
+                            // "PHAS…" beside the phases it belongs to and
+                            // reads as a second phases segment. The section
+                            // is still a section; it is not a place in the
+                            // plan a reader navigates to separately.
+                            (section_rule("Phase dependencies", None, None))
                             div.pv-deps {
                                 (PreEscaped(g.as_str()))
                                 (graph_legend())
@@ -978,6 +999,292 @@ mod tests {
         assert_eq!(v["meta"]["id"], "auth-refactor");
     }
 
+    /// Relative luminance and contrast ratio as WCAG 2 defines them.
+    fn luminance(hex: &str) -> f64 {
+        let v = |i: usize| {
+            let c = u8::from_str_radix(&hex[i..i + 2], 16).unwrap() as f64 / 255.0;
+            if c <= 0.03928 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * v(1) + 0.7152 * v(3) + 0.0722 * v(5)
+    }
+
+    fn contrast(a: &str, b: &str) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// Every token block in the stylesheet (`:root {`, the dark media copy,
+    /// and each explicit theme), as (selector line, hex tokens by name).
+    fn token_blocks() -> Vec<(String, std::collections::HashMap<String, String>)> {
+        let mut blocks = Vec::new();
+        let mut current: Option<(String, std::collections::HashMap<String, String>)> = None;
+        // The print palette re-declares the light tokens; it is a copy by
+        // construction, not a theme of its own.
+        let css = stylesheet();
+        let css = &css[..css.find("@media print").unwrap_or(css.len())];
+        for line in css.lines() {
+            let t = line.trim();
+            if current.is_none() && t.starts_with(":root") && t.ends_with('{') {
+                current = Some((t.to_string(), Default::default()));
+                continue;
+            }
+            if let Some((sel, map)) = current.as_mut() {
+                if t == "}" {
+                    let done = (sel.clone(), std::mem::take(map));
+                    current = None;
+                    if done.1.contains_key("page") {
+                        blocks.push(done);
+                    }
+                    continue;
+                }
+                if let Some((name, value)) = t.strip_prefix("--").and_then(|l| l.split_once(':')) {
+                    let value = value.trim().trim_end_matches(';');
+                    if value.starts_with('#') {
+                        map.insert(name.trim().to_string(), value.to_string());
+                    }
+                }
+            }
+        }
+        blocks
+    }
+
+    /// The colour roles read at 4.5:1 in both themes: every ink on the page,
+    /// every role colour as text on the page, and every role's -ink on its
+    /// own fill. A palette change that breaks this is a readability bug, not
+    /// a taste.
+    #[test]
+    fn tokens_meet_contrast_in_every_theme() {
+        let blocks = token_blocks();
+        assert_eq!(
+            blocks.len(),
+            5,
+            "the light root, the dark media copy, and three explicit themes: {:?}",
+            blocks.iter().map(|b| b.0.clone()).collect::<Vec<_>>()
+        );
+        for (block, t) in &blocks {
+            // On the page, and on the surface a thread card or a note sits on.
+            for ground in ["page", "surface"] {
+                for fg in [
+                    "ink", "ink-2", "ink-3", "muted", "alarm", "warn", "ok", "action", "agent",
+                ] {
+                    let ratio = contrast(&t[fg], &t[ground]);
+                    assert!(
+                        ratio >= 4.5,
+                        "{block}: --{fg} on --{ground} is {ratio:.2}:1"
+                    );
+                }
+            }
+            for role in ["alarm", "action", "agent"] {
+                let ratio = contrast(&t[&format!("{role}-ink")], &t[role]);
+                assert!(
+                    ratio >= 4.5,
+                    "{block}: --{role}-ink on --{role} is {ratio:.2}:1"
+                );
+            }
+            assert!(
+                !t.contains_key("focus"),
+                "{block}: --focus is an alias of a role, not a colour of its own"
+            );
+        }
+    }
+
+    /// The type tokens name the embedded families, in the default root and
+    /// in the vibe theme. The first token rewrite dropped the two families
+    /// and no test noticed: the browser fell back to a serif and a mono of
+    /// its own and the screenshots looked plausible.
+    #[test]
+    fn type_tokens_name_the_embedded_families() {
+        let css = stylesheet();
+        let root = &css[css.find(":root {").unwrap()..];
+        let root = &root[..root.find("\n}\n").unwrap()];
+        assert!(
+            root.contains("--font-serif: Newsreader,"),
+            "the prose voice"
+        );
+        assert!(
+            root.contains("--font-mono: \"JetBrains Mono\","),
+            "the metadata voice"
+        );
+        assert!(
+            root.contains("--font-display: var(--font-serif);"),
+            "the display voice"
+        );
+        let vibe = &css[css.find(":root[data-theme=\"vibe\"] {").unwrap()..];
+        let vibe = &vibe[..vibe.find("\n}\n").unwrap()];
+        assert!(vibe.contains("--font-serif: \"Bricolage Grotesque\","));
+        assert!(vibe.contains("--font-mono: \"Space Mono\","));
+        assert!(vibe.contains("--font-display: \"Bungee\","));
+        for family in [
+            "Newsreader",
+            "JetBrains Mono",
+            "Bricolage Grotesque",
+            "Space Mono",
+            "Bungee",
+        ] {
+            assert!(
+                css.contains(&format!("font-family: \"{family}\"")),
+                "{family} is embedded"
+            );
+        }
+    }
+
+    /// One button family. The old text-button class is gone from the
+    /// stylesheet and from the page's script, which the render embeds.
+    #[test]
+    fn no_text_button_class_remains() {
+        let plan = plan_from("kitchen-sink.json");
+        assert!(
+            !render(&plan).contains("pv-textbtn"),
+            "a pv-textbtn survives"
+        );
+    }
+
+    /// The parts are named in this file; their glyphs live in `plan.js`.
+    /// `mapIcon` falls back to the summary glyph for a name it does not
+    /// know, so a section added here without an icon there would ship the
+    /// wrong picture and say nothing about it.
+    #[test]
+    fn every_part_of_the_plan_has_an_icon_in_the_strip() {
+        let page = render(&plan_from("kitchen-sink.json"));
+        let icons = JS
+            .split_once("const MAP_ICONS = {")
+            .expect("MAP_ICONS")
+            .1
+            .split_once("\n  };")
+            .expect("the end of MAP_ICONS")
+            .0;
+        let mut seen = 0;
+        for (at, marker) in page.match_indices("data-part=\"") {
+            let rest = &page[at + marker.len()..];
+            let name = &rest[..rest.find('"').expect("a closed attribute")];
+            assert!(
+                icons.contains(&format!("{name}:")),
+                "the strip has no icon for the `{name}` part"
+            );
+            seen += 1;
+        }
+        assert!(seen >= 4, "the kitchen sink should have every part: {seen}");
+    }
+
+    /// A plan whose phases hold no tasks has nothing to put in the figure
+    /// column, and a `TASKS` header over a stack of empty cells reads as a
+    /// rendering failure rather than as "none yet".
+    #[test]
+    fn a_ledger_with_nothing_to_count_drops_its_column() {
+        let mut plan = plan_from("minimal.json");
+        for phase in &mut plan.phases {
+            phase.tasks.clear();
+        }
+        let html = render(&plan);
+        assert!(html.contains("<table class=\"pv-ledger\">"), "{html}");
+        assert!(!html.contains("<th>Tasks</th>"), "{html}");
+        // The `<td` matters: the stylesheet names the class too, so looking
+        // for the class alone passes with the column still rendered.
+        assert!(!html.contains("<td class=\"pv-ledger-fig\""), "{html}");
+    }
+
+    /// The bracketed count is the whole of what the cell says about risk, so
+    /// the words behind it have to be right on their own.
+    #[test]
+    fn the_bracketed_risk_says_what_it_counts() {
+        assert_eq!(high_risk_label(1), "1 high risk");
+        assert_eq!(high_risk_label(3), "3 high risks");
+    }
+
+    /// And it is the only tinted thing in the cell: the number of tasks is
+    /// not alarming, so tinting the whole cell made it read as if it were.
+    #[test]
+    fn only_the_risk_in_the_ledger_takes_the_alarm() {
+        let css = stylesheet();
+        let rule = css
+            .split_once(".pv-ledger-risk {")
+            .expect(".pv-ledger-risk")
+            .1
+            .split_once('}')
+            .expect("a closed rule")
+            .0;
+        assert!(
+            rule.contains("var(--alarm)"),
+            "the count is the alarm: {rule}"
+        );
+        let cell = css
+            .split_once(".pv-ledger-fig {")
+            .expect(".pv-ledger-fig")
+            .1
+            .split_once('}')
+            .expect("a closed rule")
+            .0;
+        assert!(
+            !cell.contains("var(--alarm)"),
+            "and the cell around it is not: {cell}"
+        );
+    }
+
+    /// The current row in the phase ledger draws an accent bar down its left
+    /// edge. Without an inset the phase name sits on that bar, which is what
+    /// the cell padding is for -- so it is not a free-floating number.
+    #[test]
+    fn the_ledger_keeps_its_text_off_the_rules() {
+        let css = stylesheet();
+        let cell = css
+            .split_once(".pv-ledger td {")
+            .expect(".pv-ledger td")
+            .1
+            .split_once('}')
+            .expect("a closed rule")
+            .0;
+        let padding = cell
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("padding:"))
+            .expect("a padding declaration")
+            .trim()
+            .trim_end_matches(';');
+        let horizontal = padding
+            .split_whitespace()
+            .nth(1)
+            .expect("a horizontal padding");
+        assert_ne!(
+            horizontal, "0",
+            "the ledger's text would sit on the current row's accent bar"
+        );
+    }
+
+    /// The strip's glyphs are navigation furniture. They take the neutral
+    /// the rest of the segment takes and no colour of their own, in any
+    /// state -- a colour there reads as a status the segment does not have.
+    #[test]
+    fn the_strips_glyphs_never_take_a_colour() {
+        for line in stylesheet().lines() {
+            if !line.contains(".pv-map-icon") {
+                continue;
+            }
+            for token in [
+                "--action", "--agent", "--alarm", "--warn", "--ok", "--brand",
+            ] {
+                assert!(
+                    !line.contains(token),
+                    "a strip glyph takes {token}: {}",
+                    line.trim()
+                );
+            }
+        }
+    }
+
+    /// Every colour on the page belongs to a family (neutral, status, action,
+    /// agent); the old one-accent-for-everything token is gone for good.
+    #[test]
+    fn no_rule_uses_the_old_accent_token() {
+        assert!(
+            !stylesheet().contains("--accent"),
+            "a rule still names --accent; point it at a role instead"
+        );
+    }
+
     #[test]
     fn document_structure() {
         let plan = plan_from("kitchen-sink.json");
@@ -1015,13 +1322,24 @@ mod tests {
             );
         }
         assert!(!CSS.contains("url(http"), "no external url() in plan.css");
-        // And the fonts did actually land: three faces across two families
-        // (Newsreader upright + italic, JetBrains Mono upright). Regenerate
-        // them with tools/build-plan-fonts.py, never by hand.
-        assert_eq!(CSS.matches("@font-face").count(), 3);
-        assert_eq!(CSS.matches("url(\"data:font/woff2;base64,").count(), 3);
-        assert!(CSS.contains("font-family: \"Newsreader\""));
-        assert!(CSS.contains("font-family: \"JetBrains Mono\""));
+        // And the fonts did actually land: seven faces across five families
+        // (Newsreader upright + italic, JetBrains Mono upright, and the vibe
+        // theme's Bricolage Grotesque, Space Mono regular + bold, Bungee).
+        // Regenerate them with tools/build-plan-fonts.py, never by hand.
+        assert_eq!(CSS.matches("@font-face").count(), 7);
+        assert_eq!(CSS.matches("url(\"data:font/woff2;base64,").count(), 7);
+        for family in [
+            "Newsreader",
+            "JetBrains Mono",
+            "Bricolage Grotesque",
+            "Space Mono",
+            "Bungee",
+        ] {
+            assert!(
+                CSS.contains(&format!("font-family: \"{family}\"")),
+                "{family} is embedded"
+            );
+        }
     }
 
     #[test]
@@ -1034,15 +1352,31 @@ mod tests {
         let brand_pos = html.find("<header class=\"pv-topbar\">").expect("topbar");
         assert!(html.contains("pv-brand-mark"), "brand mark");
         assert!(html.contains(">artefacto</span>"), "brand name");
-        assert!(html.contains(">Plan viewer</span>"), "surface label");
+        assert!(html.contains(">Plan</span>"), "surface label");
         // Tag-anchored: the bare class name also appears in the embedded
         // stylesheet's `.pv-theme { … }` rule whether or not it is used.
         assert!(
             !html.contains("<div class=\"pv-theme\""),
             "the theme toggle is script-injected, not served"
         );
-        // The topbar carries the plan's identity through a long scroll.
-        assert!(html.contains("auth-refactor · rev 2"), "plan id in topbar");
+        // The topbar carries nothing of the plan's own. The revision is a
+        // fact about the document, so it sits on the document's own
+        // metadata line, beside who wrote it and when.
+        assert!(
+            html.contains("<div class=\"pv-topbar-right\"></div>"),
+            "the bar is the room, not the document"
+        );
+        let eyebrow = html
+            .split_once("<p class=\"pv-eyebrow\">")
+            .expect("byline eyebrow")
+            .1
+            .split_once("</p>")
+            .expect("a closed eyebrow")
+            .0;
+        assert!(
+            eyebrow.contains("revision 2"),
+            "the revision is on the plan's own line: {eyebrow}"
+        );
         // Eyebrow (byline + created) renders above the h1.
         let meta_pos = html
             .find("<p class=\"pv-eyebrow\">")
@@ -1258,10 +1592,32 @@ mod tests {
         assert!(html.contains("<table class=\"pv-ledger\">"), "{html}");
         assert!(html.contains("href=\"#phase-p-core\""), "{html}");
         assert!(html.contains("id=\"phase-p-core\""), "{html}");
-        // This plan's tasks carry estimates and risk ratings, so the ledger's
-        // figure column is present. (`no_summary_shows_missing_note_and_ready_state`
-        // covers the plan that drops it.)
-        assert!(html.contains("<th>Est · risk</th>"), "{html}");
+        // The figure column counts the phase's tasks, and calls out a high
+        // risk when the phase holds one. Nothing else: the estimate mix and
+        // the lower ratings are on each task's own rail.
+        assert!(html.contains("<th>Tasks</th>"), "{html}");
+        assert!(
+            html.contains("2 tasks</td>"),
+            "a phase with no high risk: {html}"
+        );
+        // The risk is a bracketed count beside the tasks, tinted, with the
+        // word itself on hover and for a reader who never sees a hover.
+        assert!(
+            html.contains(
+                "3 tasks <span class=\"pv-ledger-risk\" title=\"1 high risk\" \
+                 aria-label=\"1 high risk\">(1)</span>"
+            ),
+            "{html}"
+        );
+        assert_eq!(
+            html.matches("pv-ledger-risk").count(),
+            2,
+            "one span, named twice, on the one phase that has a high risk: {html}"
+        );
+        assert!(
+            !html.contains("medium</td>") && !html.contains("low</td>"),
+            "only a high risk is called out here: {html}"
+        );
 
         // (f2) an open question's text is wrapped as the row's heading line,
         // so the Answer button plan.js injects lands beside it rather than
@@ -1386,12 +1742,19 @@ mod tests {
         // Nothing has started, so the banner says so rather than narrating
         // progress that does not exist.
         assert!(html.contains("nothing is built yet."), "{html}");
-        // No task here carries an estimate or a risk rating, so the ledger is
-        // one column: an `Est · risk` header over a stack of empty cells reads
-        // as a rendering failure, not as "not stated".
+        // No task here carries an estimate or a risk rating, and the ledger
+        // no longer reports either: it counts the tasks, which this plan has.
         assert!(html.contains("<table class=\"pv-ledger\">"), "{html}");
+        assert!(html.contains("<th>Tasks</th>"), "{html}");
+        assert!(
+            html.contains("1 task</td>"),
+            "one task is not one tasks: {html}"
+        );
         assert!(!html.contains("Est · risk"), "{html}");
-        assert!(!html.contains("pv-ledger-fig\">"), "{html}");
+        assert!(
+            !html.contains(" high</td>"),
+            "nothing is rated, so nothing is called out: {html}"
+        );
     }
 
     #[test]

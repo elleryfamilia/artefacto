@@ -278,6 +278,15 @@ pub fn reply(args: &ReplyArgs) -> Result<()> {
     if args.nudge {
         query.push(("nudge", "1".to_string()));
     }
+    if args.interrupt {
+        query.push(("interrupt", "1".to_string()));
+        if let Some(title) = &args.title {
+            query.push(("title", title.clone()));
+        }
+        if let Some(element) = &args.element {
+            query.push(("ref", element.clone()));
+        }
+    }
     let result = client.call_body("POST", "reply", &query, &text, Duration::from_secs(30))?;
     println!("{result}");
     Ok(())

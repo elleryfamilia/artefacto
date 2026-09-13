@@ -415,6 +415,127 @@ fn a_nudge_reaches_the_page_as_a_banner_and_is_not_logged() {
     );
 }
 
+#[test]
+fn an_interrupt_is_a_nudge_that_carries_what_the_dialog_needs() {
+    let l = start();
+    let mut page = l.server.connect_page();
+    page.hello();
+
+    l.repo
+        .run(&[
+            "reply",
+            "--session",
+            &l.session,
+            "--nudge",
+            "--interrupt",
+            "--title",
+            "Which store should Redis replace?",
+            "--ref",
+            "task:t-a",
+            "I have stopped: the trait boundary depends on your answer.",
+        ])
+        .success();
+
+    let frame = page.next_frame();
+    let event = &frame["events"][0];
+    assert_eq!(event["type"], "nudge", "an interrupt is still a nudge");
+    assert_eq!(
+        event["data"]["text"], "I have stopped: the trait boundary depends on your answer.",
+        "so a page that predates the flag still shows the line"
+    );
+    assert_eq!(event["data"]["interrupt"]["kind"], "blocked");
+    assert_eq!(
+        event["data"]["interrupt"]["title"],
+        "Which store should Redis replace?"
+    );
+    assert_eq!(event["data"]["interrupt"]["ref"], "task:t-a");
+}
+
+#[test]
+fn a_plain_nudge_carries_no_interrupt() {
+    let l = start();
+    let mut page = l.server.connect_page();
+    page.hello();
+
+    l.repo
+        .run(&["reply", "--session", &l.session, "--nudge", "when you can"])
+        .success();
+
+    let frame = page.next_frame();
+    assert!(
+        frame["events"][0]["data"]["interrupt"].is_null(),
+        "a nudge waits its turn; only an interrupt stops the page"
+    );
+}
+
+#[test]
+fn an_interrupt_that_names_nothing_is_refused() {
+    let l = start();
+    // A ref the plan does not have renders on the page as "element gone",
+    // which tells the reviewer a revision moved it. It did not.
+    let out = l.repo.run(&[
+        "reply",
+        "--session",
+        &l.session,
+        "--nudge",
+        "--interrupt",
+        "--ref",
+        "task:t-nope",
+        "I have stopped.",
+    ]);
+    assert_ne!(out.code, 0, "{}", out.stdout);
+    assert!(
+        out.stderr.contains("no such element"),
+        "the agent is told what is wrong: {}",
+        out.stderr
+    );
+    assert_eq!(
+        l.server.count_events("nudge"),
+        0,
+        "and nothing was announced"
+    );
+}
+
+#[test]
+fn an_interrupt_title_is_one_line() {
+    let l = start();
+    let long = "Which store should the Redis cache replace? ".repeat(10);
+    let out = l.repo.run(&[
+        "reply",
+        "--session",
+        &l.session,
+        "--nudge",
+        "--interrupt",
+        "--title",
+        &long,
+        "I have stopped.",
+    ]);
+    assert_ne!(out.code, 0, "{}", out.stdout);
+    assert!(
+        out.stderr.contains("one line"),
+        "the refusal says why: {}",
+        out.stderr
+    );
+}
+
+#[test]
+fn stopping_the_page_is_only_ever_a_nudge() {
+    let l = start();
+    // --interrupt without --nudge, and its two details without --interrupt:
+    // there is no way to stop the page except the one the skill describes.
+    for args in [
+        vec!["--interrupt"],
+        vec!["--title", "Which store?"],
+        vec!["--ref", "task:t-a"],
+    ] {
+        let mut argv = vec!["reply", "--session", &l.session];
+        argv.extend(args.iter().copied());
+        argv.push("I have stopped.");
+        let out = l.repo.run(&argv);
+        assert_ne!(out.code, 0, "{argv:?} was accepted: {}", out.stdout);
+    }
+}
+
 // --- the agent's write verbs ------------------------------------------------
 
 #[test]
@@ -766,4 +887,215 @@ fn resolving_a_thread_the_same_way_twice_records_it_once() {
     resolve("done differently", "--declined").success();
     assert_eq!(l.server.count_events("thread.resolved"), 3);
     assert_eq!(l.server.thread_status(&thread), "declined");
+}
+
+#[test]
+fn a_question_asked_on_an_element_opens_its_thread_and_wakes_the_agent() {
+    let l = start();
+    let cookie = l.cookie();
+
+    // No comment first: the reviewer asks straight on the task.
+    let asked = l.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "chat.send", "client_id": "cid-1", "ref": "task:t-a", "quote": "Task A",
+            "text": "is this the whole plan?", "opened_revision": 1,
+        }),
+    );
+    assert_eq!(asked["ok"], true, "{asked}");
+    assert_eq!(
+        asked["assigned"], "c-1",
+        "the thread id is minted the way thread.open mints it"
+    );
+
+    // One event, active, naming the thread it opened.
+    let heard = l
+        .repo
+        .run(&["await", "--timeout", "5s", "--session", &l.session]);
+    let heard: serde_json::Value = serde_json::from_str(heard.success().stdout.trim()).unwrap();
+    assert_eq!(heard["status"], "chat");
+    let events = heard["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1, "no separate thread.opened: {events:?}");
+    let last = events.last().unwrap();
+    assert_eq!(last["type"], "chat.sent");
+    assert_eq!(last["data"]["thread"], "c-1");
+    assert_eq!(last["data"]["ref"], "task:t-a");
+    assert_eq!(last["data"]["quote"], "Task A");
+
+    // The fold has the thread, marked as asked, with the question as its
+    // opening message.
+    let status = l.repo.json(&["status", "--json"]);
+    let thread = &status["artifacts"][0]["threads"][0];
+    assert_eq!(thread["id"], "c-1");
+    assert_eq!(thread["ref"], "task:t-a");
+    assert_eq!(thread["asked"], true);
+    assert_eq!(thread["status"], "open");
+    assert_eq!(thread["messages"][0]["text"], "is this the whole plan?");
+    assert_eq!(status["artifacts"][0]["open_threads"], 1);
+
+    // The answer lands in that thread, and the next thread id follows on.
+    l.repo
+        .run(&[
+            "reply",
+            "--session",
+            &l.session,
+            "--thread",
+            "c-1",
+            "yes, all of it",
+        ])
+        .success();
+    let opened = l.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "thread.open", "client_id": "cid-2", "ref": "task:t-a",
+            "text": "then add a rollback step", "blocking": false, "opened_revision": 1,
+        }),
+    );
+    assert_eq!(
+        opened["assigned"], "c-2",
+        "the counter moved past the question's thread"
+    );
+    let status = l.repo.json(&["status", "--json"]);
+    let threads = status["artifacts"][0]["threads"].as_array().unwrap();
+    assert_eq!(threads[0]["messages"][1]["actor"], "agent");
+    assert_eq!(threads[0]["messages"][1]["text"], "yes, all of it");
+    assert_eq!(threads[1]["asked"], false, "a comment is not a question");
+
+    // The review document tells the two apart.
+    l.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "review.submit", "client_id": "cid-3", "verdict": "comment", "base_revision": 1,
+        }),
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(l.feedback_path()).unwrap()).unwrap();
+    assert_eq!(doc["comments"][0]["id"], "c-1");
+    assert_eq!(doc["comments"][0]["asked"], true);
+    assert_eq!(doc["comments"][1]["asked"], false);
+}
+
+#[test]
+fn a_question_names_a_thread_or_an_element_that_exists_not_both() {
+    let l = start();
+    let cookie = l.cookie();
+
+    let both = l.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "chat.send", "client_id": "cid-1", "thread": "c-1", "ref": "task:t-a",
+            "text": "which?", "opened_revision": 1,
+        }),
+    );
+    assert_eq!(both["ok"], false, "{both}");
+    assert!(
+        both["error"].as_str().unwrap_or("").contains("not both"),
+        "{both}"
+    );
+
+    let missing = l.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "chat.send", "client_id": "cid-2", "ref": "task:t-nope",
+            "text": "where?", "opened_revision": 1,
+        }),
+    );
+    assert_eq!(missing["ok"], false, "{missing}");
+    assert!(
+        missing["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("no such element"),
+        "{missing}"
+    );
+    assert_eq!(l.server.count_events("chat.sent"), 0, "nothing was logged");
+}
+
+#[test]
+fn a_thread_reply_names_its_artifact_when_the_id_exists_on_two() {
+    let l = start();
+    let cookie = l.cookie();
+    // A second artifact on the same server, with its own c-1.
+    let second = l.repo.path().join("plan2.json");
+    std::fs::write(
+        &second,
+        r#"{"format":"artefacto.plan/1","meta":{"id":"demo2","title":"Second"},"phases":[{"id":"p-x","title":"X","tasks":[{"id":"t-x","title":"Task X"}]}]}"#,
+    )
+    .unwrap();
+    l.repo
+        .run(&[
+            "plan",
+            "push",
+            second.to_str().unwrap(),
+            "--json",
+            "--no-open",
+            "--session",
+            &l.session,
+        ])
+        .success();
+    let cookie2 = l.server.session_cookie("plan:demo2");
+    for (art, ck) in [("plan:demo", &cookie), ("plan:demo2", &cookie2)] {
+        let ref_ = if art == "plan:demo" {
+            "task:t-a"
+        } else {
+            "task:t-x"
+        };
+        let opened = l.server.post_cmd(
+            ck,
+            art,
+            serde_json::json!({
+                "cmd": "thread.open", "client_id": format!("cid-{art}"), "ref": ref_,
+                "text": "why?", "blocking": false, "opened_revision": 1,
+            }),
+        );
+        assert_eq!(opened["assigned"], "c-1", "{art} numbers its own threads");
+    }
+
+    // Ambiguous without the artifact: refused, and the CLI lets both flags
+    // be given together so it can be resolved.
+    let bare = l.repo.run(&[
+        "reply",
+        "--session",
+        &l.session,
+        "--thread",
+        "c-1",
+        "because",
+    ]);
+    assert_ne!(bare.code, 0);
+    assert!(
+        bare.stderr.contains("name one with --artifact"),
+        "{}",
+        bare.stderr
+    );
+    l.repo
+        .run(&[
+            "reply",
+            "--session",
+            &l.session,
+            "--artifact",
+            "plan:demo2",
+            "--thread",
+            "c-1",
+            "because",
+        ])
+        .success();
+    let status = l.repo.json(&["status", "--json"]);
+    let arts = status["artifacts"].as_array().unwrap();
+    let demo = arts.iter().find(|a| a["id"] == "plan:demo").unwrap();
+    let demo2 = arts.iter().find(|a| a["id"] == "plan:demo2").unwrap();
+    assert_eq!(
+        demo2["threads"][0]["messages"].as_array().unwrap().len(),
+        2,
+        "the reply landed on demo2's c-1"
+    );
+    assert_eq!(
+        demo["threads"][0]["messages"].as_array().unwrap().len(),
+        1,
+        "and not on demo's"
+    );
 }

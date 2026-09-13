@@ -83,7 +83,23 @@ fn message(event: &Event) -> Message {
         }
         .to_string(),
         text: str_field(event, "text"),
+        note: false,
         ts: event.ts.clone(),
+        agent: agent_name(event),
+    }
+}
+
+/// The lease name on an agent's event. Spec 6.1: agent events carry it in
+/// `data.agent`. Nothing else has a name to carry.
+fn agent_name(event: &Event) -> Option<String> {
+    if !matches!(event.actor, Actor::Agent) {
+        return None;
+    }
+    let name = str_field(event, "agent");
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
     }
 }
 
@@ -154,6 +170,7 @@ fn thread_opened(review: &mut Review, event: &Event) {
             .get("blocking")
             .and_then(|b| b.as_bool())
             .unwrap_or(false),
+        asked: false,
         status: ThreadStatus::Open,
         messages: vec![msg],
     });
@@ -197,6 +214,7 @@ fn thread_resolved(review: &mut Review, event: &Event) {
     };
     let note = str_field(event, "note");
     let ts = event.ts.clone();
+    let name = agent_name(event);
     if let Some(artifact) = artifact_mut(review, event) {
         if let Some(thread) = artifact.thread_mut(&id) {
             thread.status = status;
@@ -205,6 +223,8 @@ fn thread_resolved(review: &mut Review, event: &Event) {
                     actor: "agent".to_string(),
                     text: note,
                     ts,
+                    note: true,
+                    agent: name,
                 });
             }
         }
@@ -246,6 +266,29 @@ fn chat(review: &mut Review, event: &Event) {
         artifact.chat.push(msg);
     } else if let Some(t) = artifact.thread_mut(&thread) {
         t.messages.push(msg);
+    } else {
+        // A question asked on an element that had no thread opens one, and
+        // the question is its opening message. The server minted the id the
+        // way `thread.open` does, so the counter follows it the same way.
+        let target = str_field(event, "ref");
+        if target.is_empty() {
+            return;
+        }
+        if let Some(n) = thread
+            .strip_prefix("c-")
+            .and_then(|n| n.parse::<u32>().ok())
+        {
+            artifact.next_thread_n = artifact.next_thread_n.max(n + 1);
+        }
+        artifact.threads.push(Thread {
+            id: thread,
+            target,
+            quote: str_field(event, "quote"),
+            blocking: false,
+            asked: true,
+            status: ThreadStatus::Open,
+            messages: vec![msg],
+        });
     }
 }
 

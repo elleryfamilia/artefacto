@@ -232,17 +232,74 @@ Three structural changes to the existing asset:
 
 Behaviour added in server mode:
 
-- a presence pill: `agent live` (an `events --follow` holds the lease),
-  `agent waiting` (an `await` holds it), or `no agent`
+- a presence pill: the agent's mark plus a word. `agent live` (an `events
+  --follow` holds the lease), `agent waiting` (an `await` holds it), `agent
+  working` (an agent holds the lease and a question of this page's is
+  unanswered; page-side), or `no agent` (mode `off`, the mark hollowed out)
 - threads: reply, edit, delete, and an **ask the agent** button that turns a
   reply into a chat event
+- an **ask the agent** button beside every comment button, so a question can
+  be asked on an element that has no thread yet; the server opens the thread
+  and delivers the question as one `chat.sent`, and the thread is `asked`
+  wherever threads are listed. The bar carries a one-line, dismissable hint:
+  comments wait for the sent review, a question reaches the agent now
 - a page-level chat composer for questions about the plan as a whole; when
   the pill says `no agent`, the composer says the message will wait
+- the bar's state line: `Saving` while a write is on its way, `Saved · rev
+  N` after, and for a few seconds after the tab is hidden with unsent work,
+  *Saved. The agent sees your notes when you send them.* Nothing blocks and
+  nothing is lost: every comment, answer, and mark is on the server the
+  moment it is accepted
+- **the conversation panel** (the second design round): one panel docked
+  beside the sheet from 1400px up and floating over the right margin below,
+  closed by default behind a floating handle (the mark with the message
+  count) and a *Conversation* link in the top bar, the choice kept per
+  browser. Its log is everything said to and by the agent in time order:
+  the page-level chat, every question thread's messages with a context chip
+  that names the element and scrolls to it, the working row after a
+  thread's last turn while its answer is awaited (or *waiting for an
+  agent*, or *still waiting* after two minutes), a line when a revision
+  lands, the agent's nudge as a card, and a resolution as a chip on the
+  note. Its composer is the one place to ask: an element's mark opens the
+  panel aimed at that element (or at its existing question thread), Enter
+  sends, the aim and the text survive a swap and a reload, one send is in
+  flight at a time. Question threads are not rendered on their elements;
+  the element carries a spine, a count on its mark, and a one-line preview
+  of the last message. Comment threads stay on their elements: a comment is
+  feedback for the review, and their *Ask the agent* hands off to the panel
+  aimed at the same element, where the element's conversation is. A message
+  whose element left in a revision keeps its place in the log and says so.
+  The revision and presence lines are the page's own, so a reload starts the
+  log from what the server holds: the messages, not the events between them
+- notices through one component (the mark, a kicker naming who speaks, the
+  text, the actions): a nudge, a new revision, a sent review, no agent with
+  a question waiting, the server stopping or gone, signed out
+- **a question talked through is still a question.** An open question's
+  answer field and the conversation about it are two different places, and
+  nothing joined them: a reviewer could discuss a question at length and
+  leave it unanswered without the page saying so. Every message the reviewer
+  wrote in a thread anchored to an open question carries one action, *Use as
+  your answer*, which records that text, word for word, as the answer.
+  Offered only on the reviewer's own messages -- the answer is theirs to
+  give, and working out what they decided from a conversation is not the
+  page's to guess. Spec 7: an agent must not report a question as answered
+  unless `answers` carries it
+- the summary's phase ledger counts a phase's tasks, and marks a phase
+  holding a high-risk task with a tinted `(n)` whose hover and label say
+  "n high risks". Only high, and only the bracket is tinted: a column that
+  says something about every phase says nothing about any of them, and the
+  number of tasks is not alarming
 - open questions rendered as inputs, so answers arrive as data. In v1 an answer
   is free text, because `artefacto.plan/1` questions have no options field
   (`model.rs:134-139`). An optional `options` list is an additive later change.
-- **Send review** with an **Approve** toggle replaces the clipboard button; the
-  clipboard button stays in static export and gains the same toggle
+- two verdicts replace the clipboard button: **Request changes** and
+  **Approve**, one group in the conversation panel's foot (the served page
+  has no bottom bar), each sending its own `review.submit`;
+  the one that was sent is the only filled control on the page, and the
+  verdict rides in the page's snapshot so a reload keeps it. Request changes
+  is enabled with nothing written: it is a verdict on the plan, not on the
+  comments. The clipboard button stays in static export with its Approve
+  toggle
 - a revision banner when the agent pushes: what changed, with the previous title
   on hover, and each thread marked addressed or declined with the agent's note
 
@@ -277,6 +334,117 @@ the top, so nothing a reviewer wrote is ever silently dropped.
 The page reconnects with backoff and shows a clear "server gone" state after a
 bounded number of retries, never a silent one. `artefacto open` mints a fresh
 one-time bootstrap URL at any time, so losing the cookie is never a lockout.
+
+**The design system (the design port, 2026-09-12).** Four colour families
+that never mix: neutral for the document; status (`--alarm`, `--warn`,
+`--ok`, muted for cut and declined) for what the plan says, which a reader
+never clicks; action (`--action`) for everything the reviewer clicks; agent
+(`--agent`) for who is on the other side. The brand square keeps the rust as
+`--brand` and no control uses it, so rust on a control is a bug. Each family
+has an ink for text on its fill, a wash, and where it draws outlines a rule.
+A render test holds every ink and role at 4.5:1 on the page in every theme.
+The agent's mark, a ring around a point, is the agent wherever the agent
+appears: the ask control beside every Comment button (labelled until the
+reviewer has asked once on this browser, by its tooltip after; tinted on an
+element that already has a question, where a click goes to that thread's
+input), the presence pill, the avatar on the agent's messages (the
+reviewer's is an ink square), the working row, and the notices. Threads
+show no ids; `c-<n>` stays on the node as `data-thread` for the agent's
+commands. One button family, `pv-btn`, outlined in the action colour; the
+only filled control on the page is the sent verdict. Three themes from one
+role set: light, dark, and vibe, which swaps the type as well (Bricolage
+Grotesque, Space Mono, Bungee, embedded like Newsreader and JetBrains Mono),
+squares every corner, and doubles every structural rule; radii and the
+rule weight are tokens for that reason.
+
+**The header (the third design round, 2026-09-13).** The bar is the room,
+not the document: it carries the brand, one link out, and the theme, and
+nothing of the plan's own. The plan's name is the title, and its id and
+revision are the line above the title, beside who wrote it and when.
+
+*All artifacts* is the only control in the bar that leaves the document, so
+it is the only one styled as a link: a grid mark, the action colour, and a
+rule under it. The theme is a preference rather than part of the review, so
+it is one glyph at the end with the four choices behind it, closed by
+Escape or a click outside; the glyph's label says which theme is showing.
+The room is called *Plan* rather than *Plan viewer*: it shows many kinds of
+artifact, and is named after what is on screen.
+
+The conversation is reached one way, the floating handle, which is always
+in reach and steps aside when the panel is open; its count appears only
+once something has been said, because a zero beside the word reads as a
+status rather than a tally. **The presence pill appears only when nobody is
+there to hear the reviewer** -- no agent, a dropped connection, a stopped
+server, a signed-out page -- and names the agent that left. An attached
+agent is the normal case, and a header that announces the normal case is
+one a reader learns to stop reading.
+
+**The orientation banner is read once.** A reviewer opening a plan cold has
+no other way to know the page collects comments, and that is worth one
+reading. It appears on the first open of a plan in a browser, carries its
+own way out, and does not come back; another plan is a first open again. It
+is not a dialog, because the modal is reserved for the three things that
+stop the page and an explanation is not one of them.
+
+**The agent has a name.** Every agent event carries its lease name in
+`data.agent` (section 6.1), both folds keep it on the turn it wrote, and
+the page uses it wherever it used to say *the agent*: the speaker label,
+the avatar, the notices, the interrupt, the presence line. Kept per turn
+rather than read from whoever holds the lease now, so a turn stays
+attributed to whoever took it when two agents work in sequence. A page
+written before this, and a static export, read *agent*. The buttons stay
+generic -- *Ask the agent* has to read the same with nobody attached.
+
+**Where you are in the plan (the third design round, 2026-09-13).** The
+header carries a strip: one segment per section the plan has (summary, open
+questions, risks, phases, phase dependencies), each as wide as that
+section's share of the document, with a floor so a short one is never a
+sliver. Every section rule carries `data-part`; the strip reads the rendered
+page rather than the plan JSON, so a plan without risks simply has no risks
+segment. One number drives all of it: how far the reader has scrolled, as a
+fraction of what there is to scroll. That fraction fills the line behind the
+segments, places a caret, says which segment the reader is in, and positions
+the scrubber. The phases segment is a group: it carries a numeral per phase
+up to six and dense ticks past that, and flags a phase that holds a blocked
+task or a high risk. The numeral is the count; the strip does not also spell
+out *N of M* beside it, and the glyph on a segment is navigation furniture
+that never takes a colour in any state. The phase dependency graph is a
+section but not a segment: its label truncated beside the phases it belongs
+to and read as a second phases segment, and it is not a place a reader
+navigates to on its own. A click on a segment scrolls the
+section under the header, not behind it, and flashes it. Anchor jumps clear
+the header too: `plan.js` measures the bar into `--bar-h` and the page's
+`scroll-margin-top` follows it, because the strip made the header two rows
+tall and a fixed margin no longer cleared it. The strip is not printed.
+
+**When the agent needs to stop the page (the third design round,
+2026-09-13).** A panel message waits; an interrupt does not. The page dims,
+one sentence says what is needed, one button leads to the conversation, and
+*Not now* leaves. Escape and the backdrop both mean *Not now*, focus moves
+into the dialog and returns where it was, and the plan behind does not
+scroll. Three causes and no others:
+
+1. **The agent is blocked.** `reply --nudge --interrupt` with a `--title`
+   and an optional `--ref`: the agent has stopped and cannot go on without
+   an answer only the reviewer can give. The flag rides on the existing
+   `nudge` event as `data.interrupt`, so a page that predates it still
+   shows the nudge as a line. There is no other way to stop the page, and
+   `--interrupt` without `--nudge` is refused.
+
+   A revision that lands while one of these is up takes it down: whatever
+   the dialog was about, it was about the plan that is being replaced.
+2. **The ground moved.** A revision left a thread the reviewer wrote
+   hanging on an element the plan no longer has. Once per revision, and its
+   button goes to the thread or to the recovery panel.
+3. **The review is waiting.** The verdict has not been sent, a blocking
+   comment or question is still open, an agent holds the lease, and nobody
+   has touched the page for three minutes. This one counts itself down and
+   leaves on its own rather than standing in the way.
+
+One at a time, and once per cause: an interrupt the reviewer dismissed does
+not come back for the same reason. A second one that arrives while the first
+is up waits in one slot rather than being lost, because the nudge that
+carries it is never written to the log.
 
 ### 4.4 The artifact index
 
@@ -364,7 +532,8 @@ artefacto plan schema
 artefacto await  [--timeout 90s] [--ack SEQ] [--since SEQ] [--artifact ID] [--agent NAME] [--takeover]
 artefacto events [--ack SEQ] [--since SEQ] [--follow] [--agent NAME] [--takeover]
 artefacto ack    --seq N --session TOKEN
-artefacto reply  --session TOKEN (--thread ID | --artifact ID) [--nudge] (<text> | --stdin)
+artefacto reply  --session TOKEN (--thread ID | --artifact ID) [--nudge]
+                 [--interrupt [--title TEXT] [--ref ELEMENT]] (<text> | --stdin)
 artefacto resolve <thread-id> --session TOKEN (--changed | --declined) [--note TEXT]
 
 artefacto skill (--print | --install DIR)
@@ -461,6 +630,13 @@ Behaviour that matters:
   artifact, `--artifact` may be omitted for page-level chat. `--nudge` posts
   the `nudge` banner of section 6.3 instead of a message; it reaches open pages
   and is never written to the log, because it records nothing about the review.
+  `--interrupt` makes that nudge stop the page: the reviewer gets the dialog of
+  section 4.3 rather than a line. It requires `--nudge`, and `--title` and
+  `--ref` require it. `--title` is one line, capped at 120 characters; `--ref`
+  must name an element the plan has, because a ref it does not have reaches the
+  reviewer as "element gone", which says a revision moved it. Use the flag for
+  the one case it is for — you have stopped and cannot go on without an answer
+  only the reviewer can give.
 - `status --json` prints port, artifacts, revisions, open and unanchored
   threads, the last event sequence, each lease's `acked_seq`, the lease holder
   and its age, reviewer presence, and the exact `events --follow` command line
@@ -508,8 +684,10 @@ Passive:
 
 Active:
 
-- `chat.sent` — from the composer or an "ask the agent" reply; carries the
-  thread id when it has one
+- `chat.sent` — from the composer, an "ask the agent" reply in a thread, or
+  "ask the agent" on an element with no thread yet, which opens one in this
+  same event (`ref`, `quote`, and the new `thread`); carries the thread id
+  when it has one
 - `review.submitted` — carries the full feedback document and `base_revision`
 - `reviewer.idle` — page open, no activity for `--idle`; fires once per quiet
   period and re-arms after activity. Activity is measured from a throttled
@@ -527,7 +705,9 @@ Active:
 - `thread.replied` with `actor: "agent"`
 - `thread.resolved` with `status: changed | declined` and a note
 - `agent.attached`, `agent.detached` (presence, with mode `live` or `waiting`)
-- `nudge` (renders as a banner)
+- `nudge` (renders as a banner; with `data.interrupt` -- `{kind, title?, ref?}`
+  -- it stops the page instead, and a page that does not know the field still
+  shows the banner)
 
 ### 6.4 Passive delivery
 
@@ -581,7 +761,8 @@ finds all of them under the new name:
 - `base_revision`: the revision the review was made against
 - `comments[]` keep their v1 fields; ids are server-assigned and stable
   (`c-<n>` per artifact, never renumbered); each gains `status`
-  (`open | changed | declined | unanchored`) and `replies[]`
+  (`open | changed | declined | unanchored`), `replies[]`, and `asked`
+  (opened by a question to the agent rather than by a comment)
 - `answers[]`: `{question, text}`
 - `reviewed[]`: refs marked reviewed
 

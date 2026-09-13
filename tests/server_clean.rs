@@ -250,7 +250,7 @@ fn clean_drops_sent_reviews_keeps_open_ones_and_rotates_the_secret() {
         demo_row.contains("Not on this server; push it again"),
         "{demo_row}"
     );
-    assert!(demo_row.contains("Remove from index"));
+    assert!(demo_row.contains("Remove from index"), "{demo_row}");
     let sink_row = index
         .split("<li class=\"")
         .find(|s| s.contains("plan:auth-refactor"))

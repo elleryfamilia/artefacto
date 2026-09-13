@@ -94,9 +94,16 @@ pub fn document(
                 "quote": (!thread.quote.is_empty()).then(|| thread.quote.clone()),
                 "text": opening.map(|m| m.text.clone()).unwrap_or_default(),
                 "blocking": thread.blocking,
+                "asked": thread.asked,
                 "status": thread.status.as_str(),
                 "replies": messages
-                    .map(|m| serde_json::json!({ "actor": m.actor, "text": m.text, "ts": m.ts }))
+                    .map(|m| {
+                        let mut reply = serde_json::json!({ "actor": m.actor, "text": m.text, "ts": m.ts });
+                        if m.note {
+                            reply["note"] = serde_json::json!(true);
+                        }
+                        reply
+                    })
                     .collect::<Vec<_>>(),
             })
         })
