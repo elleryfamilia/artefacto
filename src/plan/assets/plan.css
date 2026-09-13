@@ -776,8 +776,9 @@ code {
 .pv-theme-menu[hidden] { display: none; }
 
 /* Same trap: a class with its own `display` outranks the browser's rule for
-   `hidden`, and these two are hidden by the flag. */
-.pv-panel-count[hidden] { display: none; }
+   `hidden`. The presence pill is `inline-flex`, so it has to say this
+   itself; the conversation's count declares no display of its own and the
+   browser's rule reaches it unaided. */
 .pv-presence[hidden] { display: none; }
 
 .pv-theme-menu {
