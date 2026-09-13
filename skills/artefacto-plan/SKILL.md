@@ -121,6 +121,31 @@ artefacto reply --session "$SESSION" --nudge "Still here. Comment or send the re
 Add `--artifact plan:<id>` when the server holds more than one artifact; the
 frame's events name it.
 
+### Stop the page when you are blocked
+
+A nudge waits its turn in the page's conversation. `--interrupt` does not: it
+dims the plan and puts a dialog in front of the reviewer. Use it for one case
+only -- **you have stopped work and cannot go on without an answer only the
+reviewer can give**:
+
+```bash
+artefacto reply --session "$SESSION" --nudge --interrupt \
+  --title "Which store should the Redis cache replace?" \
+  --ref task:t-session-store \
+  "I have stopped: the trait boundary depends on your answer."
+```
+
+`--title` is the one line the dialog leads with. `--ref` names the element the
+question is about, so the dialog carries it and its button aims the
+conversation there. Both require `--interrupt`, which requires `--nudge`.
+
+Do not use it to report progress, to ask something you can work around, or
+because the reviewer has been quiet -- `reviewer.idle` already has a nudge, and
+the page raises its own dialog when a revision moves what the reviewer
+commented on or when a finished review sits unsent. An interrupt the reviewer
+dismisses does not come back, so spending it on something that could wait
+costs you the one you needed.
+
 The events before the last one are passive: `thread.opened`,
 `thread.replied`, `thread.edited`, `thread.deleted`, `question.answered`,
 `element.reviewed`. Read them for context. Never revise the plan because of a

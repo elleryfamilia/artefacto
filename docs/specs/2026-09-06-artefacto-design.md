@@ -342,6 +342,45 @@ Grotesque, Space Mono, Bungee, embedded like Newsreader and JetBrains Mono),
 squares every corner, and doubles every structural rule; radii and the
 rule weight are tokens for that reason.
 
+**Where you are in the plan (the third design round, 2026-09-13).** The
+header carries a strip: one segment per section the plan has (summary, open
+questions, risks, phases, phase dependencies), each as wide as that
+section's share of the document, with a floor so a short one is never a
+sliver. Every section rule carries `data-part`; the strip reads the rendered
+page rather than the plan JSON, so a plan without risks simply has no risks
+segment. One number drives all of it: how far the reader has scrolled, as a
+fraction of what there is to scroll. That fraction fills the line behind the
+segments, places a caret, says which segment the reader is in, and positions
+the scrubber. The phases segment is a group: it carries a numeral per phase
+up to six and dense ticks past that, counts *N of M* for the phase the read
+line is in, and flags a phase that holds a blocked task or a high risk. A
+click on a segment scrolls the section under the header, not behind it, and
+flashes it. The strip is not printed.
+
+**When the agent needs to stop the page (the third design round,
+2026-09-13).** A panel message waits; an interrupt does not. The page dims,
+one sentence says what is needed, one button leads to the conversation, and
+*Not now* leaves. Escape and the backdrop both mean *Not now*, focus moves
+into the dialog and returns where it was, and the plan behind does not
+scroll. Three causes and no others:
+
+1. **The agent is blocked.** `reply --nudge --interrupt` with a `--title`
+   and an optional `--ref`: the agent has stopped and cannot go on without
+   an answer only the reviewer can give. The flag rides on the existing
+   `nudge` event as `data.interrupt`, so a page that predates it still
+   shows the nudge as a line. There is no other way to stop the page, and
+   `--interrupt` without `--nudge` is refused.
+2. **The ground moved.** A revision left a thread the reviewer wrote
+   hanging on an element the plan no longer has. Once per revision, and its
+   button goes to the thread or to the recovery panel.
+3. **The review is waiting.** The verdict has not been sent, a blocking
+   comment or question is still open, an agent holds the lease, and nobody
+   has touched the page for three minutes. This one counts itself down and
+   leaves on its own rather than standing in the way.
+
+One at a time, and once per cause: an interrupt the reviewer dismissed does
+not come back for the same reason.
+
 ### 4.4 The artifact index
 
 Every artifact artefacto has ever produced for this repository is listed on one
@@ -428,7 +467,8 @@ artefacto plan schema
 artefacto await  [--timeout 90s] [--ack SEQ] [--since SEQ] [--artifact ID] [--agent NAME] [--takeover]
 artefacto events [--ack SEQ] [--since SEQ] [--follow] [--agent NAME] [--takeover]
 artefacto ack    --seq N --session TOKEN
-artefacto reply  --session TOKEN (--thread ID | --artifact ID) [--nudge] (<text> | --stdin)
+artefacto reply  --session TOKEN (--thread ID | --artifact ID) [--nudge]
+                 [--interrupt [--title TEXT] [--ref ELEMENT]] (<text> | --stdin)
 artefacto resolve <thread-id> --session TOKEN (--changed | --declined) [--note TEXT]
 
 artefacto skill (--print | --install DIR)
@@ -525,6 +565,10 @@ Behaviour that matters:
   artifact, `--artifact` may be omitted for page-level chat. `--nudge` posts
   the `nudge` banner of section 6.3 instead of a message; it reaches open pages
   and is never written to the log, because it records nothing about the review.
+  `--interrupt` makes that nudge stop the page: the reviewer gets the dialog of
+  section 4.3 rather than a line. It requires `--nudge`, and `--title` and
+  `--ref` require it. Use it for the one case it is for -- you have stopped and
+  cannot go on without an answer only the reviewer can give.
 - `status --json` prints port, artifacts, revisions, open and unanchored
   threads, the last event sequence, each lease's `acked_seq`, the lease holder
   and its age, reviewer presence, and the exact `events --follow` command line
@@ -593,7 +637,9 @@ Active:
 - `thread.replied` with `actor: "agent"`
 - `thread.resolved` with `status: changed | declined` and a note
 - `agent.attached`, `agent.detached` (presence, with mode `live` or `waiting`)
-- `nudge` (renders as a banner)
+- `nudge` (renders as a banner; with `data.interrupt` -- `{kind, title?, ref?}`
+  -- it stops the page instead, and a page that does not know the field still
+  shows the banner)
 
 ### 6.4 Passive delivery
 

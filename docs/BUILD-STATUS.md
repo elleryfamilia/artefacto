@@ -1742,6 +1742,64 @@ longer honoured, a shell padding the flex centring already provided, and a
 presence line that was logged twice because the page reports the agent
 arriving before its first snapshot. Gate: 529 tests.
 
+## Where you are, and when the agent stops you
+
+The third design round (the *Plan Navigation* and *Agent Interrupt* pages,
+their stylesheet saved beside the others as `artefacto-v3.css`) added two
+things: a persistent place-in-the-plan in the header, and a dialog for the
+few times the agent needs the reviewer now rather than eventually. Two
+phases, on top of the panel:
+
+1. **The plan strip** (`1b1d797`). Every section rule carries `data-part`,
+   so the strip reads the rendered page: a plan with no risks has no risks
+   segment. Each segment is as wide as that section's share of the
+   document, with a floor so a short one is never a sliver. One number
+   drives the rest -- how far down the document the reader is, as a
+   fraction of what there is to scroll -- and it fills the line, places the
+   caret, picks the active segment, and positions the scrubber. The phases
+   segment carries a numeral per phase up to six, dense ticks past that,
+   *N of M* for the phase the read line is in, and a flag on a phase
+   holding a blocked task or a high risk. A click scrolls the section under
+   the header rather than behind it, and flashes it. Not printed.
+
+   Found on the way: a fixed read line a third down the viewport never
+   reached the last part on a short page, which is why one `readFraction()`
+   now drives everything; numerals collided in a narrow phases segment,
+   which is why that group has the wider floor; and the first flag rule
+   matched the dependency graph's legend, whose dots carry every status, so
+   it reads the phase's own chip and its task rails instead.
+
+2. **The interrupt** (`8ffed4e`). Three causes and no others. The agent
+   says it is blocked (`reply --nudge --interrupt --title ... --ref ...`);
+   a revision moved an element the reviewer commented on; a finished review
+   sits unsent while a blocking comment or question is open, an agent holds
+   the lease, and the page has been quiet for three minutes. Each dims the
+   page, leads with one sentence, offers one way into the conversation and
+   *Not now*. Escape and the backdrop are *Not now*, focus goes in and
+   comes back, and the plan behind does not scroll. One at a time, once per
+   cause.
+
+   Only the first needs the agent, and it rides on the existing `nudge`
+   event as `data.interrupt`, so a page built before this shows the nudge as
+   a line instead. `--interrupt` requires `--nudge`, and `--title` and
+   `--ref` require `--interrupt`: there is no other way for an agent to stop
+   the page.
+
+Screenshots: `plan-strip.png`, `plan-strip-dense.png` (a fourteen-phase
+plan, ticks instead of numerals), `interrupt-blocked.png`,
+`interrupt-revision.png`, `interrupt-hanging.png`.
+
+Mutations: twenty-six across both, four survived, and each named something
+real (`8315a2e`). The strip sized its segments in two places, so mutating
+one was overwritten by the other; one function answers that now. The
+revision interrupt passed a `gone` flag to a chip that already works it out
+from the element's absence; the flag is gone. And three rules had no test
+at all: a sent review is not a hanging one, no agent means nobody is
+waiting, and a second revision may interrupt again after the first was
+dismissed. The server side had no test of its own either, so it has three:
+what the event carries, that a plain nudge carries none, and that
+`--interrupt` cannot be used without `--nudge`. Gate: 539 tests.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
