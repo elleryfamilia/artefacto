@@ -4599,32 +4599,79 @@ fn the_plan_strip_says_where_you_are_and_takes_you_there() {
         "the line fills to the read position: {fill}%"
     );
 
+    // A width the numbers below were measured at. The strip is a row of
+    // boxes whose sizes depend on the viewport, so these all pin one.
+    page.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({ "width": 900, "height": 900, "deviceScaleFactor": 1, "mobile": false }),
+    );
+    page.wait_until(
+        "document.querySelector('.pv-map-part').getBoundingClientRect().width > 1",
+        "the strip to settle at the new width",
+    );
+
+    // Nothing in the strip is clipped, and the phases keep room for their
+    // numerals. This is what the floor under a segment's share buys: without
+    // it the phases group is squeezed to 121px at this width and its
+    // numerals are cut to nothing.
+    assert_eq!(
+        page.eval(
+            "Array.from(document.querySelectorAll('.pv-map-head')).every(function (h) { \
+               return h.scrollWidth <= h.clientWidth; })"
+        ),
+        true,
+        "no segment is squeezed past its contents"
+    );
+    assert_eq!(
+        page.eval(
+            "(function(){ const ph = document.querySelector('.pv-map-phases'); \
+               return ph.clientWidth > 0 && ph.scrollWidth <= ph.clientWidth; })()"
+        ),
+        true,
+        "the phases have room for their numerals"
+    );
+
     // The caret is drawn in the same space the segments are laid out in.
     // They are not the same as a straight linear map of the document: a
     // segment has a floor under its width and a gap beside it, so a caret
-    // placed by fraction alone drifts into the neighbouring segment.
-    for top in ["0.3", "0.5", "0.7", "0.9"] {
-        page.eval(&format!(
-            "window.scrollTo({{ top: {top} * (document.documentElement.scrollHeight - window.innerHeight), behavior: 'instant' }})"
-        ));
-        page.wait_until(
-            "(function(){ const c = document.querySelector('.pv-map-caret').getBoundingClientRect(); \
-               const a = document.querySelector('.pv-map-part.is-active').getBoundingClientRect(); \
-               return c.left >= a.left - 1 && c.left <= a.right + 1; })()",
-            "the caret to sit inside the segment that is lit",
+    // placed by fraction alone drifts into the neighbouring segment. Two
+    // widths, because how far the floors push things apart depends on how
+    // much room there is.
+    for width in [1280, 900] {
+        page.call(
+            "Emulation.setDeviceMetricsOverride",
+            serde_json::json!({ "width": width, "height": 900, "deviceScaleFactor": 1, "mobile": false }),
         );
+        for tenth in 1..=9 {
+            page.eval(&format!(
+                "window.scrollTo({{ top: 0.{tenth} * (document.documentElement.scrollHeight - window.innerHeight), behavior: 'instant' }})"
+            ));
+            page.wait_until(
+                "(function(){ const c = document.querySelector('.pv-map-caret').getBoundingClientRect(); \
+                   const a = document.querySelector('.pv-map-part.is-active').getBoundingClientRect(); \
+                   const mid = (c.left + c.right) / 2; \
+                   return mid >= a.left - 1 && mid <= a.right + 1; })()",
+                "the caret to sit inside the segment that is lit",
+            );
+        }
     }
 
-    // Every segment is wide enough to be a target: the floor under a short
-    // section's share is the only reason the dependency graph's segment is
-    // clickable at all.
-    assert_eq!(
-        page.eval(
-            "Array.from(document.querySelectorAll('.pv-map-part')).every(function (p) { \
-               return p.getBoundingClientRect().width >= 28; })"
-        ),
-        true,
-        "no segment is a sliver"
+    // And a drag lands where it was dropped: the scrubber inverts the same
+    // walk, so letting go over the risks bar puts you in the risks.
+    page.eval(
+        "(function(){ const p = document.querySelector('[data-map-part=\"risks\"]').getBoundingClientRect(); \
+           const scrub = document.querySelector('.pv-map-scrub'); \
+           scrub.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, \
+             clientX: p.left + p.width / 2, clientY: scrub.getBoundingClientRect().top + 2 })); \
+           return true; })()",
+    );
+    page.wait_until(
+        "document.querySelector('.pv-map-part.is-active').dataset.mapPart === 'risks'",
+        "the scrub to land in the segment it was dropped on",
+    );
+    page.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({ "width": 900, "height": 900, "deviceScaleFactor": 1, "mobile": false }),
     );
 
     // Where you are, for a reader who gets neither colour nor spacing.
@@ -4645,6 +4692,10 @@ fn the_plan_strip_says_where_you_are_and_takes_you_there() {
            const bar = document.querySelector('.pv-topbar').getBoundingClientRect(); \
            return r.top >= bar.bottom - 1; })()",
         "the question the summary links to to clear the header",
+    );
+    page.call(
+        "Emulation.clearDeviceMetricsOverride",
+        serde_json::json!({}),
     );
 
     // A phase with a high risk carries a flag; the other does not.
@@ -4835,6 +4886,11 @@ fn the_agent_can_stop_the_page_when_it_is_blocked() {
         page.text("getComputedStyle(document.documentElement).overflow"),
         "hidden",
         "and the plan behind it does not scroll"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.ag-dim').parentElement === document.documentElement"),
+        true,
+        "the backdrop is on the root: a revision replaces the body's children"
     );
     page.screenshot(&screenshot_path("interrupt-blocked"));
 
@@ -5100,6 +5156,30 @@ fn a_long_message_keeps_the_dialog_reachable() {
         ),
         true,
         "the message itself is what scrolls"
+    );
+
+    // Shorter than the dialog can be made: now the backdrop is what scrolls,
+    // and the button is still reachable. Without that the reviewer's only way
+    // out of a dialog they cannot read is Escape.
+    page.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({ "width": 900, "height": 240, "deviceScaleFactor": 1, "mobile": false }),
+    );
+    page.wait_until(
+        "(function(){ const d = document.querySelector('.ag-dim'); \
+           return d.scrollHeight > d.clientHeight; })()",
+        "the backdrop to have somewhere to scroll",
+    );
+    page.eval(
+        "(function(){ const d = document.querySelector('.ag-dim'); d.scrollTop = d.scrollHeight; return true; })()",
+    );
+    assert_eq!(
+        page.eval(
+            "(function(){ const go = document.querySelector('.ag-interrupt-go').getBoundingClientRect(); \
+               return go.top >= 0 && go.bottom <= window.innerHeight + 1; })()"
+        ),
+        true,
+        "scrolling the backdrop reaches the button"
     );
     page.call(
         "Emulation.clearDeviceMetricsOverride",
