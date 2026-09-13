@@ -1942,6 +1942,29 @@ count that the browser's own rule already covered, since that element
 declares no display of its own. Deleted. The presence pill's is
 `inline-flex` and does need its own. Gate: 549 tests.
 
+### The owner's third pass: the bar is the room
+
+Four more (`d401253`):
+
+- **The conversation left the bar.** The floating handle is always in reach
+  and steps aside when the panel is open, so a second way in was a second
+  thing to read.
+- **The revision moved to the plan's own line.** It is a fact about the
+  document, so it sits beside who wrote it and when. The bar now carries
+  nothing of the plan's at all.
+- **The orientation is read once.** First open of a plan in a browser, with
+  a way out on it, and never again; another plan is a first open again.
+  Kept as a banner rather than promoted to a dialog, because the modal is
+  reserved for the three things that stop the page.
+- **The phase dependencies are no longer a strip segment.** The label
+  truncated to "PHAS…" beside the phases it belongs to.
+
+Eight mutations, all caught. One test had to change its meaning rather than
+its numbers: the served page asserted `localStorage.length === 0` to prove
+the server is the only store, and the orientation's "seen once" note lives
+there. It now names the keys it expects, so review data leaking into the
+browser still fails it. Gate: 550 tests.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart
