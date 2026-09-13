@@ -83,7 +83,23 @@ fn message(event: &Event) -> Message {
         }
         .to_string(),
         text: str_field(event, "text"),
+        note: false,
         ts: event.ts.clone(),
+        agent: agent_name(event),
+    }
+}
+
+/// The lease name on an agent's event. Spec 6.1: agent events carry it in
+/// `data.agent`. Nothing else has a name to carry.
+fn agent_name(event: &Event) -> Option<String> {
+    if !matches!(event.actor, Actor::Agent) {
+        return None;
+    }
+    let name = str_field(event, "agent");
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
     }
 }
 
@@ -198,6 +214,7 @@ fn thread_resolved(review: &mut Review, event: &Event) {
     };
     let note = str_field(event, "note");
     let ts = event.ts.clone();
+    let name = agent_name(event);
     if let Some(artifact) = artifact_mut(review, event) {
         if let Some(thread) = artifact.thread_mut(&id) {
             thread.status = status;
@@ -206,6 +223,8 @@ fn thread_resolved(review: &mut Review, event: &Event) {
                     actor: "agent".to_string(),
                     text: note,
                     ts,
+                    note: true,
+                    agent: name,
                 });
             }
         }

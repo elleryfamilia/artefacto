@@ -177,6 +177,49 @@ fn a_revision_that_does_not_exist_is_refused() {
 }
 
 #[test]
+fn an_answer_to_a_question_the_plan_does_not_have_is_refused() {
+    let s = InProcess::start();
+    s.seed_artifact();
+    let cookie = s.session_cookie("plan:demo");
+    // Every other ref-bearing command checks its element. An answer that
+    // does not is invisible on the page -- there is no box to render it in
+    // -- and still reaches the log and the agent's feedback document.
+    let r = s.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "question.answer", "client_id": "cid-1",
+            "question": "q-does-not-exist", "text": "thirty days", "opened_revision": 1
+        }),
+    );
+    assert_eq!(r["ok"], false, "{r}");
+    assert!(
+        r["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no such element"),
+        "{r}"
+    );
+    assert_eq!(
+        s.count_events("question.answered"),
+        0,
+        "and nothing was written"
+    );
+
+    // Removing an answer is let through whatever the plan now holds: it is
+    // how a reviewer takes back an answer to a question a revision removed.
+    let r = s.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "question.answer", "client_id": "cid-2",
+            "question": "q-does-not-exist", "text": "", "opened_revision": 1
+        }),
+    );
+    assert_eq!(r["ok"], true, "{r}");
+}
+
+#[test]
 fn an_unknown_command_is_refused_and_the_page_keeps_working() {
     let s = InProcess::start();
     s.seed_artifact();

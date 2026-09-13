@@ -77,6 +77,16 @@ pub struct Message {
     pub actor: String,
     pub text: String,
     pub ts: String,
+    /// The agent's closing note on a resolved thread, as distinct from a
+    /// turn of the conversation: the page renders it as the resolution.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub note: bool,
+    /// Which agent wrote it, from the lease name the event carries. Kept per
+    /// message rather than read from whoever holds the lease now, so a turn
+    /// stays attributed to whoever actually took it. Absent on the
+    /// reviewer's own messages, and on anything written before this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

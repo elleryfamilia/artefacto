@@ -24,6 +24,10 @@ use tiny_http::Request;
 /// URL encoding to reach the log intact.
 const MAX_BODY: usize = crate::server::ingress::MAX_TEXT;
 
+/// The longest `--title` an interrupt may carry. The dialog leads with it on
+/// one line; past this it is a body pretending to be a heading.
+const MAX_TITLE: usize = 120;
+
 /// `POST /cli/reply`. A thread message, page-level chat, or a banner.
 pub fn handle_reply(shared: &Arc<Shared>, request: Request, query: &Query) {
     let Some((request, text)) = body_of(request) else {
@@ -39,12 +43,50 @@ pub fn handle_reply(shared: &Arc<Shared>, request: Request, query: &Query) {
             Ok(artifact) => artifact,
             Err(why) => return refuse(request, &why),
         };
-        presence::announce(
-            shared,
-            &artifact,
-            "nudge",
-            serde_json::json!({ "agent": session.name, "text": text }),
-        );
+        let mut data = serde_json::json!({ "agent": session.name, "text": text });
+        /* An interrupt is a nudge the page must not let pass: it stops the
+        plan and asks. The event carries what the dialog needs and
+        nothing else; a page that predates it shows the nudge. */
+        if query.get("interrupt").map(String::as_str) == Some("1") {
+            let mut stop = serde_json::json!({ "kind": "blocked" });
+            if let Some(title) = query.get("title").filter(|t| !t.is_empty()) {
+                /* The title is one line in a dialog. A long one is not a
+                title, and nothing else bounds it: the body is capped by
+                MAX_BODY, this is not part of the body. */
+                if title.chars().count() > MAX_TITLE {
+                    return refuse(
+                        request,
+                        &format!(
+                            "--title is {} characters; the dialog leads with one line, so the limit is {MAX_TITLE}",
+                            title.chars().count()
+                        ),
+                    );
+                }
+                stop["title"] = serde_json::json!(title);
+            }
+            if let Some(element) = query.get("ref").filter(|r| !r.is_empty()) {
+                /* A ref the plan does not have renders as the "element gone"
+                chip, which tells the reviewer a revision moved it. It did
+                not; the agent got the ref wrong. Say so to the agent, which
+                can fix it, rather than to the reviewer, who cannot. */
+                let known = crate::server::http::with_review(shared, |review| {
+                    review
+                        .artifacts
+                        .get(&artifact)
+                        .map(|art| crate::server::review::plan_refs(&art.plan).contains(element))
+                        .unwrap_or(false)
+                });
+                if !known {
+                    return refuse(
+                        request,
+                        &format!("no such element in {artifact}: {element}"),
+                    );
+                }
+                stop["ref"] = serde_json::json!(element);
+            }
+            data["interrupt"] = stop;
+        }
+        presence::announce(shared, &artifact, "nudge", data);
         let _ = request.respond(json_response(
             200,
             &serde_json::json!({ "ok": true, "nudge": true, "artifact": artifact }).to_string(),
@@ -66,12 +108,18 @@ pub fn handle_reply(shared: &Arc<Shared>, request: Request, query: &Query) {
     let revision = committer.with_review(|r| r.artifacts.get(&artifact).map_or(0, |a| a.revision));
     // Spec 6.3: an agent's answer inside a thread is `thread.replied`. Without
     // a thread it is page-level chat, which the fold keeps on the artifact.
+    /* Spec 6.1: an agent's event carries the lease name in `data.agent`.
+    The page reads it to say who took a turn, which stays true after that
+    agent has gone and another has taken the lease. */
     let (kind, data) = match &thread {
         Some(thread) => (
             "thread.replied",
-            serde_json::json!({ "thread": thread, "text": text }),
+            serde_json::json!({ "thread": thread, "text": text, "agent": session.name }),
         ),
-        None => ("chat.sent", serde_json::json!({ "text": text })),
+        None => (
+            "chat.sent",
+            serde_json::json!({ "text": text, "agent": session.name }),
+        ),
     };
     let event = match committer.append(&artifact, revision, Actor::Agent, kind, data) {
         Ok(event) => event,
@@ -149,7 +197,9 @@ pub fn handle_resolve(shared: &Arc<Shared>, request: Request, query: &Query) {
         revision,
         Actor::Agent,
         "thread.resolved",
-        serde_json::json!({ "thread": thread, "status": status, "note": note }),
+        serde_json::json!({
+            "thread": thread, "status": status, "note": note, "agent": session.name,
+        }),
     ) {
         Ok(event) => event,
         Err(e) => return refuse(request, &format!("{e:#}")),

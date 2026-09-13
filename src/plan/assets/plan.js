@@ -102,7 +102,8 @@
     emptyState(artifact) {
       return {
         artifact: artifact, revision: 0, planHash: "", plan: null, threads: [],
-        answers: {}, reviewed: [], chat: [], submitted: false, presence: null, lastSeq: 0,
+        answers: {}, reviewed: [], chat: [], submitted: false,
+        verdict: null, presence: null, lastSeq: 0,
       };
     },
     /* What `GET /a/<artifact>/state` returns, as page state. */
@@ -115,7 +116,7 @@
             id: t.id, target: t.target, quote: t.quote || "", blocking: !!t.blocking,
             asked: !!t.asked, status: t.status || "open",
             messages: (t.messages || []).map(function (m) {
-              return { actor: m.actor, text: m.text, ts: m.ts };
+              return { actor: m.actor, text: m.text, ts: m.ts, note: !!m.note };
             }),
           };
         }),
@@ -123,6 +124,7 @@
         reviewed: (s.reviewed || []).slice(),
         chat: (s.chat || []).slice(),
         submitted: !!s.submitted,
+        verdict: s.verdict || null,
         presence: s.presence || null,
         lastSeq: s.last_seq || 0,
       };
@@ -135,13 +137,26 @@
     applyEvent(state, e) {
       const d = e.data || {};
       const find = function (id) { return state.threads.find(function (t) { return t.id === id; }); };
-      const message = function () { return { actor: e.actor || "reviewer", text: d.text || "", ts: e.ts || "" }; };
+      /* `agent` is the lease name the event carries (spec 6.1), kept on the
+         turn so it stays true after that agent has gone. The server's fold
+         does the same, so a live frame and a reload agree. */
+      const message = function () {
+        const m = { actor: e.actor || "reviewer", text: d.text || "", ts: e.ts || "" };
+        if (e.actor === "agent" && d.agent) m.agent = d.agent;
+        return m;
+      };
       switch (e.type) {
         case "revision.published": {
           state.revision = e.revision > 0 ? e.revision : state.revision + 1;
           if (d.plan) state.plan = d.plan;
           if (d.plan_hash) state.planHash = d.plan_hash;
-          /* A new revision reopens the review. */
+          /* A new revision reopens the review. The verdict stays: it is the
+             last one given, and the server's fold keeps it for the same
+             reason (`review.rs`, "kept across a new revision"). Clearing it
+             here made a live page and a reloaded one disagree about a field
+             the snapshot carries -- invisible today, because everything
+             that reads it also checks `submitted`, and a trap for whatever
+             reads it next. */
           state.submitted = false;
           core.reanchor(state.threads, core.planRefs(state.plan));
           return true;
@@ -175,7 +190,11 @@
           const t = find(d.thread);
           if (!t || (d.status !== "changed" && d.status !== "declined")) return false;
           t.status = d.status;
-          if (d.note) t.messages.push({ actor: "agent", text: d.note, ts: e.ts || "" });
+          if (d.note) {
+            const note = { actor: "agent", text: d.note, ts: e.ts || "", note: true };
+            if (d.agent) note.agent = d.agent;
+            t.messages.push(note);
+          }
           return true;
         }
         case "question.answered": {
@@ -213,6 +232,7 @@
         }
         case "review.submitted":
           state.submitted = true;
+          state.verdict = d.verdict || null;
           return true;
         case "agent.attached":
           state.presence = { agent: d.agent || "", mode: d.mode || "waiting" };
@@ -446,12 +466,16 @@
       document.querySelectorAll("details.phase").forEach(function (d, i) { d.open = wasOpen[i]; });
       if (failure) throw new Error(failure);
     });
-    check("theme toggle offers system, light and dark", function () {
+    check("theme toggle offers system, light, dark and vibe", function () {
       const modes = [].map.call(
         document.querySelectorAll("[data-theme-set]"),
         function (b) { return b.getAttribute("data-theme-set"); }
       );
-      if (modes.join("|") !== "|light|dark") throw new Error("modes were " + modes.join("|"));
+      if (modes.join("|") !== "|light|dark|vibe") throw new Error("modes were " + modes.join("|"));
+      applyTheme("vibe", false);
+      if (document.documentElement.getAttribute("data-theme") !== "vibe") {
+        throw new Error("vibe did not apply");
+      }
       /* System must be reachable AGAIN after an override, or "follow the OS"
          is a state a reader can only ever leave. */
       applyTheme("dark", false);
@@ -462,8 +486,8 @@
       if (document.documentElement.getAttribute("data-theme")) {
         throw new Error("system did not clear the override");
       }
-      if (document.querySelector('[data-theme-set=""]').getAttribute("aria-pressed") !== "true") {
-        throw new Error("system not marked pressed");
+      if (document.querySelector('[data-theme-set=""]').getAttribute("aria-checked") !== "true") {
+        throw new Error("system not marked as the chosen one");
       }
     });
     check("phases open and shut with motion", function () {
@@ -670,6 +694,41 @@
     return svg;
   }
 
+  /* The plan strip's part icons, one per section of the document. */
+  const MAP_ICONS = {
+    summary: ["M4 6h16", "M4 11h12", "M4 16h8"],
+    questions: ["M4 4h16v16H4z", "M9.4 9.2a2.7 2.7 0 1 1 3.6 2.5c-.7.3-1 .9-1 1.6", "M12 16.6h.01"],
+    risks: ["M12 4.5 21 19H3z", "M12 10v4", "M12 16.6h.01"],
+    phases: ["M4 6h7", "M4 12h13", "M4 18h9"],
+  };
+
+  /* A circle with one half filled: the picture every interface uses for
+     "light or dark", and the only thing small enough to sit at the end of
+     the bar without becoming a fifth piece of text. */
+  function themeIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "pv-theme-icon");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    ring.setAttribute("cx", "12");
+    ring.setAttribute("cy", "12");
+    ring.setAttribute("r", "8");
+    ring.setAttribute("fill", "none");
+    ring.setAttribute("stroke", "currentColor");
+    ring.setAttribute("stroke-width", "1.6");
+    svg.appendChild(ring);
+    const half = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    half.setAttribute("d", "M12 4a8 8 0 0 1 0 16z");
+    half.setAttribute("fill", "currentColor");
+    svg.appendChild(half);
+    return svg;
+  }
+
+  function mapIcon(part) {
+    return svgIcon("pv-map-icon", MAP_ICONS[part] || MAP_ICONS.summary);
+  }
+
   /* Speech-bubble icon for the comment button: bubble outline plus two
      short lines standing in for text. */
   function commentIcon() {
@@ -679,13 +738,30 @@
     ]);
   }
 
-  /* Speech bubble with a question mark: the ask button. */
-  function askIcon() {
-    return svgIcon("ask-btn-icon", [
-      "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
-      "M9.6 9a2.4 2.4 0 1 1 3.4 2.2c-.6.3-1 .9-1 1.6",
-      "M12 15.5h.01",
-    ]);
+  /* The agent's mark: a ring around a point, something looking back. One
+     SVG, four states by class: rest, is-working (a bead orbits the ring),
+     is-waiting, is-off (the point hollows out). It is the agent wherever
+     the agent appears: the presence pill, the avatar, and soon the ask
+     control and the working row. */
+  function agentMark(state) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    setMarkState(svg, state);
+    [["ag-ring", 12, 12, 8.5], ["ag-core", 12, 12, 3.2], ["ag-orbit", 12, 3.5, 2]].forEach(function (c) {
+      const circle = document.createElementNS(SVG_NS, "circle");
+      circle.setAttribute("class", c[0]);
+      circle.setAttribute("cx", String(c[1]));
+      circle.setAttribute("cy", String(c[2]));
+      circle.setAttribute("r", String(c[3]));
+      svg.appendChild(circle);
+    });
+    return svg;
+  }
+
+  function setMarkState(svg, state) {
+    svg.setAttribute("class", "ag-mark" + (state ? " is-" + state : ""));
   }
 
   /* Warning-triangle icon for the "Blocks approval" checkbox: triangle
@@ -726,7 +802,7 @@
   function storedTheme() {
     try {
       const v = window.localStorage.getItem(THEME_KEY);
-      return v === "light" || v === "dark" ? v : "";
+      return v === "light" || v === "dark" || v === "vibe" ? v : "";
     } catch (e) { return ""; }
   }
 
@@ -753,16 +829,25 @@
     syncToggle();
   }
 
-  /* Highlight the button for the selected MODE (System included), and tell
-     the System button which way it currently resolves -- that is the one
-     thing a reader cannot otherwise read off the control. */
+  /* Mark the chosen MODE (System included) in the menu, and say on the
+     opener which theme is actually showing -- with the menu closed that is
+     the one thing a reader cannot otherwise tell. */
   function syncToggle() {
     const mode = document.documentElement.getAttribute("data-theme") || "";
+    let label = "System";
     document.querySelectorAll("[data-theme-set]").forEach(function (b) {
-      b.setAttribute("aria-pressed", String(b.getAttribute("data-theme-set") === mode));
+      const on = b.getAttribute("data-theme-set") === mode;
+      b.setAttribute("aria-checked", String(on));
+      if (on) label = b.textContent;
     });
     const sys = document.querySelector('[data-theme-set=""]');
     if (sys) sys.setAttribute("title", "Follow the system setting (currently " + current() + ")");
+    const opener = document.querySelector(".pv-theme-open");
+    if (opener) {
+      const said = mode ? label : "System (" + current() + ")";
+      opener.title = "Colour theme: " + said;
+      opener.setAttribute("aria-label", "Colour theme: " + said);
+    }
   }
 
   /* What the page is actually showing right now -- the explicit override if
@@ -775,21 +860,483 @@
   }
 
   let themeWired = false;
+  /* ---- the plan strip ------------------------------------------------
+
+     The document's parts as one spine in the sticky header: each segment as
+     wide as the share of the page that part holds, a line that fills to the
+     read position, a caret where the reader is. It is built from the
+     rendered document, so it needs no plan data and no server: the static
+     export carries it too.
+
+     `data-part` on a section's rule is what makes a section a part. A rule
+     inside a section carries none, so a task's acceptance is not a part. */
+  const MAP_DENSE_PHASES = 6;
+
+  function mapParts(root) {
+    const rules = Array.from(root.querySelectorAll(".pv-rule[data-part]"));
+    if (!rules.length) return [];
+    const main = root.querySelector(".pv-main") || root.querySelector(".pv-sheet") || root;
+    const bottom = docTop(main) + main.offsetHeight;
+    /* The first part starts where the document does, not at its own rule:
+       the title and the figures above the summary are part of the plan, and
+       a strip that says nothing until the reader is past them is a strip
+       that says nothing on arrival. */
+    return rules.map(function (rule, i) {
+      const top = i === 0 ? Math.min(docTop(rule), docTop(main)) : docTop(rule);
+      const end = i + 1 < rules.length ? docTop(rules[i + 1]) : bottom;
+      const label = rule.querySelector(".pv-label");
+      return {
+        part: rule.getAttribute("data-part"),
+        label: label ? label.textContent : "",
+        node: rule,
+        top: top,
+        height: Math.max(1, end - top),
+      };
+    });
+  }
+
+  function docTop(el) {
+    return el.getBoundingClientRect().top + window.scrollY;
+  }
+
+  /* The header's height, published for the stylesheet. Anchor jumps use
+     `scroll-margin-top`, which has to be a CSS value, and the bar is not a
+     fixed height: the strip adds a second row, and both rows wrap at narrow
+     widths. Measured here and written once so a fragment link lands under
+     the header rather than behind it. */
+  function syncBarHeight(root) {
+    const bar = (root || document).querySelector(".pv-topbar");
+    if (!bar) return;
+    document.documentElement.style.setProperty("--bar-h", bar.offsetHeight + "px");
+  }
+
+  /* A part's share of the strip: proportional to how much of the document
+     it holds, with a floor so a part is never a sliver. The phases carry
+     their numerals, so their floor is the wider one -- collapsed phases are
+     a short section holding most of the plan's controls. Both the first
+     build and every remeasure go through here, so the strip cannot end up
+     sized two different ways. */
+  function partGrow(p, span, group) {
+    return String(Math.max(group ? 0.34 : 0.08, p.height / span));
+  }
+
+  /* A phase worth a flag in the strip: one holding a blocked task or a high
+     risk, which is what the phase's own chip says on the page. */
+  function mapPhases(root) {
+    return Array.from(root.querySelectorAll("details.phase")).map(function (d, i) {
+      return {
+        node: d,
+        id: d.id,
+        n: String(i + 1).padStart(2, "0"),
+        /* What the phase already says on the page: its high-risk chip, or a
+           task whose rail says blocked. Two clauses, not three -- the chip
+           counts the phase's high-risk tasks, so it and a high dot on a
+           rail are the same fact twice. The rails are read rather than
+           every dot in the phase, because the dependency graph's legend
+           carries a dot of every status. */
+        flag: !!d.querySelector("summary .pv-chip-high, .task-rail .pv-dot-blocked"),
+      };
+    });
+  }
+
+  function mountMap(root) {
+    const bar = root.querySelector(".pv-topbar");
+    if (!bar || bar.querySelector(".pv-map")) return;
+    const parts = mapParts(root);
+    if (!parts.length) return;
+    const phases = mapPhases(root);
+    const map = document.createElement("nav");
+    map.className = "pv-map";
+    map.setAttribute("aria-label", "Where you are in the plan");
+    const track = document.createElement("div");
+    track.className = "pv-map-track";
+    map.appendChild(track);
+    const span = parts[parts.length - 1].top + parts[parts.length - 1].height - parts[0].top;
+
+    parts.forEach(function (p) {
+      const group = p.part === "phases" && phases.length > 0;
+      const part = document.createElement(group ? "div" : "a");
+      part.className = "pv-map-part" + (group ? " is-group" : "");
+      part.setAttribute("data-map-part", p.part);
+      part.style.flexGrow = partGrow(p, span, group);
+      part.style.flexBasis = "0";
+      if (!group) {
+        part.href = "#";
+        part.addEventListener("click", function (e) { e.preventDefault(); jumpToNode(p.node); });
+      }
+      const head = document.createElement("span");
+      head.className = "pv-map-head";
+      const label = document.createElement("span");
+      label.className = "pv-map-label";
+      label.textContent = p.label;
+      if (group) {
+        const link = document.createElement("a");
+        link.className = "pv-map-link";
+        link.href = "#";
+        link.addEventListener("click", function (e) { e.preventDefault(); jumpToNode(p.node); });
+        link.appendChild(mapIcon(p.part));
+        link.appendChild(label);
+        head.appendChild(link);
+        head.appendChild(phases.length > MAP_DENSE_PHASES ? mapTicks(phases) : mapNumerals(phases));
+      } else {
+        head.appendChild(mapIcon(p.part));
+        head.appendChild(label);
+      }
+      part.appendChild(head);
+      const barLine = document.createElement("span");
+      barLine.className = "pv-map-bar";
+      part.appendChild(barLine);
+      track.appendChild(part);
+    });
+
+    ["pv-map-fill", "pv-map-caret", "pv-map-scrub"].forEach(function (cls) {
+      const n = document.createElement("div");
+      n.className = cls;
+      if (cls === "pv-map-scrub") n.setAttribute("aria-hidden", "true");
+      track.appendChild(n);
+    });
+    bar.appendChild(map);
+    wireScrub(track);
+    mapState.parts = parts;
+    mapState.phases = phases;
+    syncBarHeight(root);
+    if (!mapState.wired) {
+      mapState.wired = true;
+      window.addEventListener("scroll", scheduleMap, { passive: true });
+      window.addEventListener("resize", function () { remeasureMap(root); }, { passive: true });
+    }
+    renderMap();
+
+    /* A phase opening or closing moves everything below it: the parts are
+       measured again when the document's height changes. */
+    if (window.ResizeObserver) {
+      const main = root.querySelector(".pv-main") || root;
+      const ro = new ResizeObserver(function () { remeasureMap(root); });
+      ro.observe(main);
+      mounted.observers.push(ro);
+    }
+  }
+
+  const FLAG_LABEL = " \u2014 a blocked task or a high risk in this phase";
+
+  function mapNumerals(phases) {
+    const host = document.createElement("span");
+    host.className = "pv-map-phases";
+    phases.forEach(function (ph) {
+      const a = document.createElement("a");
+      a.className = "pv-map-ph";
+      a.href = "#" + ph.id;
+      a.setAttribute("data-map-phase", ph.id);
+      a.addEventListener("click", function (e) { e.preventDefault(); jumpToNode(ph.node); });
+      const n = document.createElement("span");
+      n.textContent = ph.n;
+      a.appendChild(n);
+      /* The flag is a dot. A label on the link is the only way a reader who
+         cannot see it is told, and `title` on an empty span is not one. */
+      a.setAttribute("aria-label", "Phase " + ph.n + (ph.flag ? FLAG_LABEL : ""));
+      if (ph.flag) {
+        const flag = document.createElement("span");
+        flag.className = "pv-map-flag";
+        flag.title = FLAG_LABEL.replace(" \u2014 ", "");
+        a.appendChild(flag);
+      }
+      host.appendChild(a);
+    });
+    return host;
+  }
+
+  /* Past a handful of phases the numerals stop fitting: one tick each, the
+     number shown for the phase you are in or hovering. */
+  function mapTicks(phases) {
+    const host = document.createElement("span");
+    host.className = "pv-map-ticks";
+    phases.forEach(function (ph) {
+      const a = document.createElement("a");
+      a.className = "pv-map-tick" + (ph.flag ? " has-flag" : "");
+      a.href = "#" + ph.id;
+      a.setAttribute("data-map-phase", ph.id);
+      a.title = "Phase " + ph.n + (ph.flag ? FLAG_LABEL : "");
+      a.setAttribute("aria-label", a.title);
+      a.addEventListener("click", function (e) { e.preventDefault(); jumpToNode(ph.node); });
+      const num = document.createElement("span");
+      num.className = "pv-map-tick-num";
+      num.textContent = ph.n;
+      const mark = document.createElement("span");
+      mark.className = "pv-map-tick-mark";
+      a.appendChild(num);
+      a.appendChild(mark);
+      host.appendChild(a);
+    });
+    return host;
+  }
+
+  const mapState = { parts: [], phases: [], frame: 0, wired: false };
+
+  /* The parts are positions in a document that changes height: a phase
+     opens, a thread lands, a revision swaps the body. Measured again, and
+     the segments resized, without rebuilding the strip. */
+  function remeasureMap(root) {
+    const track = document.querySelector(".pv-map-track");
+    if (!track) return;
+    const parts = mapParts(root || document.body);
+    if (!parts.length) return;
+    const last = parts[parts.length - 1];
+    const span = last.top + last.height - parts[0].top;
+    parts.forEach(function (p) {
+      const node = track.querySelector('[data-map-part="' + p.part + '"]');
+      if (node) node.style.flexGrow = partGrow(p, span, node.classList.contains("is-group"));
+    });
+    mapState.parts = parts;
+    syncBarHeight(root);
+    renderMap();
+  }
+
+  /* How far through the document the reader is, as a fraction of what there
+     is to scroll. One number for the whole strip: the fill, the caret, and
+     which part is active all come from it, so the end of the scroll is the
+     end of the plan and the strip never stops short of its last part. */
+  function readFraction() {
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    /* Nothing to scroll means the whole plan is on screen, which is the
+       end of the read, not the start of it. Returning 0 there pinned a
+       short plan's strip to the top of the summary for ever. */
+    return max > 0 ? Math.min(Math.max(window.scrollY / max, 0), 1) : 1;
+  }
+
+  /* Where a position in the document sits along the track, in the strip's
+     own pixels.
+
+     The segments are laid out by flex-grow, with a floor under each one and
+     a gap between them, so their edges do not fall where a straight linear
+     map of the document would put them. Two maps that disagree put the
+     caret over one segment while a different one is lit, which is what this
+     avoids: the caret is placed inside the segment it belongs to, and the
+     scrubber inverts the same walk. */
+  function trackParts(track) {
+    const box = track.getBoundingClientRect();
+    const out = [];
+    mapState.parts.forEach(function (p) {
+      const node = track.querySelector('[data-map-part="' + p.part + '"]');
+      if (!node) return;
+      const r = node.getBoundingClientRect();
+      out.push({ part: p, left: r.left - box.left, width: r.width });
+    });
+    return out;
+  }
+
+  function lineToX(track, line) {
+    const boxes = trackParts(track);
+    if (!boxes.length) return 0;
+    for (let i = 0; i < boxes.length; i++) {
+      const b = boxes[i];
+      if (line < b.part.top) return b.left;
+      if (line < b.part.top + b.part.height) {
+        return b.left + b.width * ((line - b.part.top) / b.part.height);
+      }
+    }
+    const last = boxes[boxes.length - 1];
+    return last.left + last.width;
+  }
+
+  function xToLine(track, x) {
+    const boxes = trackParts(track);
+    if (!boxes.length) return 0;
+    for (let i = 0; i < boxes.length; i++) {
+      const b = boxes[i];
+      if (x < b.left) return b.part.top;
+      if (x <= b.left + b.width) {
+        return b.part.top + b.part.height * ((x - b.left) / b.width);
+      }
+    }
+    const last = boxes[boxes.length - 1].part;
+    return last.top + last.height;
+  }
+
+  /* A position in the document as the fraction `readLine` would have come
+     from, so a scrub lands where the caret was dropped. */
+  function lineToScroll(line) {
+    const parts = mapState.parts;
+    if (!parts.length) return 0;
+    const first = parts[0].top;
+    const last = parts[parts.length - 1];
+    const span = last.top + last.height - first;
+    const fraction = span > 0 ? Math.min(Math.max((line - first) / span, 0), 1) : 0;
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    return Math.max(0, max * fraction);
+  }
+
+  /* That fraction as a position in the document, for the parts to answer to. */
+  function readLine() {
+    const parts = mapState.parts;
+    if (!parts.length) return 0;
+    const first = parts[0].top;
+    const last = parts[parts.length - 1];
+    return first + (last.top + last.height - first) * readFraction();
+  }
+
+  function setCurrent(node, on) {
+    if (on) node.setAttribute("aria-current", "true");
+    else node.removeAttribute("aria-current");
+  }
+
+  function renderMap() {
+    const track = document.querySelector(".pv-map-track");
+    if (!track || !mapState.parts.length) return;
+    const parts = mapState.parts;
+    const last = parts[parts.length - 1];
+    const line = readLine();
+    let active = null;
+    parts.forEach(function (p) {
+      const node = track.querySelector('[data-map-part="' + p.part + '"]');
+      if (!node) return;
+      const isActive = line >= p.top && line < p.top + p.height;
+      if (isActive) active = p;
+      node.classList.toggle("is-active", isActive);
+      node.classList.toggle("is-past", line >= p.top + p.height);
+      /* Where you are is colour and letter-spacing on screen. `aria-current`
+         is the same fact for a reader who gets neither. */
+      setCurrent(node, isActive);
+    });
+    /* At the very end of the scroll the line sits on the document's last
+       pixel, which is inside no part: the last one keeps the caret company. */
+    if (!active) {
+      const node = track.querySelector('[data-map-part="' + last.part + '"]');
+      if (node) {
+        node.classList.add("is-active");
+        node.classList.remove("is-past");
+        setCurrent(node, true);
+      }
+    }
+    const fill = track.querySelector(".pv-map-fill");
+    const caret = track.querySelector(".pv-map-caret");
+    const x = lineToX(track, line);
+    if (fill) fill.style.width = x + "px";
+    if (caret) caret.style.left = x + "px";
+    renderMapPhases(track);
+  }
+
+  function renderMapPhases(track) {
+    if (!mapState.phases.length) return;
+    const line = readLine();
+    let current = -1;
+    mapState.phases.forEach(function (ph, i) {
+      const top = docTop(ph.node);
+      if (line >= top) current = i;
+    });
+    mapState.phases.forEach(function (ph, i) {
+      const node = track.querySelector('[data-map-phase="' + ph.id + '"]');
+      if (!node) return;
+      node.classList.toggle("is-active", i === current);
+      node.classList.toggle("is-past", i < current);
+      setCurrent(node, i === current);
+    });
+  }
+
+  function scheduleMap() {
+    if (mapState.frame) return;
+    mapState.frame = window.requestAnimationFrame(function () {
+      mapState.frame = 0;
+      renderMap();
+    });
+  }
+
+  /* A jump is a scroll and a flash: the reader asked for a place, and the
+     page says which place it landed on. */
+  function jumpToNode(node) {
+    if (!node) return;
+    const bar = document.querySelector(".pv-topbar");
+    const offset = (bar ? bar.offsetHeight : 0) + 12;
+    window.scrollTo({ top: Math.max(0, docTop(node) - offset), left: 0, behavior: "instant" });
+    const target = node.classList && node.classList.contains("pv-rule")
+      ? node.nextElementSibling || node
+      : node;
+    if (!target) return;
+    target.classList.remove("pv-aimed");
+    void target.offsetWidth;
+    target.classList.add("pv-aimed");
+  }
+
+  /* The bar row is a scrubber: a drag across it maps to a position in the
+     document, the way a timeline does. */
+  function wireScrub(track) {
+    const scrub = track.querySelector(".pv-map-scrub");
+    if (!scrub) return;
+    const to = function (clientX) {
+      const box = track.getBoundingClientRect();
+      const line = xToLine(track, clientX - box.left);
+      window.scrollTo({ top: lineToScroll(line), left: 0, behavior: "instant" });
+    };
+    scrub.addEventListener("pointerdown", function (e) {
+      e.preventDefault();
+      scrub.setPointerCapture(e.pointerId);
+      to(e.clientX);
+    });
+    scrub.addEventListener("pointermove", function (e) {
+      if (scrub.hasPointerCapture && scrub.hasPointerCapture(e.pointerId)) to(e.clientX);
+    });
+    scrub.addEventListener("pointerup", function (e) {
+      if (scrub.releasePointerCapture) scrub.releasePointerCapture(e.pointerId);
+    });
+  }
+
+  /* The theme is a preference, not a part of the review: one small control at
+     the end of the bar that opens the four choices, rather than four buttons
+     standing beside the plan's own identity. */
   function mountThemeToggle(root) {
     const host = root.querySelector(".pv-topbar-right");
     if (!host || host.querySelector(".pv-theme")) return;
     const group = document.createElement("div");
     group.className = "pv-theme";
-    group.setAttribute("role", "group");
-    group.setAttribute("aria-label", "Colour theme");
-    [["", "System"], ["light", "Light"], ["dark", "Dark"]].forEach(function (pair) {
+
+    const opener = document.createElement("button");
+    opener.type = "button";
+    opener.className = "pv-theme-open";
+    opener.setAttribute("aria-haspopup", "true");
+    opener.setAttribute("aria-expanded", "false");
+    opener.setAttribute("aria-label", "Colour theme");
+    opener.title = "Colour theme";
+    opener.appendChild(themeIcon());
+    group.appendChild(opener);
+
+    const menu = document.createElement("div");
+    menu.className = "pv-theme-menu";
+    menu.setAttribute("role", "menu");
+    menu.hidden = true;
+    [["", "System"], ["light", "Light"], ["dark", "Dark"], ["vibe", "Vibe"]].forEach(function (pair) {
       const btn = document.createElement("button");
       btn.type = "button";
+      btn.setAttribute("role", "menuitemradio");
       btn.setAttribute("data-theme-set", pair[0]);
       btn.textContent = pair[1];
-      btn.addEventListener("click", function () { applyTheme(pair[0], true); });
-      group.appendChild(btn);
+      btn.addEventListener("click", function () { applyTheme(pair[0], true); close(true); });
+      menu.appendChild(btn);
     });
+    group.appendChild(menu);
+
+    const close = function (focusOpener) {
+      if (menu.hidden) return;
+      menu.hidden = true;
+      opener.setAttribute("aria-expanded", "false");
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("mousedown", onOutside, true);
+      if (focusOpener) opener.focus();
+    };
+    const onKey = function (e) {
+      if (e.key === "Escape") { e.preventDefault(); close(true); }
+    };
+    const onOutside = function (e) {
+      if (!group.contains(e.target)) close(false);
+    };
+    opener.addEventListener("click", function () {
+      if (!menu.hidden) return close(true);
+      menu.hidden = false;
+      opener.setAttribute("aria-expanded", "true");
+      document.addEventListener("keydown", onKey, true);
+      document.addEventListener("mousedown", onOutside, true);
+      const checked = menu.querySelector('[aria-checked="true"]') || menu.firstChild;
+      if (checked && checked.focus) checked.focus();
+    });
+
     host.appendChild(group);
     applyTheme(storedTheme(), false);
 
@@ -1071,7 +1618,18 @@
   function elementQuote(el) {
     let source = el;
     if (!/^h[1-6]$/i.test(el.tagName)) {
-      source = el.querySelector("h1, h2, h3, h4, h5, h6") || el;
+      /* A row's head line first, then a real heading, then the element.
+         Two queries rather than one selector list, because a list returns
+         whatever comes first in the document, not the first selector that
+         matches -- which would be the same thing only by luck.
+
+         A question has no heading: its statement is the head line, and
+         reading the whole row instead picks up the severity chip, the
+         buttons the page injects, and the answer box, which is what a chip
+         and a stored quote must not say. */
+      source = el.querySelector(".pv-row-head .pv-prose")
+        || el.querySelector("h1, h2, h3, h4, h5, h6")
+        || el;
     }
     const text = (source.textContent || "").trim().replace(/\s+/g, " ");
     return text.slice(0, 80);
@@ -1258,7 +1816,7 @@
 
     const copyBtn = document.createElement("button");
     copyBtn.type = "button";
-    copyBtn.className = "feedback-bar-copy";
+    copyBtn.className = "pv-btn is-lg is-primary feedback-bar-copy";
     copyBtn.textContent = "Copy feedback";
     bar.appendChild(copyBtn);
 
@@ -1343,17 +1901,24 @@
 
       const addBtn = document.createElement("button");
       addBtn.type = "button";
+      addBtn.className = "pv-btn is-primary composer-send";
       addBtn.textContent = "Add";
 
       const cancelBtn = document.createElement("button");
       cancelBtn.type = "button";
+      cancelBtn.className = "pv-btn is-quiet composer-cancel";
       cancelBtn.textContent = "Cancel";
 
       actions.appendChild(addBtn);
       actions.appendChild(cancelBtn);
+      /* The same foot row as the served composer: the toggle on the left,
+         the actions on the right. */
+      const foot = document.createElement("div");
+      foot.className = "comment-box-foot";
       box.appendChild(textarea);
-      box.appendChild(blockingRow);
-      box.appendChild(actions);
+      foot.appendChild(blockingRow);
+      foot.appendChild(actions);
+      box.appendChild(foot);
 
       btn.addEventListener("click", function (e) {
         /* The same guard the reviewed toggle carries below, for the same
@@ -1591,6 +2156,15 @@
      fetch that has not answered in ten seconds is treated as failed. */
   core.settings = {
     pingEveryMs: 30000,
+      /* How long a question may go unanswered before the working row says
+         "still waiting" and the bead stops. */
+      stillWaitingMs: 120000,
+    /* How long a review may sit with a verdict unsent and a blocking
+       question unanswered before the page says the agent is waiting on it,
+       and how long that dialog stays up on its own. */
+    hangingAfterMs: 180000,
+    hangingDismissMs: 30000,
+    hangingCheckMs: 15000,
     backoffMs: [500, 1000, 2000, 4000, 8000, 8000, 8000, 8000],
     fetchTimeoutMs: 10000,
     /* How long a socket must stay open before the retry budget resets. */
@@ -1633,8 +2207,13 @@
       gone: false,
       lost: false,
       stopping: false,
-      approve: false,
+      /* Writes the server has not answered yet; the bar says Saving. */
+      inflight: 0,
       submitting: false,
+      /* Questions the agent has not answered yet: thread id (or "page") ->
+         { since }. Page-side, so a body swap keeps the working row. */
+      pending: {},
+
       lastPing: 0,
       previousTitle: null,
       own: {},
@@ -1684,6 +2263,36 @@
     }
     function saveDraft(d) { const m = loadDraftMap(); m[d.id] = d; saveDraftMap(m); }
     function dropDraft(id) { const m = loadDraftMap(); delete m[id]; saveDraftMap(m); }
+    /* Declared here, above its first read: a const declared further down
+       would be in its dead zone when the session starts, and the guarded
+       read would quietly answer "closed". */
+    const PANEL_KEY = "artefacto.panel";
+    S.ui.chatOpen = panelStored();
+    /* The panel's composer: its text and what it is aimed at (an element,
+       or a thread), kept across a swap and a reload. */
+    const PANEL_DRAFT_KEY = "artefacto:panel:" + artifact;
+    function loadPanelDraft() {
+      try {
+        const raw = window.sessionStorage.getItem(PANEL_DRAFT_KEY);
+        const d = raw ? JSON.parse(raw) : null;
+        return d && typeof d === "object" ? d : {};
+      } catch (e) { return {}; }
+    }
+    function savePanelDraft() {
+      try { window.sessionStorage.setItem(PANEL_DRAFT_KEY, JSON.stringify(S.ui.panel)); } catch (e) { /* best effort */ }
+    }
+    S.ui.panel = Object.assign(
+      { text: "", ref: null, thread: null, quote: null, revision: null },
+      loadPanelDraft()
+    );
+    S.ui.panelEvents = [];
+    /* The interrupt on screen, and the causes this page has already shown:
+       an interrupt the reviewer dismissed does not come back for the same
+       reason. */
+    S.ui.interrupt = null;
+    S.ui.interrupted = {};
+    S.ui.interruptNext = null;
+    S.ui.closeInterrupt = null;
 
     /* ---- transport ------------------------------------------------- */
 
@@ -1724,7 +2333,15 @@
     function send(cmd) {
       if (!cmd.client_id) cmd.client_id = newId("cid");
       S.own[cmd.client_id] = true;
-      return post(cmd).then(function (reply) {
+      S.inflight++;
+      renderBar();
+      const settle = function () { S.inflight = Math.max(0, S.inflight - 1); renderBar(); };
+      /* Started inside a promise: a synchronous throw from `fetch` (a stub,
+         a policy, an extension) must reject like any other failure rather
+         than escape and leave the counter and the sender's flag set. */
+      return Promise.resolve().then(function () { return post(cmd); })
+        .then(function (reply) { settle(); return reply; }, function (e) { settle(); throw e; })
+        .then(function (reply) {
         if (!reply || !reply.ok) throw new Error((reply && reply.error) || "refused");
         if (reply.seq === 0) {
           resync();
@@ -1781,7 +2398,68 @@
       const seq = events.length ? events[events.length - 1].seq : 0;
       const applied = core.applyFrame(S.state, { seq: seq, events: kept }, cursor);
       S.applied += applied.length;
+      trackPending(applied);
       return applied;
+    }
+
+    /* A question is pending from the moment the server accepted it until
+       the agent writes into the same thread (or the page-level panel),
+       whichever tab asked. */
+    function trackPending(events) {
+      events.forEach(function (e) {
+        const d = e.data || {};
+        if (e.type === "chat.sent" && e.actor === "reviewer") {
+          pendingSet(d.thread || "page");
+        } else if ((e.type === "chat.sent" || e.type === "thread.replied") && e.actor === "agent") {
+          delete S.pending[d.thread || "page"];
+        } else if (e.type === "thread.deleted") {
+          delete S.pending[d.thread];
+        }
+      });
+    }
+
+    function pendingSet(key, since) {
+      if (S.pending[key]) return;
+      S.pending[key] = { since: since || Date.now() };
+      const left = Math.max(0, core.settings.stillWaitingMs - (Date.now() - S.pending[key].since));
+      window.setTimeout(function () { if (S.pending[key]) renderAll(); }, left + 50);
+    }
+
+    /* The event stream says when a question was asked; the state says
+       whether it has been answered. Reconciled before every render, so a
+       snapshot that carried the answer, a reload, a second tab, and a
+       resolution all end (or start) the working state the same way. A
+       question thread's last turn by the reviewer is a question waiting;
+       an ask inside a comment thread is only known from the event, and is
+       cleared the same way once the agent has written after it. */
+    function reconcilePending() {
+      const seen = {};
+      S.state.threads.forEach(function (t) {
+        const open = t.status === "open" || t.status === "unanchored";
+        const last = t.messages[t.messages.length - 1];
+        const waiting = !!last && last.actor === "reviewer" && open;
+        if (t.asked && waiting) {
+          pendingSet(t.id, Date.parse(last.ts) || Date.now());
+        } else if (!waiting) {
+          delete S.pending[t.id];
+        }
+        seen[t.id] = true;
+      });
+      Object.keys(S.pending).forEach(function (key) {
+        if (key !== "page" && !seen[key]) delete S.pending[key];
+      });
+      const chat = S.state.chat[S.state.chat.length - 1];
+      if (chat && chat.actor === "reviewer") pendingSet("page", Date.parse(chat.ts) || Date.now());
+      else delete S.pending.page;
+    }
+
+    /* What the working row says: the mark's state and a line. */
+    function pendingLabel(key) {
+      const p = S.pending[key];
+      if (!p) return null;
+      if (!S.state.presence) return { state: "off", text: "waiting for an agent\u2026" };
+      if (Date.now() - p.since > core.settings.stillWaitingMs) return { state: "waiting", text: "still waiting\u2026" };
+      return { state: "working", text: "thinking\u2026" };
     }
 
     function ping() {
@@ -2024,9 +2702,38 @@
             }
             revisionNotice(e, applied);
             break;
-          case "nudge":
-            notice("nudge", (e.data && e.data.text) || "The agent asked for your attention.", { dismiss: true });
+          case "nudge": {
+            const text = (e.data && e.data.text) || "The agent asked for your attention.";
+            const stop = e.data && e.data.interrupt;
+            /* A nudge is a line in the panel. An interrupt is the agent
+               saying it has stopped and cannot go on without an answer:
+               that one takes the page. */
+            if (stop) {
+              panelEvent("nudge", text);
+              interrupt("blocked", {
+                /* No key. The two causes the page works out for itself are
+                   re-derived on every render and need one; this one does
+                   not. A nudge is never written to the log, so it is never
+                   replayed -- and `seq` on an unlogged event is whatever
+                   the cursor happened to be, so two different questions
+                   sent with nothing logged between them carry the same
+                   number. Keying on it swallowed the second one in
+                   silence, which is the one failure an interrupt must not
+                   have. The agent chose to interrupt; the page shows it. */
+                title: stop.title || "The agent needs an answer",
+                body: text,
+                ref: stop.ref || null,
+                onGo: function () {
+                  if (!S.ui.chatOpen) setPanelOpen(true);
+                  if (stop.ref) aimPanel(stop.ref, null, null);
+                },
+              });
+            } else {
+              notice("nudge", text, { dismiss: true });
+              panelEvent("nudge", text);
+            }
             break;
+          }
           case "server.stopping":
             S.stopping = true;
             notice("stopping", "The server is stopping. This page will try to reconnect.");
@@ -2056,6 +2763,8 @@
         const composer = active.closest("[data-composer]");
         if (composer) {
           focus = { composer: composer.getAttribute("data-composer"), start: active.selectionStart, end: active.selectionEnd };
+        } else if (active.closest(".pv-panel-composer")) {
+          focus = { panel: true, start: active.selectionStart, end: active.selectionEnd };
         }
       }
       const anchors = [];
@@ -2083,16 +2792,30 @@
         placed = true;
       }
       if (!placed) window.scrollTo({ top: view.scrollY, left: 0, behavior: "instant" });
-      if (view.focus) {
-        const box = document.querySelector('[data-composer="' + view.focus.composer + '"] textarea');
-        if (box) {
-          box.focus({ preventScroll: true });
-          try { box.setSelectionRange(view.focus.start, view.focus.end); } catch (e) { /* ignore */ }
-        }
-      }
+      /* A thread's input is created by the render that follows the mount,
+         which may wait on a snapshot; if the box is not here yet the focus
+         is kept and applied by the next render. */
+      if (view.focus && !applyFocus(view.focus)) S.ui.pendingFocus = view.focus;
+    }
+
+    function applyFocus(f) {
+      const box = f.panel
+        ? document.querySelector(".pv-panel-composer textarea")
+        : document.querySelector('[data-composer="' + f.composer + '"] textarea');
+      if (!box) return false;
+      box.focus({ preventScroll: true });
+      try { box.setSelectionRange(f.start, f.end); } catch (e) { /* ignore */ }
+      return true;
     }
 
     function swapBody(html, revision) {
+      /* Whatever the dialog was about, it was about the revision that is
+         being replaced. Take it down before the body goes, and drop
+         anything queued behind it for the same reason. */
+      if (S.ui.closeInterrupt) {
+        S.ui.interruptNext = null;
+        S.ui.closeInterrupt(false);
+      }
       const view = captureView();
       const doc = new DOMParser().parseFromString(html, "text/html");
       const next = doc.body;
@@ -2136,19 +2859,49 @@
       renderNotices();
     }
 
+    /* One component for everything the page says on its own. Each kind has
+       a kicker (who is speaking) and a state for the mark. */
+    const NOTICE_KINDS = {
+      sent: { kicker: "Review sent", mark: "" },
+      revision: { kicker: "New revision", mark: "" },
+      nudge: { kicker: null, mark: "" },
+      noagent: { kicker: "No agent", mark: "off" },
+      stopping: { kicker: "Server stopping", mark: "off" },
+      gone: { kicker: "Server gone", mark: "off" },
+      lost: { kicker: "Signed out", mark: "off" },
+    };
+
+    function noticeNode(kind, n) {
+      const spec = NOTICE_KINDS[kind];
+      const node = el("div", { class: "pv-notice", dataset: { kind: kind }, title: n.title });
+      node.appendChild(agentMark(spec.mark));
+      /* The kicker sits beside the text, not inside it, so the text is
+         only ever what was said. */
+      const text = el("span", { class: "pv-notice-text" });
+      text.appendChild(richText(n.text));
+      node.appendChild(el("span", { class: "pv-notice-body" },
+        el("span", { class: "pv-notice-kicker", text: spec.kicker || agentTitle() }), text));
+      const actions = el("span", { class: "pv-notice-actions" });
+      if (n.action) actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet pv-notice-action", text: n.action, onclick: n.onAction }));
+      if (n.dismiss) actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet pv-notice-dismiss", text: "Dismiss", "aria-label": "Dismiss", onclick: function () { notice(kind, null); } }));
+      if (actions.childNodes.length) node.appendChild(actions);
+      return node;
+    }
+
     function renderNotices() {
       const host = noticeHost();
       host.replaceChildren();
-      ["sent", "revision", "nudge", "stopping", "gone", "lost"].forEach(function (kind) {
-        const n = S.ui["notice:" + kind];
+      ["sent", "revision", "nudge", "noagent", "stopping", "gone", "lost"].forEach(function (kind) {
+        let n = S.ui["notice:" + kind];
+        /* Derived, not stored: a question is waiting and nobody holds the
+           lease. It goes the moment an agent attaches. */
+        if (kind === "noagent") {
+          n = S.connected && !S.state.presence && Object.keys(S.pending).length
+            ? { text: "No agent is attached. Your question waits for one." }
+            : null;
+        }
         if (!n) return;
-        const node = el("div", { class: "pv-notice", dataset: { kind: kind }, title: n.title });
-        const text = el("span", { class: "pv-notice-text" });
-        text.appendChild(richText(n.text));
-        node.appendChild(text);
-        if (n.action) node.appendChild(el("button", { type: "button", class: "pv-textbtn pv-notice-action", text: n.action, onclick: n.onAction }));
-        if (n.dismiss) node.appendChild(el("button", { type: "button", class: "pv-textbtn pv-notice-dismiss", text: "Dismiss", "aria-label": "Dismiss", onclick: function () { notice(kind, null); } }));
-        host.appendChild(node);
+        host.appendChild(noticeNode(kind, n));
       });
     }
 
@@ -2156,17 +2909,26 @@
        it. Without it a Send review that worked looked like one that did
        nothing, and got clicked four times. */
     function sentNotice() {
+      /* Counted against the plan on screen, not against everything the log
+         remembers. The fold keeps an answer and a reviewed mark after a
+         revision removes the element they were about, so counting the
+         state's own keys reported more tasks reviewed than the plan has --
+         and the bar beside this notice, which walks the page, disagreed
+         with it. */
       const threads = S.state.threads.filter(function (t) { return t.status !== "unanchored"; });
-      const answers = Object.keys(S.state.answers).filter(function (q) { return S.state.answers[q]; }).length;
+      const taskEls = S.root ? S.root.querySelectorAll('.task[data-plan-ref^="task:"]') : [];
+      let reviewed = 0;
+      Array.prototype.forEach.call(taskEls, function (t) {
+        if (S.state.reviewed.indexOf(t.getAttribute("data-plan-ref")) >= 0) reviewed++;
+      });
+      const open = (S.state.plan && S.state.plan.open_questions) || [];
+      const answers = open.filter(function (q) { return S.state.answers[q.id]; }).length;
       const parts = [];
       parts.push(threads.length + (threads.length === 1 ? " comment" : " comments"));
       parts.push(answers + (answers === 1 ? " answer" : " answers"));
-      const tasks = S.root ? S.root.querySelectorAll('.task[data-plan-ref^="task:"]').length : 0;
-      let k = 0;
-      S.state.reviewed.forEach(function (r) { if (r.indexOf("task:") === 0) k++; });
-      parts.push(k + " of " + tasks + " tasks reviewed");
+      parts.push(reviewed + " of " + taskEls.length + " tasks reviewed");
       notice("sent",
-        (S.approve ? "Approval sent" : "Review sent") + " for revision " + S.state.revision + ": "
+        (S.state.verdict === "approve" ? "Approval sent" : "Review sent") + " for revision " + S.state.revision + ": "
           + parts.join(", ") + ". The agent has it."
           + (S.state.presence ? "" : " No agent is attached; it will be delivered when one is."),
         { dismiss: true });
@@ -2187,6 +2949,8 @@
       const orphaned = core.unanchored(S.state).length;
       if (orphaned) text += " " + orphaned + (orphaned === 1 ? " thread lost its element." : " threads lost their elements.");
       notice("revision", text, { dismiss: true, title: S.previousTitle ? "Previously: " + S.previousTitle : null });
+      panelEvent("revision", "revision " + S.state.revision + " pushed");
+      interruptForOrphans();
     }
 
     /* ---- presence ----------------------------------------------------- */
@@ -2196,17 +2960,43 @@
       if (S.gone) return { mode: "off", text: "server gone" };
       if (!S.connected) return { mode: "off", text: "reconnecting" };
       const p = S.state.presence;
-      if (!p) return { mode: "none", text: "no agent" };
-      return { mode: p.mode, text: "agent " + (p.mode === "live" ? "live" : "waiting"), agent: p.agent };
+      if (!p) return { mode: "off", text: S.ui.lastAgent ? S.ui.lastAgent + " left" : "no agent" };
+      if (Object.keys(S.pending).length) {
+        return { mode: "working", text: p.agent + " working", agent: p.agent };
+      }
+      return { mode: p.mode, text: p.agent + (p.mode === "live" ? " live" : " waiting"), agent: p.agent };
+    }
+
+    /* The mark's state for a presence mode: live is the mark at rest. */
+    function markStateFor(mode) {
+      return mode === "live" ? "" : mode === "working" ? "working" : mode === "waiting" ? "waiting" : "off";
     }
 
     function renderPresence() {
       const pill = document.querySelector(".pv-presence");
       if (!pill) return;
       const l = presenceLabel();
-      pill.textContent = l.text;
+      /* The agent coming and going is part of the conversation: the panel
+         says so once per change. Nothing is said until the page has its
+         first snapshot, or a load would report the agent arriving. */
+      const here = !!S.state.presence;
+      if (S.state.presence && S.state.presence.agent) S.ui.lastAgent = S.state.presence.agent;
+      if (!S.syncing && S.state.lastSeq > 0) {
+        if (S.ui.agentHere !== undefined && S.ui.agentHere !== here) {
+          const who = S.ui.lastAgent || "the agent";
+          panelEvent("presence", here ? who + " is here" : who + " left");
+        }
+        S.ui.agentHere = here;
+      }
+      pill.querySelector(".pv-presence-text").textContent = l.text;
       pill.setAttribute("data-mode", l.mode);
+      setMarkState(pill.querySelector(".ag-mark"), markStateFor(l.mode));
       pill.title = l.agent ? l.agent + " holds the lease" : "";
+      /* An attached agent is the normal case, and a header that announces
+         the normal case is a header a reader learns to stop reading. The
+         pill says something only when nobody is there to hear them: no
+         agent, a dropped connection, a stopped server, a signed-out page. */
+      pill.hidden = l.mode !== "off";
       const hint = document.querySelector(".pv-chat-hint");
       if (hint) hint.textContent = presenceLine("message");
       document.querySelectorAll(".composer-presence").forEach(function (n) {
@@ -2218,26 +3008,72 @@
        the banner promise the agent hears a question now; this is where
        the promise is qualified when no agent holds the lease. */
     function presenceLine(what) {
+      const who = agentName();
       return S.state.presence
-        ? "The agent hears this at once."
+        ? (who ? who + " hears this at once." : "The agent hears this at once.")
         : "No agent is attached. Your " + what + " will wait for one.";
     }
 
     function mountPresence(root) {
       const host = root.querySelector(".pv-topbar-right");
       if (!host || host.querySelector(".pv-presence")) return;
-      host.insertBefore(el("span", { class: "pv-presence", dataset: { mode: "none" }, text: "no agent" }), host.firstChild);
+      host.insertBefore(el("span", { class: "pv-presence", dataset: { mode: "off" } },
+        agentMark("off"), el("span", { class: "pv-presence-text", text: "no agent" })), host.firstChild);
     }
 
     /* ---- threads ----------------------------------------------------- */
 
-    function actorLabel(actor) {
-      return actor === "agent" ? "agent" : actor === "server" ? "server" : "you";
+    /* Who the agent is, by name, for anything the page says about it.
+
+       A message carries the name of whoever wrote it, so a turn keeps its
+       author even after that agent has gone. Anything the page says about
+       right now takes whoever holds the lease, and failing that the last
+       one seen, so the name survives a detach. A static export, and a page
+       written before the name was recorded, fall back to "agent" -- which
+       is what the page said everywhere until now. */
+    function agentName(message) {
+      const written = message && message.agent;
+      if (written) return written;
+      if (S.state.presence && S.state.presence.agent) return S.state.presence.agent;
+      return S.ui.lastAgent || "";
+    }
+
+    function agentTitle(message) {
+      return agentName(message) || "agent";
+    }
+
+    function actorLabel(actor, message) {
+      if (actor === "agent") return agentTitle(message);
+      return actor === "server" ? "server" : "you";
+    }
+
+    /* Circle for the machine, square for the person, same weight. */
+    function avatar(actor, message) {
+      if (actor === "agent") {
+        return el("span", { class: "pv-avatar", title: agentTitle(message) }, agentMark(""));
+      }
+      return el("span", { class: "pv-avatar is-you", title: actorLabel(actor) });
+    }
+
+    function whenLabel(ts) {
+      const d = ts ? new Date(ts) : null;
+      if (!d || isNaN(d.getTime())) return "";
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function messageNode(m, i) {
+      return el("div", { class: "thread-msg", dataset: { actor: m.actor, index: String(i) }, title: m.ts },
+        avatar(m.actor, m),
+        el("div", { class: "thread-msg-body" },
+          el("span", { class: "thread-actor", text: actorLabel(m.actor, m) }),
+          el("p", { class: "thread-text", text: m.text })));
     }
 
     function renderThread(node, t) {
       node.setAttribute("data-status", t.status);
+      node.setAttribute("data-kind", t.asked ? "question" : "comment");
       node.classList.toggle("is-asked", !!t.asked);
+      node.classList.toggle("is-blocking", !!t.blocking);
       node.querySelector(".thread-label").textContent = t.asked ? "Question" : "Comment";
       node.querySelector(".thread-status").textContent = t.status;
       node.querySelector(".thread-status").className = "thread-status pv-chip pv-chip-" + t.status;
@@ -2245,44 +3081,78 @@
       const target = node.querySelector(".thread-target");
       target.hidden = t.status !== "unanchored";
       target.textContent = "was on " + t.target;
+      const first = t.messages[0];
+      const when = node.querySelector(".thread-when");
+      when.textContent = first ? whenLabel(first.ts) : "";
+      when.title = first ? first.ts : "";
+      /* A resolved thread's closing note is marked by the server as a
+         note, not a turn: it is shown as the resolution with the verdict
+         chip, wherever it sits, and a reply after it stays a reply. */
+      const resolved = t.status === "changed" || t.status === "declined";
+      let noteAt = -1;
+      t.messages.forEach(function (m, i) { if (m.note && resolved) noteAt = i; });
+      const last = t.messages[noteAt];
       const msgs = node.querySelector(".thread-msgs");
       msgs.replaceChildren();
       t.messages.forEach(function (m, i) {
-        msgs.appendChild(el("div", { class: "thread-msg", dataset: { actor: m.actor, index: String(i) }, title: m.ts },
-          el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
-          el("p", { class: "thread-text", text: m.text })));
+        if (i !== noteAt) msgs.appendChild(messageNode(m, i));
       });
+      /* From the question until the answer: the mark at work, or what it
+         is waiting for. Not a message, so counts of messages stay true. */
+      const pending = pendingLabel(t.id);
+      if (pending) {
+        msgs.appendChild(el("div", { class: "thread-working", dataset: { actor: "agent" } },
+          el("span", { class: "pv-avatar" }, agentMark(pending.state)),
+          el("div", { class: "thread-msg-body" },
+            el("span", { class: "thread-actor", text: agentTitle() }),
+            el("p", { class: "thread-text", text: pending.text }))));
+      }
+      const resolution = node.querySelector(".thread-resolution");
+      resolution.hidden = noteAt < 0;
+      if (noteAt >= 0) {
+        resolution.replaceChildren(
+          avatar("agent", last),
+          el("div", { class: "thread-msg-body" },
+            el("span", { class: "thread-actor" }, document.createTextNode(agentTitle(last)),
+              el("span", { class: "pv-chip pv-chip-" + t.status, text: t.status })),
+            el("p", { class: "thread-text", text: last.text })));
+      }
       const open = t.status === "open" || t.status === "unanchored";
       node.querySelector(".thread-edit").hidden = !open;
       node.querySelector(".thread-delete").hidden = !open;
-      /* On a question thread every follow-up is for the agent, and a Reply
-         there would wait for the sent review: the trap this thread kind
-         exists to remove. Ask the agent is the one way to write in it. */
-      node.querySelector(".thread-reply").hidden = !!t.asked;
+      /* Only comment threads are rendered on an element: a question is a
+         conversation, and it lives in the panel. */
     }
 
     function threadNode(t) {
       const node = el("div", { class: "thread", dataset: { thread: t.id } });
+      /* No id in the head: `c-3` is the agent's handle for the thread, kept
+         on the node as data-thread and shown to nobody. */
       node.appendChild(el("div", { class: "thread-head" },
         el("span", { class: "thread-label", text: "Comment" }),
-        el("span", { class: "thread-id", text: t.id }),
         el("span", { class: "thread-status pv-chip", text: t.status }),
         el("span", { class: "thread-blocking", text: "blocks approval" }),
-        el("span", { class: "thread-target", hidden: true })));
+        el("span", { class: "thread-target", hidden: true }),
+        el("span", { class: "thread-when" })));
       node.appendChild(el("div", { class: "thread-msgs" }));
+      node.appendChild(el("div", { class: "thread-resolution", hidden: true }));
       const actions = el("div", { class: "thread-actions" });
-      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-reply", text: "Reply", onclick: function () {
+      actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet thread-reply", text: "Reply", onclick: function () {
         openComposer({ kind: "reply", thread: t.id, ref: t.target });
       } }));
-      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-ask", text: "Ask the agent", onclick: function () {
-        openComposer({ kind: "ask", thread: t.id, ref: t.target });
+      /* Not into this thread: a comment is feedback for the review, and a
+         question is a conversation. Asking here hands off to the panel,
+         aimed at the same element, where the element's question thread is
+         (or is opened). The comment stays where the reviewer left it. */
+      actions.appendChild(el("button", { type: "button", class: "pv-btn is-agent thread-ask", text: "Ask the agent", onclick: function () {
+        aimPanel(t.target, t.quote, null);
       } }));
-      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-edit", text: "Edit", onclick: function () {
+      actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet thread-edit", text: "Edit", onclick: function () {
         const current = S.state.threads.find(function (x) { return x.id === t.id; });
         openComposer({ kind: "edit", thread: t.id, ref: t.target, text: current && current.messages[0] ? current.messages[0].text : "" });
       } }));
       let armed = null;
-      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-delete", text: "Delete", onclick: function (ev) {
+      actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet thread-delete", text: "Delete", onclick: function (ev) {
         const btn = ev.currentTarget;
         if (armed) {
           clearTimeout(armed);
@@ -2319,7 +3189,7 @@
       if (!root) return;
       root.querySelectorAll(".pv-threads[data-threads-for]").forEach(function (host) {
         const ref = host.getAttribute("data-threads-for");
-        if (ref) renderThreadsIn(host, core.threadsOn(S.state, ref));
+        if (ref) renderThreadsIn(host, core.threadsOn(S.state, ref).filter(function (t) { return !t.asked; }));
       });
     }
 
@@ -2355,142 +3225,771 @@
 
     /* ---- the bar and the chat ---------------------------------------- */
 
+    function clock(d) {
+      return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    }
+
+    /* Whether closing the page now would leave something the agent has not
+       been sent: threads, answers, or marks on an unsent review. */
+    function unsentWork() {
+      if (S.state.submitted) return false;
+      return S.state.threads.some(function (t) { return t.status !== "unanchored"; })
+        || Object.keys(S.state.answers).some(function (q) { return S.state.answers[q]; })
+        || S.state.reviewed.length > 0;
+    }
+
     function renderBar() {
-      const bar = document.querySelector(".feedback-bar");
+      const bar = document.querySelector(".pv-panel-foot");
       if (!bar) return;
       const threads = S.state.threads.filter(function (t) { return t.status !== "unanchored"; });
       const open = threads.filter(function (t) { return t.status === "open"; });
       const blocking = open.filter(function (t) { return t.blocking; }).length;
-      bar.querySelector(".feedback-bar-banner").textContent = "live review · rev " + S.state.revision;
-      bar.querySelector(".feedback-bar-blocking").textContent = blocking ? blocking + " blocking" : "";
-      bar.querySelector(".feedback-bar-count").textContent = threads.length + (threads.length === 1 ? " thread" : " threads");
       const taskEls = S.root ? S.root.querySelectorAll('.task[data-plan-ref^="task:"]') : [];
       let k = 0;
       taskEls.forEach(function (t) { if (S.state.reviewed.indexOf(t.getAttribute("data-plan-ref")) >= 0) k++; });
+      bar.querySelector(".feedback-bar-count").textContent = threads.length + (threads.length === 1 ? " thread" : " threads");
       bar.querySelector(".feedback-bar-reviewed").textContent = k + "/" + taskEls.length + " reviewed";
-      bar.querySelector(".feedback-bar-approve input").checked = S.approve;
-      const when = S.ui.sentAt
-        ? " · " + String(S.ui.sentAt.getHours()).padStart(2, "0") + ":" + String(S.ui.sentAt.getMinutes()).padStart(2, "0")
-        : "";
-      bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent · rev " + S.state.revision + when : "";
-      const send = bar.querySelector(".feedback-bar-send");
-      send.disabled = S.lost || S.submitting;
-      if (!send.classList.contains("is-sent")) {
-        send.textContent = S.submitting ? "Sending…"
-          : S.state.submitted ? (S.approve ? "Send approval again" : "Send again")
-            : S.approve ? "Send approval" : "Send review";
-      }
+      bar.querySelector(".feedback-bar-blocking").textContent = blocking ? blocking + " blocking" : "";
+      /* The state line: everything written is on the server the moment it
+         is accepted, and the line says so. Leaving is not losing. */
+      const state = bar.querySelector(".feedback-bar-state");
+      const leaving = S.ui.leftAt && Date.now() - S.ui.leftAt < 4000;
+      state.classList.toggle("is-saving", S.inflight > 0);
+      state.querySelector(".feedback-bar-state-text").textContent = S.inflight > 0
+        ? "Saving\u2026"
+        : leaving
+          ? "Saved. The agent sees your notes when you send them."
+          : "Saved \u00b7 rev " + S.state.revision;
+      const when = S.ui.sentAt ? " \u00b7 " + clock(S.ui.sentAt) : "";
+      bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent \u00b7 rev " + S.state.revision + when : "";
+      bar.classList.toggle("is-sent", !!S.state.submitted);
+      /* Two verdicts, one group; the one that was sent is the filled control. */
+      const request = bar.querySelector(".feedback-bar-send");
+      const approve = bar.querySelector(".feedback-bar-approve");
+      request.disabled = S.lost || S.submitting;
+      approve.disabled = S.lost || S.submitting;
+      request.classList.toggle("is-filled", !!S.state.submitted && S.state.verdict !== "approve");
+      approve.classList.toggle("is-filled", !!S.state.submitted && S.state.verdict === "approve");
+    }
+
+    function submitReview(verdict) {
+      if (S.submitting) return;
+      S.submitting = true;
+      renderBar();
+      const button = function () {
+        return document.querySelector(verdict === "approve" ? ".feedback-bar-approve" : ".feedback-bar-send");
+      };
+      send({ cmd: "review.submit", verdict: verdict, base_revision: S.state.revision })
+        .then(function () {
+          S.submitting = false;
+          S.ui.sentAt = new Date();
+          sentNotice();
+          renderBar();
+          const btn = button();
+          if (btn) {
+            cleared(btn);
+            /* One short pulse on the button the reviewer is looking at. */
+            btn.classList.add("is-sent");
+            setTimeout(function () { btn.classList.remove("is-sent"); }, 2000);
+          }
+        })
+        .catch(function (e) {
+          S.submitting = false;
+          renderBar();
+          failed(button(), e);
+        });
+    }
+
+    /* Leaving with unsent work: say once that nothing is lost. No dialog,
+       nothing blocks; the line in the bar changes for a few seconds. */
+    function wireLeaving() {
+      if (S.ui.leaveWired) return;
+      S.ui.leaveWired = true;
+      const note = function () {
+        if (!unsentWork()) return;
+        S.ui.leftAt = Date.now();
+        renderBar();
+        window.setTimeout(renderBar, 4200);
+      };
+      document.addEventListener("visibilitychange", function () { if (document.visibilityState === "hidden") note(); });
+      window.addEventListener("pagehide", note);
     }
 
     function renderChat() {
       const log = document.querySelector(".pv-chat-log");
       if (!log) return;
       log.replaceChildren();
-      S.state.chat.forEach(function (m) {
-        log.appendChild(el("div", { class: "pv-chat-msg", dataset: { actor: m.actor }, title: m.ts },
-          el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
-          el("p", { class: "thread-text", text: m.text })));
+      const entries = conversationEntries();
+      const lastOf = {};
+      entries.forEach(function (e, i) { if (!e.event) lastOf[e.key] = i; });
+      entries.forEach(function (e, i) {
+        if (e.event) {
+          if (e.kind === "nudge") {
+            const nudge = el("div", { class: "pv-panel-nudge" }, el("span", { class: "pv-notice-kicker", text: agentTitle() }));
+            nudge.appendChild(richText(e.text));
+            log.appendChild(nudge);
+          } else {
+            log.appendChild(el("div", { class: "pv-panel-event is-revision", text: e.text }));
+          }
+          return;
+        }
+        const actorRow = el("span", { class: "thread-actor" }, document.createTextNode(actorLabel(e.actor, e)));
+        if (e.ref) actorRow.appendChild(chipFor(e.ref, e.unanchored));
+        if (e.note) actorRow.appendChild(el("span", { class: "pv-ctx is-resolution", text: e.status }));
+        actorRow.appendChild(el("span", { class: "thread-when", text: whenLabel(e.ts) }));
+        const attrs = { class: "pv-panel-msg" + (e.key === "page" ? " pv-chat-msg" : ""), dataset: { actor: e.actor }, title: e.ts };
+        if (e.key !== "page") attrs.dataset.thread = e.key;
+        const body = el("div", { class: "pv-panel-msg-body" }, actorRow,
+          el("p", { class: "thread-text", text: e.text }));
+        const lift = answerLift(e);
+        if (lift) body.appendChild(lift);
+        log.appendChild(el("div", attrs, avatar(e.actor, e), body));
+        /* From the question until the answer: the mark at work, right
+           after the last message of that thread. */
+        if (lastOf[e.key] === i) {
+          const pending = pendingLabel(e.key);
+          if (pending) {
+            const wattrs = { class: "pv-panel-msg thread-working" + (e.key === "page" ? " pv-chat-working" : ""), dataset: { actor: "agent" } };
+            if (e.key !== "page") wattrs.dataset.thread = e.key;
+            log.appendChild(el("div", wattrs,
+              el("span", { class: "pv-avatar" }, agentMark(pending.state)),
+              el("div", { class: "pv-panel-msg-body" },
+                el("span", { class: "thread-actor", text: agentTitle() }),
+                el("p", { class: "thread-text", text: pending.text }))));
+          }
+        }
       });
-      log.hidden = S.state.chat.length === 0;
-      const panel = document.querySelector(".pv-chat");
-      if (panel) panel.hidden = !S.ui.chatOpen;
-    }
-
-    /* An open panel always has somewhere to write. A body swap rebuilds
-       the panel and restores composers from drafts only; a composer nobody
-       has typed into has no draft, so it is opened again here — after the
-       drafts, so a stored one is not joined by an empty twin. */
-    function ensureChatComposer() {
-      const panel = document.querySelector(".pv-chat");
-      if (S.ui.chatOpen && panel && !panel.querySelector(".composer")) {
-        /* Under a stable id, so a swap re-creates it as the same composer
-           and focus finds its way back (spec 4.3), draft or no draft. */
-        if (!S.ui.chatComposerId) S.ui.chatComposerId = newId("composer");
-        openComposer({ kind: "chat", silent: true, lazy: true, id: S.ui.chatComposerId });
-      }
+      /* Shown first, then scrolled: a log inside a `display: none` dock has
+         no scrollHeight, and the render that opens the panel would land it
+         at the top of the conversation rather than at the newest message. */
+      const dock = document.querySelector(".pv-dock");
+      if (dock) dock.classList.toggle("is-hidden", !S.ui.chatOpen);
+      const handle = document.querySelector(".pv-panel-handle");
+      if (handle) handle.hidden = !!S.ui.chatOpen;
+      /* The count is how many things have been said. A zero beside the word
+         reads as a status rather than a tally, so an empty conversation
+         shows the word alone. */
+      const messages = entries.filter(function (e) { return !e.event; }).length;
+      document.querySelectorAll(".pv-panel-count").forEach(function (n) {
+        n.textContent = messages ? String(messages) : "";
+        n.hidden = !messages;
+        n.title = messages === 1 ? "1 message" : messages + " messages";
+      });
+      if (S.ui.panelFollow !== false) log.scrollTop = log.scrollHeight;
+      renderPanelComposer();
     }
 
     /* One line, until the reviewer says they have read it: the difference
        between a comment and a question is the one thing the page cannot
        show by layout alone. Stored only on dismissal, so a page nobody
        dismissed writes nothing. */
+    /* The ask control carries its label until the reviewer has asked once
+       on this browser; after that the mark alone is the control, with the
+       label in its tooltip and in the bar. Stored on the first ask. */
+    const ASKED_KEY = "artefacto.asked";
+    function askedOnce() {
+      try { return window.localStorage.getItem(ASKED_KEY) === "1"; } catch (e) { return false; }
+    }
+    function markAsked() {
+      try { window.localStorage.setItem(ASKED_KEY, "1"); } catch (e) { /* an opaque origin; the label stays */ }
+      document.querySelectorAll("[data-plan-ref] .ask-btn.is-labelled").forEach(function (b) { b.classList.remove("is-labelled"); });
+    }
+
+    /* The ask control on an element that already has a question is tinted,
+       and a click there goes to that thread's input rather than opening a
+       second question. */
+    function askedThreadOn(ref) {
+      return S.state.threads.find(function (t) {
+        return t.asked && t.target === ref && (t.status === "open" || t.status === "unanchored");
+      });
+    }
+    function renderAskMarks() {
+      if (!S.root) return;
+      /* The acceptance rows of a task share the task's ref and each carry
+         their own mark. The count and the spine belong to the element, so
+         only the first mark for a ref gets them. */
+      const seen = {};
+      S.root.querySelectorAll(".ask-btn[data-ask-for]").forEach(function (b) {
+        const ref = b.getAttribute("data-ask-for");
+        const first = !seen[ref];
+        seen[ref] = true;
+        const threads = S.state.threads.filter(function (t) { return t.asked && t.target === ref; });
+        const count = threads.reduce(function (n, t) { return n + t.messages.length; }, 0);
+        b.classList.toggle("has-thread", !!askedThreadOn(ref));
+        let badge = b.querySelector(".ask-count");
+        if (count && first && !badge) { badge = el("span", { class: "ask-count" }); b.appendChild(badge); }
+        if (badge) { if (count) badge.textContent = String(count); else badge.remove(); }
+        /* The element with a discussion: a spine, and a one-line preview of
+           the last message after the controls (not on criterion rows, which
+           have no room). */
+        const element = b.closest("[data-plan-ref]");
+        if (element) element.classList.toggle("is-discussed", first && count > 0);
+        const row = b.closest(".el-actions");
+        if (!first || !row || row.closest(".acceptance")) return;
+        let preview = row.parentNode.querySelector(":scope > .ask-preview");
+        const last = threads.length ? threads[threads.length - 1] : null;
+        const msg = last && last.messages.length ? last.messages[last.messages.length - 1] : null;
+        if (!msg) { if (preview) preview.remove(); return; }
+        if (!preview) {
+          preview = el("button", { type: "button", class: "ask-preview", title: "Open the conversation" });
+          /* The thread is read off the node, not closed over: a later render
+             re-points the preview at the newest conversation. */
+          preview.addEventListener("click", function () {
+            if (!S.ui.chatOpen) setPanelOpen(true);
+            const target = document.querySelector('.pv-panel-msg[data-thread="' + preview.getAttribute("data-thread") + '"]');
+            if (target) target.scrollIntoView({ block: "nearest" });
+          });
+          row.insertAdjacentElement("afterend", preview);
+        }
+        preview.setAttribute("data-thread", last.id);
+        preview.replaceChildren(avatar(msg.actor, msg), el("span", { class: "ask-preview-text", text: msg.text }));
+      });
+    }
+
     const HINT_KEY = "artefacto.hint.ask";
     function hintDismissed() {
       try { return window.localStorage.getItem(HINT_KEY) === "1"; } catch (e) { return false; }
     }
 
-    function mountBar(root) {
-      if (root.querySelector(".feedback-bar")) return;
-      const bar = el("div", { class: "feedback-bar is-served" });
+    /* The conversation panel: one place for everything said to and by the
+       agent, docked beside the sheet. Closed by default; a floating handle
+       (the mark with the message count) and a top-bar link open it, the X
+       in its head hides it, and the choice is kept per browser. Its foot
+       holds the state line and the two verdicts, so the served page has no
+       bottom bar. */
+    function panelStored() {
+      try { return window.localStorage.getItem(PANEL_KEY) === "open"; } catch (e) { return false; }
+    }
+
+    /* Whether this browser has ever opened the panel. Until it has, the
+       handle carries its name: the verdict lives in there, and a reviewer
+       who has not seen it yet has no other way to know. */
+    function panelKnown() {
+      try { return window.localStorage.getItem(PANEL_KEY) !== null; } catch (e) { return false; }
+    }
+
+    function setPanelOpen(open) {
+      S.ui.chatOpen = open;
+      try { window.localStorage.setItem(PANEL_KEY, open ? "open" : "closed"); } catch (e) { /* best effort */ }
+      document.querySelectorAll(".pv-panel-handle.is-labelled").forEach(function (h) { h.classList.remove("is-labelled"); });
+      renderChat();
+      if (open) {
+        const ta = document.querySelector(".pv-panel-composer textarea");
+        if (ta) ta.focus({ preventScroll: true });
+      }
+    }
+
+    /* A question the reviewer talked through is still an unanswered
+       question: the conversation and the answer field are two different
+       places, and nothing joined them. Working out what the reviewer
+       decided from a thread is not the page's to guess, so it offers the
+       one thing it can be sure of -- this is what you said, make it the
+       answer -- on the reviewer's own messages in a thread about an open
+       question. One click, no retyping, and the answer is theirs. */
+    /* The open question a ref names, or "".
+    
+       Built from the questions rather than parsed out of the ref: slicing a
+       prefix off and looking the tail up needs two guards that each only
+       cover what the other misses, and a plan whose question id is the tail
+       of another element's ref slips between them. Comparing whole refs
+       cannot. */
+    function refQuestion(ref) {
+      const questions = (S.state.plan && S.state.plan.open_questions) || [];
+      const found = questions.find(function (q) { return "question:" + q.id === ref; });
+      return found ? found.id : "";
+    }
+
+    function answerLift(entry) {
+      /* A resolution note needs no clause of its own: it is the agent's,
+         and only the reviewer's own words can become the reviewer's
+         answer. */
+      if (entry.actor !== "reviewer") return null;
+      if (!entry.text) return null;
+      const question = refQuestion(entry.ref);
+      if (!question) return null;
+      const already = (S.state.answers[question] || "") === entry.text;
+      const row = el("div", { class: "pv-panel-lift" });
+      row.appendChild(el("button", {
+        type: "button", class: "pv-btn pv-panel-lift-btn",
+        text: already ? "This is your answer" : "Use as your answer",
+        title: already
+          ? "The question carries this, word for word"
+          : "Record this as your answer to the question",
+        disabled: already || undefined,
+        onclick: function () { answerWith(question, entry.text); },
+      }));
+      return row;
+    }
+
+    function answerWith(question, text) {
+      send({
+        cmd: "question.answer", question: question, text: text,
+        opened_revision: S.state.revision,
+      }).catch(function () { /* the bar's state line says it failed */ });
+    }
+
+    /* Everything said to and by the agent, in time order: the page-level
+       chat, every question thread's messages, and the panel's own events
+       (a revision, a nudge). Comment threads stay on their elements. */
+    function conversationEntries() {
+      const out = [];
+      /* Sorted by time, but each source's own order wins inside it: the
+         server stamps whole seconds and the page's own events carry
+         milliseconds, so an answer would otherwise sort ahead of the
+         question it answers. Carrying a running maximum per source keeps a
+         thread in its own order without flattening the page's finer stamps.
+         Ties keep insertion order. */
+      const run = function (m, floor) { return Math.max(floor, Date.parse(m.ts) || 0); };
+      let at = 0;
+      S.state.chat.forEach(function (m, i) {
+        at = run(m, at);
+        out.push({ at: at, ts: m.ts, actor: m.actor, agent: m.agent, text: m.text, key: "page", index: i });
+      });
+      S.state.threads.forEach(function (t) {
+        if (!t.asked) return;
+        let tat = 0;
+        t.messages.forEach(function (m, i) {
+          tat = run(m, tat);
+          out.push({ at: tat, ts: m.ts, actor: m.actor, agent: m.agent, text: m.text, key: t.id,
+            ref: t.target, index: i,
+            note: !!m.note, status: t.status, unanchored: t.status === "unanchored" });
+        });
+      });
+      S.ui.panelEvents.forEach(function (ev) {
+        out.push({ at: Date.parse(ev.ts) || 0, event: true, kind: ev.kind, text: ev.text, ts: ev.ts });
+      });
+      out.sort(function (a, b) { return a.at - b.at; });
+      return out;
+    }
+
+    function panelEvent(kind, text) {
+      S.ui.panelEvents.push({ kind: kind, text: text, ts: nowIso() });
+      renderChat();
+    }
+
+    /* The context chip: which element a message is about. A link into the
+       page: it scrolls the element into view and flashes it. */
+    function chipFor(ref, gone) {
+      const target = ref ? findRef(S.root, ref) : null;
+      const title = target ? elementQuote(target) : ref || "";
+      if (gone || !target) {
+        /* The element left in a revision: the chip says so rather than
+           offering a jump to nowhere. */
+        return el("span", { class: "pv-ctx is-gone", title: ref || "" },
+          el("span", { class: "pv-ctx-kind", text: ref ? refKind(ref) : "plan" }),
+          el("span", { class: "pv-ctx-title", text: "element gone" }));
+      }
+      const chip = el("button", { type: "button", class: "pv-ctx", title: ref || "" },
+        el("span", { class: "pv-ctx-kind", text: refKind(ref) }),
+        el("span", { class: "pv-ctx-title", text: title.slice(0, 48) }));
+      chip.addEventListener("click", function () { jumpTo(ref); });
+      return chip;
+    }
+
+    function jumpTo(ref) {
+      const target = findRef(S.root, ref);
+      if (!target) return;
+      const details = target.closest("details.phase");
+      if (details && details !== target && phaseIsShut(details)) setPhaseOpen(details, true, false);
+      if (target.tagName === "DETAILS" && phaseIsShut(target)) setPhaseOpen(target, true, false);
+      target.scrollIntoView({ block: "center" });
+      target.classList.remove("is-jumped");
+      void target.offsetWidth;
+      target.classList.add("is-jumped");
+    }
+
+    /* Aim the panel's composer at an element (or at a thread on it), open
+       the panel, and put the cursor in the input. */
+    function aimPanel(ref, quote, thread) {
+      const existing = ref && !thread ? askedThreadOn(ref) : null;
+      S.ui.panel.ref = ref || null;
+      S.ui.panel.quote = quote || null;
+      S.ui.panel.thread = thread || (existing ? existing.id : null);
+      savePanelDraft();
+      if (!S.ui.chatOpen) setPanelOpen(true);
+      renderPanelComposer();
+      const ta = document.querySelector(".pv-panel-composer textarea");
+      if (ta) ta.focus({ preventScroll: true });
+    }
+
+    function panelComposer() {
+      const composer = el("div", { class: "pv-panel-composer" });
+      const targetLine = el("div", { class: "pv-panel-target", hidden: true },
+        el("span", { class: "pv-panel-target-label", text: "asking about" }),
+        el("span", { class: "pv-panel-target-chip" }),
+        el("button", { type: "button", class: "pv-btn is-quiet pv-panel-target-clear", text: "the whole plan instead",
+          onclick: function () {
+            S.ui.panel.ref = null; S.ui.panel.thread = null; S.ui.panel.quote = null;
+            savePanelDraft();
+            renderPanelComposer();
+          } }));
+      const box = el("div", { class: "thread-composer" });
+      const ta = el("textarea", { rows: "1", placeholder: "Ask the agent\u2026", "aria-label": "Ask the agent" });
+      const hint = el("span", { class: "thread-composer-hint" });
+      const sendBtn = el("button", { type: "button", class: "pv-btn is-agent thread-composer-send composer-send", text: "Send" });
+      box.appendChild(agentMark(""));
+      box.appendChild(ta);
+      box.appendChild(hint);
+      box.appendChild(sendBtn);
+      ta.value = S.ui.panel.text || "";
+      const grow = function () { ta.rows = Math.min(6, ta.value.split("\n").length); };
+      grow();
+      ta.addEventListener("input", function () {
+        /* Spec 4.3: what the reviewer writes carries the revision it was
+           written against, not the one showing when they press send. The
+           stamp is taken the moment they start writing, because that is
+           the plan they were reading. */
+        if (!S.ui.panel.text && ta.value) S.ui.panel.revision = S.state.revision;
+        if (!ta.value) S.ui.panel.revision = null;
+        S.ui.panel.text = ta.value;
+        savePanelDraft();
+        grow();
+      });
+      ta.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); sendPanel(); }
+      });
+      sendBtn.addEventListener("click", sendPanel);
+      composer.appendChild(targetLine);
+      composer.appendChild(box);
+      return composer;
+    }
+
+    function renderPanelComposer() {
+      const composer = document.querySelector(".pv-panel-composer");
+      if (!composer) return;
+      const p = S.ui.panel;
+      /* A target thread that is gone (deleted, or a snapshot without it)
+         is dropped; the text stays, aimed at the plan as a whole. */
+      if (p.thread && !S.syncing && S.state.lastSeq > 0 && !S.state.threads.some(function (t) { return t.id === p.thread; })) {
+        p.thread = null;
+        p.ref = null;
+        p.quote = null;
+        savePanelDraft();
+      }
+      const line = composer.querySelector(".pv-panel-target");
+      const aimed = !!(p.ref || p.thread);
+      line.hidden = !aimed;
+      if (aimed) {
+        const thread = p.thread ? S.state.threads.find(function (t) { return t.id === p.thread; }) : null;
+        const ref = p.ref || (thread ? thread.target : null);
+        const chipHost = line.querySelector(".pv-panel-target-chip");
+        chipHost.replaceChildren(chipFor(ref, thread && thread.status === "unanchored"));
+      }
+      composer.querySelector(".thread-composer-hint").textContent = S.state.presence ? "Enter to send" : "waits for an agent";
+      setMarkState(composer.querySelector(".thread-composer .ag-mark"), S.state.presence ? "" : "off");
+      composer.querySelector(".thread-composer-send").disabled = !!S.ui.panelSending;
+    }
+
+    /* One send at a time, keyed by the panel, not by its node: a body swap
+       while the send is in flight rebuilds the panel, and the reply must
+       clear and re-enable the live input. */
+    function sendPanel() {
+      const ta = document.querySelector(".pv-panel-composer textarea");
+      const text = ta ? ta.value.trim() : "";
+      if (!text || S.ui.panelSending) return;
+      const p = S.ui.panel;
+      const cmd = {
+        cmd: "chat.send", text: text,
+        opened_revision: p.revision || S.state.revision,
+      };
+      const existing = p.ref && !p.thread ? askedThreadOn(p.ref) : null;
+      if (p.thread) {
+        cmd.thread = p.thread;
+      } else if (existing) {
+        cmd.thread = existing.id;
+      } else if (p.ref) {
+        const target = findRef(S.root, p.ref);
+        cmd.ref = p.ref;
+        cmd.quote = p.quote || (target ? elementQuote(target) : "");
+      }
+      S.ui.panelSending = true;
+      renderPanelComposer();
+      send(cmd)
+        .then(function () {
+          S.ui.panelSending = false;
+          /* The box stays editable while a send is in the air, so what is
+             in it now may be a second question rather than the one that
+             just went. Clearing regardless threw that away with no trace,
+             which is the one failure this composer exists to prevent. */
+          const box = document.querySelector(".pv-panel-composer textarea");
+          const typing = box && box.value.trim() !== text;
+          if (typing) {
+            S.ui.panel.text = box.value;
+            S.ui.panel.revision = S.ui.panel.revision || S.state.revision;
+          } else {
+            S.ui.panel = { text: "", ref: null, thread: null, quote: null, revision: null };
+          }
+          savePanelDraft();
+          markAsked();
+          renderPanelComposer();
+          if (box && !typing) { box.value = ""; box.rows = 1; box.focus({ preventScroll: true }); }
+          const btn = document.querySelector(".pv-panel-composer .thread-composer-send");
+          if (btn) cleared(btn);
+        })
+        .catch(function (e) {
+          S.ui.panelSending = false;
+          renderPanelComposer();
+          const btn = document.querySelector(".pv-panel-composer .thread-composer-send");
+          if (btn) failed(btn, e);
+        });
+    }
+
+    function mountPanel(root) {
+      if (root.querySelector(".pv-dock")) return;
+      const sheet = root.querySelector(".pv-sheet");
+      if (!sheet) return;
+      const shell = el("div", { class: "pv-shell" });
+      sheet.parentNode.insertBefore(shell, sheet);
+      shell.appendChild(sheet);
+
+      const panel = el("div", { class: "pv-panel" });
+      panel.appendChild(el("div", { class: "pv-panel-head" },
+        el("span", { class: "pv-panel-title", text: "Conversation" }),
+        el("span", { class: "pv-chat-hint" }),
+        el("button", { type: "button", class: "pv-btn is-quiet pv-panel-hide", "aria-label": "Hide conversation",
+          title: "Hide conversation", text: "\u00d7", onclick: function () { setPanelOpen(false); } })));
       if (!hintDismissed()) {
         const hint = el("div", { class: "feedback-bar-hint" },
-          el("span", { class: "feedback-bar-hint-text", text: "Comments wait for your review; \u201cAsk the agent\u201d reaches the agent now." }),
-          el("button", { type: "button", class: "pv-textbtn feedback-bar-hint-dismiss", text: "Got it", onclick: function () {
+          agentMark(""),
+          el("span", { class: "feedback-bar-hint-text", text: "Comments wait for your review; a question here reaches the agent now." }),
+          el("button", { type: "button", class: "pv-btn is-quiet feedback-bar-hint-dismiss", text: "Got it", onclick: function () {
             try { window.localStorage.setItem(HINT_KEY, "1"); } catch (e) { /* an opaque origin; the hint returns next time */ }
             hint.remove();
           } }));
-        bar.appendChild(hint);
+        panel.appendChild(hint);
       }
-      bar.appendChild(el("span", { class: "feedback-bar-banner" }));
-      bar.appendChild(el("span", { class: "feedback-bar-blocking" }));
-      bar.appendChild(el("span", { class: "feedback-bar-count" }));
-      bar.appendChild(el("span", { class: "feedback-bar-reviewed" }));
-      bar.appendChild(el("span", { class: "feedback-bar-sent" }));
-      bar.appendChild(el("button", { type: "button", class: "pv-textbtn feedback-bar-chat", text: "Ask the agent", onclick: function () {
-        S.ui.chatOpen = !S.ui.chatOpen;
-        /* The reviewer has seen the panel; a draft in it no longer opens
-           it on their behalf. */
-        S.ui.chatDraftShown = true;
-        if (S.ui.chatOpen) {
-          renderChat();
-          openComposer({ kind: "chat" });
-        } else {
-          /* Closing with nothing written is not a draft worth keeping. */
-          document.querySelectorAll(".pv-chat .composer").forEach(function (c) {
-            const ta = c.querySelector("textarea");
-            if (ta && !ta.value.trim()) { dropDraft(c.getAttribute("data-composer")); c.remove(); }
-          });
-          renderChat();
-        }
-      } }));
-      const approve = el("input", { type: "checkbox" });
-      approve.addEventListener("change", function () { S.approve = approve.checked; renderBar(); });
-      bar.appendChild(el("label", { class: "feedback-bar-approve" }, approve, el("span", { text: "Approve" })));
-      const sendBtn = el("button", { type: "button", class: "feedback-bar-send", text: "Send review", onclick: function () {
-        if (S.submitting) return;
-        S.submitting = true;
-        renderBar();
-        send({ cmd: "review.submit", verdict: S.approve ? "approve" : "comment", base_revision: S.state.revision })
-          .then(function () {
-            S.submitting = false;
-            S.ui.sentAt = new Date();
-            sentNotice();
-            renderBar();
-            const btn = document.querySelector(".feedback-bar-send");
-            cleared(btn);
-            /* One short pulse on the button the reviewer is looking at. */
-            if (btn) {
-              btn.classList.add("is-sent");
-              btn.textContent = "Sent ✓";
-              setTimeout(function () { btn.classList.remove("is-sent"); renderBar(); }, 2000);
-            }
-          })
-          .catch(function (e) {
-            S.submitting = false;
-            renderBar();
-            failed(document.querySelector(".feedback-bar-send") || sendBtn, e);
-          });
-      } });
-      bar.appendChild(sendBtn);
-      root.appendChild(bar);
+      const log = el("div", { class: "pv-panel-log pv-chat-log" });
+      /* Follow the newest message unless the reviewer has scrolled up. */
+      log.addEventListener("scroll", function () {
+        S.ui.panelFollow = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+      });
+      panel.appendChild(log);
+      panel.appendChild(panelComposer());
+      const foot = el("div", { class: "pv-panel-foot" });
+      foot.appendChild(el("span", { class: "feedback-bar-state" },
+        el("span", { class: "pv-dot" }), el("span", { class: "feedback-bar-state-text" })));
+      foot.appendChild(el("span", { class: "feedback-bar-counts" },
+        el("span", { class: "feedback-bar-count" }),
+        el("span", { class: "feedback-bar-reviewed" }),
+        el("span", { class: "feedback-bar-blocking is-alarm" })));
+      foot.appendChild(el("span", { class: "feedback-bar-sent" }));
+      /* Two verdicts on the plan, one group. Request changes is enabled with
+         nothing written: it is a verdict on the plan, not on the comments. */
+      const verdict = el("div", { class: "feedback-bar-verdict", role: "group", "aria-label": "Your verdict" });
+      verdict.appendChild(el("button", { type: "button", class: "pv-btn is-alarm feedback-bar-send", text: "Request changes",
+        onclick: function () { submitReview("request_changes"); } }));
+      verdict.appendChild(el("button", { type: "button", class: "pv-btn feedback-bar-approve", text: "Approve",
+        onclick: function () { submitReview("approve"); } }));
+      foot.appendChild(verdict);
+      panel.appendChild(foot);
 
-      const chat = el("div", { class: "pv-chat", hidden: !S.ui.chatOpen });
-      chat.appendChild(el("div", { class: "pv-chat-head" },
-        el("span", { class: "pv-chat-title", text: "Ask the agent about the plan" }),
-        el("span", { class: "pv-chat-hint" })));
-      chat.appendChild(el("div", { class: "pv-chat-log" }));
-      chat.appendChild(el("div", { class: "pv-chat-composers" }));
-      root.appendChild(chat);
+      const dock = el("aside", { class: "pv-dock", "aria-label": "Conversation with the agent" });
+      dock.appendChild(panel);
+      shell.appendChild(dock);
+
+      /* The handle: always in reach, the mark with the count. It keeps the
+         old bar button's class so a page that opened the chat that way
+         still does. */
+      root.appendChild(el("button", { type: "button",
+        class: "pv-panel-handle feedback-bar-chat" + (panelKnown() ? "" : " is-labelled"),
+        "aria-label": "Open the conversation with the agent", title: "Conversation",
+        onclick: function () { setPanelOpen(!S.ui.chatOpen); } },
+        agentMark(""),
+        el("span", { class: "pv-panel-handle-label", text: "Conversation" }),
+        el("span", { class: "pv-panel-count" })));
+      /* One way in, not two: the floating handle is always in reach and
+         steps aside when the panel is open, so the bar carries nothing
+         about the conversation. */
+      wireLeaving();
+    }
+
+    /* ---- the interrupt ------------------------------------------------
+
+       A panel message waits; an interrupt does not. The page dims, the plan
+       stops, one sentence says what is needed and one button gets the
+       reviewer there. Three causes and no others: the agent is blocked on
+       an answer only the reviewer can give, a revision moved what they
+       commented on, or the review has been left hanging. Everything else is
+       a line in the panel.
+
+       One at a time, and once per cause: an interrupt the reviewer has
+       dismissed does not come back for the same reason. */
+    const INTERRUPT = {
+      blocked: { kind: "blocking", kicker: null, action: "Answer in the conversation" },
+      revision: { kind: "revision", kicker: "The ground moved", action: "Show me" },
+      hanging: { kind: "", kicker: "The review is waiting", action: "Open the conversation" },
+    };
+
+    function interrupt(cause, opts) {
+      const o = opts || {};
+      const spec = INTERRUPT[cause];
+      if (!spec) return;
+      /* A cause with a key is one the page works out for itself and would
+         otherwise raise on every render; a cause without one is the agent
+         deciding to interrupt, and that is never second-guessed. An empty
+         key is not a key: keyed as one it made every stop after the first
+         disappear. */
+      const said = o.key ? cause + ":" + o.key : null;
+      if (said && S.ui.interrupted[said]) return;
+      /* One dialog at a time, but the second is not thrown away: the agent
+         says it has stopped once, and the nudge that carried it is never
+         logged, so dropping it loses the message. It waits in one slot and
+         goes up when the first closes. A blocked one displaces whatever is
+         waiting, because it is the only cause a reviewer cannot recover on
+         their own. */
+      if (S.ui.interrupt) {
+        if (cause === "blocked" || !S.ui.interruptNext || S.ui.interruptNext.cause !== "blocked") {
+          S.ui.interruptNext = { cause: cause, opts: o };
+        }
+        return;
+      }
+      S.ui.interrupt = cause;
+      if (said) S.ui.interrupted[said] = true;
+      /* "claude is blocked" rather than "the agent is blocked": the reviewer
+         is talking to a session with a name, and the dialog is the loudest
+         place to say which one. */
+      const kicker = spec.kicker || (agentTitle() + " is blocked");
+      const dim = el("div", { class: "ag-dim" });
+      const box = el("div", { class: "ag-interrupt", role: "dialog", "aria-modal": "true",
+        dataset: { kind: spec.kind, cause: cause }, "aria-labelledby": "ag-interrupt-title" });
+      box.appendChild(el("div", { class: "ag-interrupt-head" },
+        agentMark(cause === "hanging" ? "waiting" : ""),
+        el("span", { class: "ag-interrupt-kicker", text: kicker }),
+        el("span", { class: "ag-interrupt-when", text: whenLabel(nowIso()) })));
+      box.appendChild(el("h2", { class: "ag-interrupt-title", id: "ag-interrupt-title", text: o.title || kicker }));
+      const body = el("p", { class: "ag-interrupt-body" });
+      body.appendChild(richText(o.body || ""));
+      box.appendChild(body);
+      if (o.ref) box.appendChild(el("span", { class: "ag-interrupt-ctx" }, chipFor(o.ref, o.gone)));
+      const actions = el("div", { class: "ag-interrupt-actions" });
+      const go = el("button", { type: "button", class: "pv-btn is-lg is-filled ag-interrupt-go", text: o.action || spec.action });
+      const not = el("button", { type: "button", class: "pv-btn is-quiet ag-interrupt-not", text: "Not now" });
+      actions.appendChild(go);
+      actions.appendChild(not);
+      box.appendChild(actions);
+      let timer = null;
+      if (o.dismissAfterMs) {
+        const bar = el("div", { class: "ag-interrupt-timer" }, el("span"));
+        box.appendChild(bar);
+        const span = bar.querySelector("span");
+        const started = Date.now();
+        span.style.width = "100%";
+        timer = window.setInterval(function () {
+          const left = 1 - (Date.now() - started) / o.dismissAfterMs;
+          span.style.width = Math.max(0, left) * 100 + "%";
+          if (left <= 0) close();
+        }, 200);
+      }
+      dim.appendChild(box);
+
+      const previous = document.activeElement;
+      const close = function (taken) {
+        if (timer) window.clearInterval(timer);
+        document.removeEventListener("keydown", onKey, true);
+        dim.remove();
+        document.documentElement.classList.remove("is-interrupted");
+        S.ui.interrupt = null;
+        S.ui.closeInterrupt = null;
+        if (previous && previous.focus && document.contains(previous)) {
+          previous.focus({ preventScroll: true });
+        }
+        if (taken && o.onGo) o.onGo();
+        const next = S.ui.interruptNext;
+        if (next) {
+          S.ui.interruptNext = null;
+          interrupt(next.cause, next.opts);
+        }
+      };
+      /* The one handle anything else needs: a body swap has to take the
+         dialog down itself, because `replaceChildren` would destroy the
+         backdrop and leave the scroll lock on with nothing on screen. */
+      S.ui.closeInterrupt = close;
+      /* Escape is Not now, and Tab stays inside: an interrupt the reviewer
+         cannot leave with the keyboard is a trap, not a dialog. */
+      const onKey = function (e) {
+        if (e.key === "Escape") { e.preventDefault(); close(false); return; }
+        if (e.key !== "Tab") return;
+        const focusable = box.querySelectorAll("button, [href], textarea, input");
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      };
+      go.addEventListener("click", function () { close(true); });
+      not.addEventListener("click", function () { close(false); });
+      dim.addEventListener("mousedown", function (e) { if (e.target === dim) close(false); });
+      document.addEventListener("keydown", onKey, true);
+      /* On the root, not the body: a revision replaces the body's children,
+         and a backdrop that lives there goes with them. */
+      document.documentElement.appendChild(dim);
+      document.documentElement.classList.add("is-interrupted");
+      go.focus({ preventScroll: true });
+    }
+
+    /* The quiet-spell check runs on its own clock; a test shortens the
+       settings and restarts it. */
+    function restartHangingCheck() {
+      if (S.ui.hangingTimer) window.clearInterval(S.ui.hangingTimer);
+      S.ui.hangingTimer = window.setInterval(hangingCheck, core.settings.hangingCheckMs);
+    }
+    S.restartHangingCheck = restartHangingCheck;
+
+    /* The two the page sees for itself. */
+
+    /* A revision left a thread the reviewer wrote in hanging on an element
+       that is no longer in the plan. Once per revision. */
+    function interruptForOrphans() {
+      const orphans = core.unanchored(S.state);
+      if (!orphans.length) return;
+      const t = orphans[0];
+      interrupt("revision", {
+        key: "rev" + S.state.revision,
+        title: orphans.length === 1
+          ? "A revision moved what you commented on"
+          : "A revision moved " + orphans.length + " things you commented on",
+        body: "Revision " + S.state.revision + " no longer has the element your "
+          + (t.asked ? "question" : "comment") + " was about. It is kept, with what you wrote.",
+        /* No `gone` flag: an unanchored thread's element is, by the same
+           rule the server folds by, not in the plan the page is showing,
+           so the chip finds nothing and says so on its own. */
+        ref: t.target,
+        onGo: function () {
+          if (t.asked) {
+            if (!S.ui.chatOpen) setPanelOpen(true);
+            const node = document.querySelector('.pv-panel-msg[data-thread="' + t.id + '"]');
+            if (node) node.scrollIntoView({ block: "nearest" });
+          } else {
+            const panel = document.querySelector(".pv-recovery");
+            if (panel) panel.scrollIntoView({ block: "center" });
+          }
+        },
+      });
+    }
+
+    /* The review is the last thing the agent is waiting on, and nobody has
+       touched the page for three minutes. Once per quiet spell. */
+    function hangingCheck() {
+      if (S.ui.interrupt || S.state.submitted || !S.state.presence) return;
+      const idleFor = Date.now() - (S.lastPing || Date.now());
+      if (idleFor < core.settings.hangingAfterMs) return;
+      const blocking = S.state.threads.filter(function (t) { return t.blocking && t.status === "open"; });
+      const questions = (S.state.plan && S.state.plan.open_questions) || [];
+      const unanswered = questions.filter(function (q) { return q.blocking && !S.state.answers[q.id]; });
+      if (!blocking.length && !unanswered.length) return;
+      const what = blocking.length ? "comment" : "question";
+      interrupt("hanging", {
+        /* Keyed by the revision alone. Keying it by the blocking thing as
+           well meant that adding a blocking comment after dismissing this
+           raised it again in the same quiet spell. */
+        key: "rev" + S.state.revision,
+        title: "The agent is waiting on you",
+        body: "Your verdict has not been sent and a blocking " + what
+          + " is still open. Nothing moves until one of those does.",
+        ref: blocking.length ? blocking[0].target : "question:" + unanswered[0].id,
+        dismissAfterMs: core.settings.hangingDismissMs,
+        onGo: function () { if (!S.ui.chatOpen) setPanelOpen(true); },
+      });
     }
 
     /* ---- the recovery panel -------------------------------------------
@@ -2501,7 +4000,7 @@
        thread survives the next render. */
     function renderRecovery() {
       let panel = document.querySelector(".pv-recovery");
-      const orphans = core.unanchored(S.state);
+      const orphans = core.unanchored(S.state).filter(function (t) { return !t.asked; });
       const drafts = orphanedDrafts();
       if (!orphans.length && !drafts.length) { if (panel) panel.remove(); return; }
       if (!panel) {
@@ -2526,9 +4025,9 @@
       list.replaceChildren();
       drafts.forEach(function (d) {
         const row = el("div", { class: "pv-orphan-draft", dataset: { composer: d.id } });
-        row.appendChild(el("span", { class: "pv-orphan-draft-what", text: draftLabel(d) + " — its element is gone" }));
+        row.appendChild(el("span", { class: "pv-orphan-draft-what", text: draftLabel(d) + " \u2014 its element is gone" }));
         row.appendChild(el("p", { class: "thread-text", text: d.text }));
-        row.appendChild(el("button", { type: "button", class: "pv-textbtn", text: "Discard", onclick: function () {
+        row.appendChild(el("button", { type: "button", class: "pv-btn is-quiet", text: "Discard", onclick: function () {
           dropDraft(d.id);
           renderRecovery();
         } }));
@@ -2563,7 +4062,6 @@
        a reply. */
     function draftTarget(d) {
       if (!S.root) return null;
-      if (d.kind === "chat") return document.querySelector(".pv-chat-composers");
       if (d.kind === "comment" || d.kind === "answer" || (d.kind === "ask" && !d.thread)) {
         /* By ref, not by descent: a phase contains its tasks, and the
            first `.pv-composers` under a phase is its first task's. */
@@ -2649,26 +4147,29 @@
       ta.value = d.text;
       ta.addEventListener("input", function () { d.text = ta.value; saveDraft(d); });
       box.appendChild(ta);
-      if (d.kind === "ask") box.appendChild(el("span", { class: "composer-presence", text: presenceLine("question") }));
+      /* One foot row: what the composer says about itself on the left (the
+         blocking toggle, or who hears a question), the actions on the right. */
+      const foot = el("div", { class: "comment-box-foot" });
+      if (d.kind === "ask") foot.appendChild(el("span", { class: "composer-presence", text: presenceLine("question") }));
       let blockingBox = null;
       if (d.kind === "comment") {
         blockingBox = el("input", { type: "checkbox" });
         blockingBox.checked = d.blocking;
         blockingBox.addEventListener("change", function () { d.blocking = blockingBox.checked; saveDraft(d); });
-        box.appendChild(el("label", { class: "comment-box-blocking" }, blockingBox, warningIcon(), "Blocks approval"));
+        foot.appendChild(el("label", { class: "comment-box-blocking" }, blockingBox, warningIcon(), "Blocks approval"));
       }
       const actions = el("div", { class: "comment-box-actions" });
-      const sendBtn = el("button", { type: "button", class: "composer-send", text: d.kind === "comment" ? "Add" : "Send" });
-      const cancelBtn = el("button", { type: "button", class: "composer-cancel", text: "Cancel" });
+      const sendBtn = el("button", { type: "button", class: "pv-btn " + (d.kind === "ask" ? "is-agent" : "is-primary") + " composer-send", text: d.kind === "comment" ? "Add" : "Send" });
+      const cancelBtn = el("button", { type: "button", class: "pv-btn is-quiet composer-cancel", text: "Cancel" });
       actions.appendChild(sendBtn);
       actions.appendChild(cancelBtn);
-      box.appendChild(actions);
+      foot.appendChild(actions);
+      box.appendChild(foot);
       /* Closed by id, not by this node: a body swap while the send is in
          flight re-creates the composer from its draft, and the reply must
          close that one. */
       const close = function () {
         dropDraft(d.id);
-        if (S.ui.chatComposerId === d.id) S.ui.chatComposerId = null;
         document.querySelectorAll('[data-composer="' + d.id + '"]').forEach(function (n) { n.remove(); });
         renderRecovery();
       };
@@ -2676,17 +4177,13 @@
          write the next one. */
       const afterSend = function () {
         close();
-        if (d.kind === "chat") ensureChatComposer();
+        if (d.kind === "ask" || d.kind === "chat") markAsked();
       };
       cancelBtn.addEventListener("click", function () {
         close();
         /* An open panel always gets a composer back, so cancelling the
            chat's is closing the chat. */
-        if (d.kind === "chat") {
-          S.ui.chatOpen = false;
-          S.ui.chatDraftShown = true;
-          renderChat();
-        }
+        if (d.kind === "chat") setPanelOpen(false);
       });
       sendBtn.addEventListener("click", function () {
         const text = ta.value.trim();
@@ -2742,14 +4239,24 @@
       const map = loadDraftMap();
       for (const id in map) {
         const d = map[id];
+        /* A page-level draft from the build whose chat floated over the
+           bar: the panel is where it belongs now. */
+        if (d.kind === "chat") {
+          const box = document.querySelector(".pv-panel-composer textarea");
+          if (d.text && !S.ui.panel.text && box && !box.value) {
+            S.ui.panel.text = d.text;
+            S.ui.panel.revision = d.revision || S.state.revision;
+            savePanelDraft();
+            box.value = d.text;
+            box.rows = Math.min(6, d.text.split("\n").length);
+          }
+          dropDraft(id);
+          continue;
+        }
         if (!draftTarget(d)) continue;
         /* A message half-written is not hidden behind a closed panel:
            the first time the page finds it, the panel opens. Once. A
            reviewer who then closes the panel has chosen. */
-        if (d.kind === "chat" && d.text && !S.ui.chatDraftShown) {
-          S.ui.chatDraftShown = true;
-          if (!S.ui.chatOpen) { S.ui.chatOpen = true; renderChat(); }
-        }
         openComposer({ id: d.id, clientId: d.clientId, kind: d.kind, ref: d.ref, thread: d.thread,
           revision: d.revision, text: d.text, blocking: d.blocking, quote: d.quote, silent: true });
       }
@@ -2783,14 +4290,13 @@
         /* Asking is offered wherever commenting is, and looks different:
            a comment waits for the sent review, a question reaches the
            agent now. The two share one row. */
-        const ask = el("button", { type: "button", class: "ask-btn", title: "Ask the agent",
-          "aria-label": "Ask the agent about this" });
-        ask.appendChild(askIcon());
+        const ask = el("button", { type: "button", class: "ask-btn" + (askedOnce() ? "" : " is-labelled"),
+          "aria-label": "Ask the agent about this", dataset: { label: "Ask the agent", askFor: ref } });
+        ask.appendChild(agentMark(""));
         ask.appendChild(el("span", { class: "ask-btn-label", text: "Ask the agent" }));
         ask.addEventListener("click", function (e) {
           e.stopPropagation();
-          if (target.tagName === "DETAILS" && phaseIsShut(target)) setPhaseOpen(target, true, true);
-          openComposer({ kind: "ask", ref: ref, quote: quote });
+          aimPanel(ref, quote, null);
         });
         (slots.btn || target).appendChild(el("span", { class: "el-actions" }, btn, ask));
         if (!first) return;
@@ -2801,10 +4307,10 @@
           const answer = el("div", { class: "pv-answer", dataset: { answerFor: q }, hidden: true },
             el("div", { class: "pv-answer-head" },
               el("span", { class: "pv-answer-label", text: "Your answer" }),
-              el("button", { type: "button", class: "pv-textbtn pv-answer-edit", text: "Edit", onclick: function () {
+              el("button", { type: "button", class: "pv-btn is-quiet pv-answer-edit", text: "Edit", onclick: function () {
                 openComposer({ kind: "answer", ref: ref, text: S.state.answers[q] || "" });
               } }),
-              el("button", { type: "button", class: "pv-textbtn pv-answer-remove", text: "Remove", onclick: function (ev) {
+              el("button", { type: "button", class: "pv-btn is-quiet pv-answer-remove", text: "Remove", onclick: function (ev) {
                 const btn = ev.currentTarget;
                 send({ cmd: "question.answer", question: q, text: "", opened_revision: S.state.revision })
                   .catch(function (e) { failed(btn, e); });
@@ -2872,8 +4378,10 @@
     }
 
     function renderAll() {
+      reconcilePending();
       renderPresence();
       renderThreads();
+      renderAskMarks();
       renderAnswers();
       renderReviewed();
       renderBar();
@@ -2881,8 +4389,8 @@
       renderNotices();
       renderRecovery();
       restoreDrafts();
-      ensureChatComposer();
       renderRecovery();
+      if (S.ui.pendingFocus && applyFocus(S.ui.pendingFocus)) S.ui.pendingFocus = null;
     }
 
     /* The render's orientation banner describes the static flow, which
@@ -2893,8 +4401,8 @@
         text.setAttribute("data-served", "");
         text.replaceChildren(
           document.createTextNode("This plan is under live review. "),
-          el("strong", { text: "Comment on anything, answer the questions, then send your review." }),
-          document.createTextNode(" Comments reach the agent with your review; \u201cAsk the agent\u201d reaches it now."));
+          el("strong", { text: "Comment on anything, ask the agent in the conversation, then give your verdict there." }),
+          document.createTextNode(" Everything you write is saved as you go."));
       }
       const steps = root.querySelector(".pv-banner-steps");
       if (steps && !steps.hasAttribute("data-served")) {
@@ -2902,7 +4410,7 @@
         steps.replaceChildren(
           el("b", { text: "01" }), document.createTextNode(" skim  "),
           el("b", { text: "02" }), document.createTextNode(" comment  "),
-          el("b", { text: "03" }), document.createTextNode(" send review"));
+          el("b", { text: "03" }), document.createTextNode(" verdict, in the conversation"));
       }
     }
 
@@ -2912,12 +4420,13 @@
       mountBanner(root);
       mountPresence(root);
       mountElements(root);
-      mountBar(root);
+      mountPanel(root);
       noticeHost();
       renderAll();
       if (!S.socket && !S.lost) connect();
       /* Arriving is activity; a body swap is not. */
       if (!S.lastPing) S.lastPing = Date.now();
+      restartHangingCheck();
     };
 
     S.activity = ping;
@@ -2928,7 +4437,8 @@
         connected: S.connected, page: S.pageId, syncing: S.syncing, gone: S.gone, lost: S.lost,
         reconnects: S.reconnects, applied: S.applied, revision: S.state.revision,
         planHash: S.state.planHash, lastSeq: S.state.lastSeq, presence: S.state.presence,
-        submitted: S.state.submitted, chat: S.state.chat.length, chatOpen: S.ui.chatOpen,
+        submitted: S.state.submitted, verdict: S.state.verdict,
+        chat: S.state.chat.length, chatOpen: S.ui.chatOpen,
         pending: Object.keys(S.pendingMarks).length,
         buffered: S.buffer.length,
         threads: S.state.threads.map(function (t) {
@@ -2951,6 +4461,8 @@
 
   core.debug = function () { return session ? session.debug() : null; };
   core.injectFrame = function (frame) { if (session) session.injectFrame(frame); };
+  /* For the browser tests: the quiet-spell check on a shortened clock. */
+  core.restartHangingCheck = function () { if (session) session.restartHangingCheck(); };
 
   /* Activity, once per document. Spec 6.2: scroll, keys, pointer, and
      visibility, throttled to one ping per 30 seconds -- so a reader who
@@ -3017,17 +4529,17 @@
       });
     });
     const ctl = root.querySelector("#phases-actions") || document.createElement("div");
-    if (ctl.querySelector(".pv-textbtn")) return;
+    if (ctl.querySelector(".pv-btn")) return;
     const expandBtn = document.createElement("button");
     expandBtn.type = "button";
-    expandBtn.className = "pv-textbtn";
+    expandBtn.className = "pv-btn is-quiet";
     expandBtn.textContent = "expand all";
     expandBtn.addEventListener("click", function () {
       collapsibles().forEach(function (d) { setPhaseOpen(d, true, true); });
     });
     const collapseBtn = document.createElement("button");
     collapseBtn.type = "button";
-    collapseBtn.className = "pv-textbtn";
+    collapseBtn.className = "pv-btn is-quiet";
     collapseBtn.textContent = "collapse all";
     collapseBtn.addEventListener("click", function () {
       collapsibles().forEach(function (d) { setPhaseOpen(d, false, true); });
@@ -3038,6 +4550,39 @@
     wirePrint();
   }
 
+  /* The orientation banner says what the page is and what to do with it.
+     That is worth one reading and no more, so it appears on the first open
+     of a plan in a browser and never again -- with a dismiss for a reader
+     who has it already. Keyed per plan, because the next plan is the first
+     time again for whoever is reviewing it.
+
+     Not a dialog: the modal is reserved for the three things that stop the
+     page (see `INTERRUPT`), and an explanation is not one of them. */
+  const INTRO_KEY = "artefacto.intro.";
+
+  function introSeen(key) {
+    try { return window.localStorage.getItem(INTRO_KEY + key) === "1"; } catch (e) { return true; }
+  }
+
+  function markIntroSeen(key) {
+    try { window.localStorage.setItem(INTRO_KEY + key, "1"); } catch (e) { /* an opaque origin: it shows once per load */ }
+  }
+
+  function mountIntro(root, key) {
+    const banner = root.querySelector(".pv-banner");
+    if (!banner || !key) return;
+    if (introSeen(key)) return banner.remove();
+    markIntroSeen(key);
+    if (!banner.querySelector(".pv-banner-dismiss")) {
+      banner.appendChild(el("button", {
+        /* The page's one button family, outlined: a dismiss that reads as
+           another label in the row is a dismiss nobody presses. */
+        type: "button", class: "pv-btn pv-banner-dismiss", text: "Got it",
+        onclick: function () { banner.remove(); },
+      }));
+    }
+  }
+
   function mount(root) {
     mounted.observers.forEach(function (o) { o.disconnect(); });
     mounted = { observers: [] };
@@ -3046,13 +4591,17 @@
        document whose island failed to parse still gets a usable shell. */
     mountThemeToggle(root);
     mountScrollCues(root);
+    mountMap(root);
 
     const islandEl = root.querySelector("#plan-data");
     if (!islandEl) return;
     let plan;
     try { plan = core.parseIsland(islandEl.textContent); } catch (e) { return; }
 
+    /* Keyed by the artifact when there is a server, and by the plan's own
+       id when there is not: a static export is still one plan. */
     const served = root.getAttribute("data-artefacto-artifact") || (session && session.artifact);
+    mountIntro(root, served || (plan.meta && plan.meta.id) || "");
     if (served) {
       if (!session) session = createSession(served);
       root.setAttribute("data-artefacto-artifact", served);

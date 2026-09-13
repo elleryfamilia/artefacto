@@ -451,6 +451,16 @@ fn build(review: &Review, artifact: &str, command: &Command) -> anyhow::Result<B
         } => {
             check_text(text)?;
             check_revision(*opened_revision)?;
+            /* Every other ref-bearing command checks that its element is in
+            the plan; this one did not, so an answer to a question the plan
+            does not have was accepted, written to the log, and handed to the
+            agent in the feedback document -- invisible on the page, because
+            there is no box to render it in. Empty text is let through: it is
+            how an answer is removed, and the question it was about may have
+            gone in the revision that prompted the removal. */
+            if !text.is_empty() && !refs.contains(&format!("question:{question}")) {
+                anyhow::bail!("no such element in this revision: question:{question}");
+            }
             Ok((
                 "question.answered",
                 serde_json::json!({ "question": question, "text": text, "opened_revision": opened_revision }),

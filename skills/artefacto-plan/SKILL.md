@@ -121,6 +121,32 @@ artefacto reply --session "$SESSION" --nudge "Still here. Comment or send the re
 Add `--artifact plan:<id>` when the server holds more than one artifact; the
 frame's events name it.
 
+### Stop the page when you are blocked
+
+A nudge waits its turn in the page's conversation. `--interrupt` does not: it
+dims the plan and puts a dialog in front of the reviewer. Use it for one case
+only -- **you have stopped work and cannot go on without an answer only the
+reviewer can give**:
+
+```bash
+artefacto reply --session "$SESSION" --nudge --interrupt \
+  --title "Which store should the Redis cache replace?" \
+  --ref task:t-session-store \
+  "I have stopped: the trait boundary depends on your answer."
+```
+
+`--title` is the one line the dialog leads with, at most 120 characters.
+`--ref` names the element the question is about, so the dialog carries it and
+its button aims the conversation there; it must be an element the plan has, or
+the reply is refused. Both require `--interrupt`, which requires `--nudge`.
+
+Do not use it to report progress, to ask something you can work around, or
+because the reviewer has been quiet -- `reviewer.idle` already has a nudge, and
+the page raises its own dialog when a revision moves what the reviewer
+commented on or when a finished review sits unsent. An interrupt the reviewer
+dismisses does not come back, so spending it on something that could wait
+costs you the one you needed.
+
 The events before the last one are passive: `thread.opened`,
 `thread.replied`, `thread.edited`, `thread.deleted`, `question.answered`,
 `element.reviewed`. Read them for context. Never revise the plan because of a
@@ -140,10 +166,13 @@ addressed twice and a second revision pushed for nothing.
 ### Answer a chat message
 
 `chat.sent` carries `data.text`, and `data.thread` when it was asked inside a
-comment thread. The page offers *Ask the agent* beside every *Comment*
-button; a question asked that way on an element with no thread yet opens
-one in the same event, so `data.thread` names the new thread and `data.ref`
-the element. Answer it in that thread. Such a thread is `asked: true` in
+thread. The reviewer asks from the page's conversation panel: the agent's
+mark beside every *Comment* button aims the panel at that element, and a
+question asked that way on an element with no thread yet opens one in the
+same event, so `data.thread` names the new thread and `data.ref` the
+element. Answer it in that thread; the reviewer sees the answer in the
+panel, with a chip naming the element it is about. A reply into a comment
+thread is a reply on that element, not part of the panel's conversation. Such a thread is `asked: true` in
 `status --json` and in the feedback document.
 
 1. **Check first**: the frame may be a redelivery after a crash, and a
@@ -163,7 +192,9 @@ artefacto reply --session "$SESSION" "Yes. I will add a rollback step to phase t
 ```
 
    The second form is page-level chat; add `--artifact plan:<id>` when the
-   server has more than one artifact. For long text, `--stdin`.
+   server has more than one artifact. Thread ids are per artifact, so add
+   it to the first form too when the same id exists on more than one (the
+   frame's events name the artifact). For long text, `--stdin`.
 3. If the answer changes the plan, push a new revision as well (the push in
    the next section, without `--resolutions`).
 4. Acknowledge.
@@ -242,6 +273,15 @@ artefacto resolve c-2 --session "$SESSION" --declined --note "Out of scope here;
 ```
 
 `--changed` is the other verdict.
+
+**Never say a question has been answered unless it has.** An open question
+is answered when `status --json` carries it under that artifact's `answers`,
+and nothing else counts: a conversation about it, however long, leaves it
+open. Writing "answered in this thread" in a resolution note when the
+`answers` map is empty tells the reviewer the plan is further along than it
+is. Say what was discussed, and say the question is still open. The reviewer
+can turn something they said in that thread into the answer with one click
+on the page; you cannot answer it for them.
 
 ## 4. Exit codes you branch on
 

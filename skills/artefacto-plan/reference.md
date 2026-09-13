@@ -266,7 +266,8 @@ artefacto await  [--timeout 90s] [--ack SEQ] [--since SEQ] [--artifact ID]
 artefacto events [--follow] [--ack SEQ] [--since SEQ] [--artifact ID]
                  [--agent NAME] [--session TOKEN] [--takeover]
 artefacto ack    --seq N --session TOKEN
-artefacto reply  --session TOKEN (--thread ID | [--artifact ID]) [--nudge] (<text> | --stdin)
+artefacto reply  --session TOKEN (--thread ID | [--artifact ID]) [--nudge]
+                 [--interrupt [--title TEXT] [--ref ELEMENT]] (<text> | --stdin)
 artefacto resolve <thread> --session TOKEN (--changed | --declined) [--note TEXT] [--artifact ID]
 
 artefacto status [--json]
@@ -288,7 +289,7 @@ artefacto skill  (--print | --install DIR)
 | `await` | one long poll: returns within `--timeout` (default 90s) with one JSON result; exits 0 whenever the server answered |
 | `events` | the backlog as NDJSON, then exits; with `--follow`, stays attached and prints each frame as it happens, exiting 0 when the server stops |
 | `ack` | acknowledges every event up to `--seq`; at or behind the cursor is a no-op |
-| `reply` | a message in a thread (`--thread`) or on the page (`--artifact`, omitted when the server has one artifact); `--nudge` posts a banner instead and logs nothing |
+| `reply` | a message in a thread (`--thread`) or on the page (`--artifact`, omitted when the server has one artifact); `--nudge` posts a banner instead and logs nothing; `--nudge --interrupt` stops the page with a dialog, for the one case in the skill (`--title` at most 120 characters, `--ref` must name an element the plan has) |
 | `resolve` | marks a thread `changed` or `declined`, with a note the reviewer reads in it |
 | `status` | the review as an agent needs it to rejoin; never the token |
 | `list` | every artifact for this repository, newest first, from the index; needs no server |
@@ -375,7 +376,8 @@ after the call.
 
 `reply`: `{ "ok": true, "artifact": "plan:auth-refactor", "thread": "c-3", "seq": 22 }`
 (`thread` is `null` for page-level chat; a `--nudge` prints
-`{ "ok": true, "nudge": true, "artifact": "…" }`).
+`{ "ok": true, "nudge": true, "artifact": "…" }`, with or without
+`--interrupt`).
 
 `resolve`: `{ "ok": true, "artifact": "…", "thread": "c-1", "status": "changed", "seq": 23 }`.
 
@@ -454,7 +456,8 @@ never cause a frame on their own; they arrive in the next frame an active
 event causes, or in a `timeout` result's tail.
 
 `nudge`, `agent.attached`, and `agent.detached` are announced to open pages
-and never logged; you do not receive them.
+and never logged; you do not receive them. An interrupt is a `nudge` carrying
+`data.interrupt`; a page that does not know the field shows the banner.
 
 ## The feedback document
 
@@ -469,7 +472,7 @@ comment text is free text written by the reviewer.
 | `format` | string | always `"artefacto.feedback/1"` |
 | `plan_id` | string | the plan's `meta.id` |
 | `plan_hash` | string | `sha256:…` of the revision reviewed |
-| `verdict` | `"approve"` \| `"comment"` \| `"request_changes"` | the reviewer's choice; `comment` becomes `request_changes` while any open comment blocks |
+| `verdict` | `"approve"` \| `"comment"` \| `"request_changes"` | the served page sends `approve` or `request_changes` (its two buttons); the static export sends `approve` or `comment`, and `comment` becomes `request_changes` while any open comment blocks |
 | `base_revision` | integer | the revision the review was made against |
 | `comments` | array\<Comment\> | every thread on the artifact, whatever its status |
 | `answers` | array | `{question, text}` for each answered open question |
