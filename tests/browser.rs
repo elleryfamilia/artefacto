@@ -4698,3 +4698,198 @@ fn a_long_plan_gets_ticks_instead_of_numerals() {
     page.screenshot(&screenshot_path("plan-strip-dense"));
     let _ = server;
 }
+
+#[test]
+fn the_agent_can_stop_the_page_when_it_is_blocked() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    // A plain nudge is a line in the panel and a notice: it waits.
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--artifact",
+            "plan:demo",
+            "--nudge",
+            "have a look at phase one",
+        ])
+        .success();
+    page.wait_until(
+        "!!document.querySelector('.pv-notice[data-kind=\"nudge\"]')",
+        "the nudge to land as a notice",
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-dim')"),
+        false,
+        "and not to stop the page"
+    );
+
+    // An interrupt does not wait.
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--artifact",
+            "plan:demo",
+            "--nudge",
+            "--interrupt",
+            "--title",
+            "Which store should Redis replace?",
+            "--ref",
+            "task:t-a",
+            "I have stopped: the trait boundary depends on your answer.",
+        ])
+        .success();
+    page.wait_until("!!document.querySelector('.ag-interrupt')", "the dialog");
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-title').textContent"),
+        "Which store should Redis replace?"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-body').textContent"),
+        "I have stopped: the trait boundary depends on your answer."
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt').dataset.kind"),
+        "blocking"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-ctx .pv-ctx').title"),
+        "task:t-a",
+        "the dialog says what it is about"
+    );
+    assert_eq!(
+        page.eval("document.activeElement === document.querySelector('.ag-interrupt-go')"),
+        true,
+        "focus moves into the dialog"
+    );
+    assert_eq!(
+        page.text("getComputedStyle(document.documentElement).overflow"),
+        "hidden",
+        "and the plan behind it does not scroll"
+    );
+    page.screenshot(&screenshot_path("interrupt-blocked"));
+
+    // Its button opens the conversation, aimed at what the agent asked about.
+    page.click(".ag-interrupt-go");
+    page.wait_until("!document.querySelector('.ag-dim')", "the dialog to close");
+    assert_eq!(
+        page.eval("!document.querySelector('.pv-dock').classList.contains('is-hidden')"),
+        true,
+        "the conversation is open"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-target .pv-ctx').title"),
+        "task:t-a",
+        "aimed where the agent asked"
+    );
+    assert_eq!(
+        page.text("getComputedStyle(document.documentElement).overflow"),
+        "visible",
+        "and the page scrolls again"
+    );
+
+    // The same interrupt does not come back: it was answered or dismissed.
+    page.eval(
+        "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 997, events: [] })",
+    );
+    assert_eq!(page.eval("!!document.querySelector('.ag-dim')"), false);
+}
+
+#[test]
+fn a_revision_that_moves_what_you_commented_on_stops_the_page() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    comment(&mut page, "task:t-a", "this needs a rollback step");
+
+    s.edit_plan("\"id\": \"t-a\"", "\"id\": \"t-b\"");
+    s.push(1, &[]);
+    page.wait_until("!!document.querySelector('.ag-interrupt')", "the dialog");
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt').dataset.kind"),
+        "revision"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-title').textContent"),
+        "A revision moved what you commented on"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-ctx .pv-ctx').textContent"),
+        "taskelement gone",
+        "and says the element is gone"
+    );
+    page.screenshot(&screenshot_path("interrupt-revision"));
+
+    // Escape is Not now: the page comes back, with the comment kept.
+    page.eval(
+        "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))",
+    );
+    page.wait_until("!document.querySelector('.ag-dim')", "the dialog to close");
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-recovery .thread[data-thread=\"c-1\"]')"),
+        true,
+        "the comment is in the recovery panel"
+    );
+
+    // And it does not come back for the same revision.
+    page.eval(
+        "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 996, events: [] })",
+    );
+    assert_eq!(page.eval("!!document.querySelector('.ag-dim')"), false);
+}
+
+#[test]
+fn a_review_left_hanging_says_so_once() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    // The kitchen-sink plan has a blocking question; nobody has answered it
+    // and no verdict has been sent. Shorten the quiet spell to a moment.
+    page.eval(
+        "(function(){ window.artefactoPlan.settings.hangingAfterMs = 200; \
+           window.artefactoPlan.settings.hangingCheckMs = 100; \
+           window.artefactoPlan.settings.hangingDismissMs = 60000; return true; })()",
+    );
+    page.eval("window.artefactoPlan.debug().lastPing");
+    page.eval("(function(){ window.artefactoPlan.restartHangingCheck(); return true; })()");
+    page.wait_until(
+        "!!document.querySelector('.ag-interrupt')",
+        "the dialog after the quiet spell",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-title').textContent"),
+        "The agent is waiting on you"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-interrupt-timer span')"),
+        true,
+        "it counts itself down rather than standing in the way"
+    );
+    page.screenshot(&screenshot_path("interrupt-hanging"));
+    page.click(".ag-interrupt-not");
+    page.wait_until("!document.querySelector('.ag-dim')", "the dialog to close");
+    // Not again for the same reason.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert_eq!(
+        page.eval("!!document.querySelector('.ag-dim')"),
+        false,
+        "said once"
+    );
+}

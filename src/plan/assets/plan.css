@@ -393,6 +393,36 @@
    Every one of its links is a button in disguise, so none is underlined. */
 .pv-map-track a { color: inherit; text-decoration: none; }
 
+/* ── Agent interrupt (modal nudge) ──────────────────────────────────────────
+   The agent's last resort: it stops the page instead of adding a line to the
+   panel. Reserved for the three cases in the guidance sheet. */
+/* While an interrupt is up the page behind it does not scroll. */
+html.is-interrupted, html.is-interrupted body { overflow: hidden; }
+.ag-dim { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 1.5rem; background: rgba(28, 26, 21, 0.28); animation: pv-fade var(--t-mid) var(--ease) both; }
+[data-theme="dark"] .ag-dim, [data-theme="vibe"] .ag-dim { background: rgba(0, 0, 0, 0.46); }
+@keyframes pv-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ag-interrupt-in { from { opacity: 0; transform: translateY(8px) scale(0.985); } to { opacity: 1; transform: none; } }
+.ag-interrupt {
+  width: min(27rem, 100%); background: var(--page); border: var(--rule-w) solid var(--rule);
+  border-top: 3px solid var(--agent); border-radius: var(--radius-lg); box-shadow: var(--shadow-float);
+  padding: 1.125rem 1.25rem 1rem; animation: ag-interrupt-in var(--t-slow) var(--ease) both;
+}
+.ag-interrupt[data-kind="blocking"] { border-top-color: var(--alarm); }
+.ag-interrupt[data-kind="revision"] { border-top-color: var(--action); }
+.ag-interrupt-head { display: flex; align-items: center; gap: 0.5rem; }
+.ag-interrupt-head .ag-mark { font-size: 1.125rem; }
+.ag-interrupt-kicker { font-family: var(--font-mono); font-size: 0.625rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--agent); }
+.ag-interrupt[data-kind="blocking"] .ag-interrupt-kicker { color: var(--alarm); }
+.ag-interrupt[data-kind="revision"] .ag-interrupt-kicker { color: var(--action); }
+.ag-interrupt-when { margin-left: auto; font-family: var(--font-mono); font-size: 0.625rem; color: var(--muted); }
+.ag-interrupt-title { font-family: var(--font-display); font-weight: 400; font-size: 1.375rem; line-height: 1.2; letter-spacing: -0.01em; margin: 0.75rem 0 0.5rem; color: var(--ink); text-wrap: pretty; }
+.ag-interrupt-body { font-size: 1rem; line-height: 1.5; color: var(--ink-2); margin: 0; max-width: 44ch; text-wrap: pretty; }
+.ag-interrupt-ctx { display: inline-flex; margin-top: 0.75rem; }
+.ag-interrupt-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 1.125rem; }
+.ag-interrupt-actions .is-quiet { margin-left: auto; }
+.ag-interrupt-timer { height: 2px; background: var(--rule-soft); margin: 0.875rem -1.25rem -1rem; }
+.ag-interrupt-timer span { display: block; height: 100%; background: var(--action); transition: width 200ms linear; }
+
 /* ---------------------------------------------------------------------------
    Motion
    ---------------------------------------------------------------------------

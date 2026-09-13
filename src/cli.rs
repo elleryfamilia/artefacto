@@ -103,6 +103,18 @@ pub struct ReplyArgs {
     /// spec 5's `reply` surface needs this flag added to it.
     #[arg(long)]
     pub nudge: bool,
+    /// Stop the page rather than add a line to it: the reviewer sees a
+    /// dialog. For the one case it is for, see the skill: you have stopped
+    /// and cannot go on without an answer only they can give.
+    #[arg(long, requires = "nudge")]
+    pub interrupt: bool,
+    /// The one line the dialog leads with. Defaults to a plain heading.
+    #[arg(long, requires = "interrupt")]
+    pub title: Option<String>,
+    /// The element the question is about, such as `task:t-redis`: the dialog
+    /// carries it and its button aims the conversation there.
+    #[arg(long = "ref", requires = "interrupt")]
+    pub element: Option<String>,
     /// The text. Use --stdin to read it from a pipe instead.
     #[arg(required_unless_present = "stdin")]
     pub text: Option<String>,

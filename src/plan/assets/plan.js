@@ -1960,6 +1960,12 @@
       /* How long a question may go unanswered before the working row says
          "still waiting" and the bead stops. */
       stillWaitingMs: 120000,
+    /* How long a review may sit with a verdict unsent and a blocking
+       question unanswered before the page says the agent is waiting on it,
+       and how long that dialog stays up on its own. */
+    hangingAfterMs: 180000,
+    hangingDismissMs: 30000,
+    hangingCheckMs: 15000,
     backoffMs: [500, 1000, 2000, 4000, 8000, 8000, 8000, 8000],
     fetchTimeoutMs: 10000,
     /* How long a socket must stay open before the retry budget resets. */
@@ -2078,6 +2084,11 @@
     }
     S.ui.panel = Object.assign({ text: "", ref: null, thread: null, quote: null }, loadPanelDraft());
     S.ui.panelEvents = [];
+    /* The interrupt on screen, and the causes this page has already shown:
+       an interrupt the reviewer dismissed does not come back for the same
+       reason. */
+    S.ui.interrupt = null;
+    S.ui.interrupted = {};
 
     /* ---- transport ------------------------------------------------- */
 
@@ -2487,10 +2498,30 @@
             }
             revisionNotice(e, applied);
             break;
-          case "nudge":
-            notice("nudge", (e.data && e.data.text) || "The agent asked for your attention.", { dismiss: true });
-            panelEvent("nudge", (e.data && e.data.text) || "The agent asked for your attention.");
+          case "nudge": {
+            const text = (e.data && e.data.text) || "The agent asked for your attention.";
+            const stop = e.data && e.data.interrupt;
+            /* A nudge is a line in the panel. An interrupt is the agent
+               saying it has stopped and cannot go on without an answer:
+               that one takes the page. */
+            if (stop) {
+              panelEvent("nudge", text);
+              interrupt("blocked", {
+                key: String(e.seq),
+                title: stop.title || "The agent needs an answer",
+                body: text,
+                ref: stop.ref || null,
+                onGo: function () {
+                  if (!S.ui.chatOpen) setPanelOpen(true);
+                  if (stop.ref) aimPanel(stop.ref, null, null);
+                },
+              });
+            } else {
+              notice("nudge", text, { dismiss: true });
+              panelEvent("nudge", text);
+            }
             break;
+          }
           case "server.stopping":
             S.stopping = true;
             notice("stopping", "The server is stopping. This page will try to reconnect.");
@@ -2691,6 +2722,7 @@
       if (orphaned) text += " " + orphaned + (orphaned === 1 ? " thread lost its element." : " threads lost their elements.");
       notice("revision", text, { dismiss: true, title: S.previousTitle ? "Previously: " + S.previousTitle : null });
       panelEvent("revision", "revision " + S.state.revision + " pushed");
+      interruptForOrphans();
     }
 
     /* ---- presence ----------------------------------------------------- */
@@ -3431,6 +3463,155 @@
       wireLeaving();
     }
 
+    /* ---- the interrupt ------------------------------------------------
+
+       A panel message waits; an interrupt does not. The page dims, the plan
+       stops, one sentence says what is needed and one button gets the
+       reviewer there. Three causes and no others: the agent is blocked on
+       an answer only the reviewer can give, a revision moved what they
+       commented on, or the review has been left hanging. Everything else is
+       a line in the panel.
+
+       One at a time, and once per cause: an interrupt the reviewer has
+       dismissed does not come back for the same reason. */
+    const INTERRUPT = {
+      blocked: { kind: "blocking", kicker: "The agent is blocked", action: "Answer in the conversation" },
+      revision: { kind: "revision", kicker: "The ground moved", action: "Show me" },
+      hanging: { kind: "", kicker: "The review is waiting", action: "Open the conversation" },
+    };
+
+    function interrupt(cause, opts) {
+      const o = opts || {};
+      if (S.ui.interrupt || S.ui.interrupted[cause + ":" + (o.key || "")]) return;
+      const spec = INTERRUPT[cause];
+      if (!spec) return;
+      S.ui.interrupt = cause;
+      S.ui.interrupted[cause + ":" + (o.key || "")] = true;
+      const dim = el("div", { class: "ag-dim" });
+      const box = el("div", { class: "ag-interrupt", role: "dialog", "aria-modal": "true",
+        dataset: { kind: spec.kind, cause: cause }, "aria-labelledby": "ag-interrupt-title" });
+      box.appendChild(el("div", { class: "ag-interrupt-head" },
+        agentMark(cause === "hanging" ? "waiting" : ""),
+        el("span", { class: "ag-interrupt-kicker", text: spec.kicker }),
+        el("span", { class: "ag-interrupt-when", text: whenLabel(nowIso()) })));
+      box.appendChild(el("h2", { class: "ag-interrupt-title", id: "ag-interrupt-title", text: o.title || spec.kicker }));
+      const body = el("p", { class: "ag-interrupt-body" });
+      body.appendChild(richText(o.body || ""));
+      box.appendChild(body);
+      if (o.ref) box.appendChild(el("span", { class: "ag-interrupt-ctx" }, chipFor(o.ref, o.gone)));
+      const actions = el("div", { class: "ag-interrupt-actions" });
+      const go = el("button", { type: "button", class: "pv-btn is-lg is-filled ag-interrupt-go", text: o.action || spec.action });
+      const not = el("button", { type: "button", class: "pv-btn is-quiet ag-interrupt-not", text: "Not now" });
+      actions.appendChild(go);
+      actions.appendChild(not);
+      box.appendChild(actions);
+      let timer = null;
+      if (o.dismissAfterMs) {
+        const bar = el("div", { class: "ag-interrupt-timer" }, el("span"));
+        box.appendChild(bar);
+        const span = bar.querySelector("span");
+        const started = Date.now();
+        span.style.width = "100%";
+        timer = window.setInterval(function () {
+          const left = 1 - (Date.now() - started) / o.dismissAfterMs;
+          span.style.width = Math.max(0, left) * 100 + "%";
+          if (left <= 0) close();
+        }, 200);
+      }
+      dim.appendChild(box);
+
+      const previous = document.activeElement;
+      const close = function (taken) {
+        if (timer) window.clearInterval(timer);
+        document.removeEventListener("keydown", onKey, true);
+        dim.remove();
+        document.documentElement.classList.remove("is-interrupted");
+        S.ui.interrupt = null;
+        if (previous && previous.focus) previous.focus({ preventScroll: true });
+        if (taken && o.onGo) o.onGo();
+      };
+      /* Escape is Not now, and Tab stays inside: an interrupt the reviewer
+         cannot leave with the keyboard is a trap, not a dialog. */
+      const onKey = function (e) {
+        if (e.key === "Escape") { e.preventDefault(); close(false); return; }
+        if (e.key !== "Tab") return;
+        const focusable = box.querySelectorAll("button, [href], textarea, input");
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      };
+      go.addEventListener("click", function () { close(true); });
+      not.addEventListener("click", function () { close(false); });
+      dim.addEventListener("mousedown", function (e) { if (e.target === dim) close(false); });
+      document.addEventListener("keydown", onKey, true);
+      document.body.appendChild(dim);
+      document.documentElement.classList.add("is-interrupted");
+      go.focus({ preventScroll: true });
+      return close;
+    }
+
+    /* The quiet-spell check runs on its own clock; a test shortens the
+       settings and restarts it. */
+    function restartHangingCheck() {
+      if (S.ui.hangingTimer) window.clearInterval(S.ui.hangingTimer);
+      S.ui.hangingTimer = window.setInterval(hangingCheck, core.settings.hangingCheckMs);
+    }
+    S.restartHangingCheck = restartHangingCheck;
+
+    /* The two the page sees for itself. */
+
+    /* A revision left a thread the reviewer wrote in hanging on an element
+       that is no longer in the plan. Once per revision. */
+    function interruptForOrphans() {
+      const orphans = core.unanchored(S.state);
+      if (!orphans.length) return;
+      const t = orphans[0];
+      interrupt("revision", {
+        key: "rev" + S.state.revision,
+        title: orphans.length === 1
+          ? "A revision moved what you commented on"
+          : "A revision moved " + orphans.length + " things you commented on",
+        body: "Revision " + S.state.revision + " no longer has the element your "
+          + (t.asked ? "question" : "comment") + " was about. It is kept, with what you wrote.",
+        ref: t.target,
+        gone: true,
+        onGo: function () {
+          if (t.asked) {
+            if (!S.ui.chatOpen) setPanelOpen(true);
+            const node = document.querySelector('.pv-panel-msg[data-thread="' + t.id + '"]');
+            if (node) node.scrollIntoView({ block: "nearest" });
+          } else {
+            const panel = document.querySelector(".pv-recovery");
+            if (panel) panel.scrollIntoView({ block: "center" });
+          }
+        },
+      });
+    }
+
+    /* The review is the last thing the agent is waiting on, and nobody has
+       touched the page for three minutes. Once per quiet spell. */
+    function hangingCheck() {
+      if (S.ui.interrupt || S.state.submitted || !S.state.presence) return;
+      const idleFor = Date.now() - (S.lastPing || Date.now());
+      if (idleFor < core.settings.hangingAfterMs) return;
+      const blocking = S.state.threads.filter(function (t) { return t.blocking && t.status === "open"; });
+      const questions = (S.state.plan && S.state.plan.open_questions) || [];
+      const unanswered = questions.filter(function (q) { return q.blocking && !S.state.answers[q.id]; });
+      if (!blocking.length && !unanswered.length) return;
+      const what = blocking.length ? "comment" : "question";
+      interrupt("hanging", {
+        key: "rev" + S.state.revision + ":" + (blocking.length ? blocking[0].id : unanswered[0].id),
+        title: "The agent is waiting on you",
+        body: "Your verdict has not been sent and a blocking " + what
+          + " is still open. Nothing moves until one of those does.",
+        ref: blocking.length ? blocking[0].target : "question:" + unanswered[0].id,
+        dismissAfterMs: core.settings.hangingDismissMs,
+        onGo: function () { if (!S.ui.chatOpen) setPanelOpen(true); },
+      });
+    }
+
     /* ---- the recovery panel -------------------------------------------
 
        Spec 4.3: a thread whose element is gone, and a draft whose target
@@ -3864,6 +4045,7 @@
       if (!S.socket && !S.lost) connect();
       /* Arriving is activity; a body swap is not. */
       if (!S.lastPing) S.lastPing = Date.now();
+      restartHangingCheck();
     };
 
     S.activity = ping;
@@ -3897,6 +4079,8 @@
 
   core.debug = function () { return session ? session.debug() : null; };
   core.injectFrame = function (frame) { if (session) session.injectFrame(frame); };
+  /* For the browser tests: the quiet-spell check on a shortened clock. */
+  core.restartHangingCheck = function () { if (session) session.restartHangingCheck(); };
 
   /* Activity, once per document. Spec 6.2: scroll, keys, pointer, and
      visibility, throttled to one ping per 30 seconds -- so a reader who

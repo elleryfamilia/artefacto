@@ -39,12 +39,21 @@ pub fn handle_reply(shared: &Arc<Shared>, request: Request, query: &Query) {
             Ok(artifact) => artifact,
             Err(why) => return refuse(request, &why),
         };
-        presence::announce(
-            shared,
-            &artifact,
-            "nudge",
-            serde_json::json!({ "agent": session.name, "text": text }),
-        );
+        let mut data = serde_json::json!({ "agent": session.name, "text": text });
+        /* An interrupt is a nudge the page must not let pass: it stops the
+        plan and asks. The event carries what the dialog needs and
+        nothing else; a page that predates it shows the nudge. */
+        if query.get("interrupt").map(String::as_str) == Some("1") {
+            let mut stop = serde_json::json!({ "kind": "blocked" });
+            if let Some(title) = query.get("title").filter(|t| !t.is_empty()) {
+                stop["title"] = serde_json::json!(title);
+            }
+            if let Some(element) = query.get("ref").filter(|r| !r.is_empty()) {
+                stop["ref"] = serde_json::json!(element);
+            }
+            data["interrupt"] = stop;
+        }
+        presence::announce(shared, &artifact, "nudge", data);
         let _ = request.respond(json_response(
             200,
             &serde_json::json!({ "ok": true, "nudge": true, "artifact": artifact }).to_string(),

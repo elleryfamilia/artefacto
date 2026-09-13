@@ -217,15 +217,11 @@ fn dot_line(variant: &str, label: &str) -> Markup {
 /// gives `plan.js` a stable target to inject the expand/collapse controls into
 /// — the markup ships the empty container so scripting never has to build the
 /// surrounding structure (and `plan.css` hides it while it stays empty).
-fn section_rule(label: &str, actions_id: Option<&str>) -> Markup {
-    section_rule_part(label, actions_id, None)
-}
-
-/// The same rule, named as a part of the plan. `part` is what the header's
-/// plan strip reads: every section that carries one becomes a segment, sized
-/// by how much of the document it holds. A rule inside a section (a task's
-/// acceptance, a phase's dependencies) carries none and is not a part.
-fn section_rule_part(label: &str, actions_id: Option<&str>, part: Option<&str>) -> Markup {
+/// `part` is what the header's plan strip reads: every rule that carries one
+/// becomes a segment of the strip, sized by how much of the document it holds.
+/// A rule inside a section (a task's acceptance, a phase's dependencies) is
+/// written inline without this helper and is not a part.
+fn section_rule(label: &str, actions_id: Option<&str>, part: Option<&str>) -> Markup {
     html! {
         div.pv-rule data-part=[part] {
             span.pv-label { (label) }
@@ -675,7 +671,7 @@ pub fn render(plan: &Plan) -> String {
                                 }
                             }
                         }
-                        (section_rule_part("Summary", None, Some("summary")))
+                        (section_rule("Summary", None, Some("summary")))
                         // The `meta:` comment anchor lives on the summary
                         // itself (not the tiny byline above): "comment on the
                         // plan as a whole" reads as commenting on the
@@ -809,7 +805,7 @@ pub fn render(plan: &Plan) -> String {
                         // are the same kind of statement and a reader should
                         // not have to learn two layouts for them.
                         @if !plan.open_questions.is_empty() {
-                            (section_rule_part("Open questions", None, Some("questions")))
+                            (section_rule("Open questions", None, Some("questions")))
                             section.pv-rows.questions {
                                 @for q in &plan.open_questions {
                                     div.pv-row id=(format!("question-{}", q.id))
@@ -840,7 +836,7 @@ pub fn render(plan: &Plan) -> String {
                             }
                         }
                         @if !plan.risks.is_empty() {
-                            (section_rule_part("Risks", None, Some("risks")))
+                            (section_rule("Risks", None, Some("risks")))
                             section.pv-rows.risks {
                                 @for r in &plan.risks {
                                     div.pv-row data-plan-ref=(format!("risk:{}", r.id)) {
@@ -862,7 +858,7 @@ pub fn render(plan: &Plan) -> String {
                         // they sit on the section divider rather than floating
                         // above the list as a stray toolbar.
                         @if !plan.phases.is_empty() {
-                            (section_rule_part("Phases", Some("phases-actions"), Some("phases")))
+                            (section_rule("Phases", Some("phases-actions"), Some("phases")))
                         }
                         div.pv-phases {
                             @for (i, phase) in plan.phases.iter().enumerate() {
@@ -927,7 +923,7 @@ pub fn render(plan: &Plan) -> String {
                             }
                         }
                         @if let Some(g) = &phase_graph {
-                            (section_rule_part("Phase dependencies", None, Some("dependencies")))
+                            (section_rule("Phase dependencies", None, Some("dependencies")))
                             div.pv-deps {
                                 (PreEscaped(g.as_str()))
                                 (graph_legend())
