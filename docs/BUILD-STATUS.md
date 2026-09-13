@@ -1798,7 +1798,28 @@ at all: a sent review is not a hanging one, no agent means nobody is
 waiting, and a second revision may interrupt again after the first was
 dismissed. The server side had no test of its own either, so it has three:
 what the event carries, that a plain nudge carries none, and that
-`--interrupt` cannot be used without `--nudge`. Gate: 539 tests.
+`--interrupt` cannot be used without `--nudge`. Gate: 541 tests.
+
+### What the screenshots found
+
+Three things, none of which a test was looking for:
+
+- **Printing mid-interrupt gave a dimmed first page and nothing after it**
+  (`fd75292`). The backdrop covered the plan and the scroll lock cut the
+  document to one page. The print block hides the backdrop and lifts the
+  lock; the test emulates print media to prove both.
+- **A chip quoted the whole row** (`f14b689`). An open question and a risk
+  have no heading, so the quote fell back to the row: its severity chip, the
+  buttons the page injects, and the answer box. The hanging dialog showed it
+  whole -- *QUESTION BlockingSession TTL? AnswerAsk the agentYour ans...*.
+  The quote now reads the row's head line, which is where the statement is.
+  This was in the stored thread quotes the agent reads, too.
+- **A revision that only marks work done said "no change to phases or
+  tasks"** (`3f2e594`). Found by pushing the revision that marked these two
+  phases done. The summary counted what was added, removed and retitled and
+  nothing else, so the most common revision a plan under review gets reached
+  the banner as a lie. It counts what became done, and every other status
+  move beside it.
 
 ## Where the code diverges from plan 2b, with the reason
 
