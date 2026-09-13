@@ -116,9 +116,11 @@ fn the_served_page_runs_its_script_under_the_nonce_policy() {
         "the inline script ran, so the nonce in the header matched the one on the tag"
     );
     assert_eq!(
-        page.eval("!!document.querySelector('.feedback-bar')"),
+        page.eval(
+            "!!document.querySelector('.pv-dock') && !document.querySelector('.feedback-bar')"
+        ),
         true,
-        "the page mounted its controls"
+        "the page mounted its controls: the conversation panel, no bottom bar"
     );
     let banner = page.text("document.querySelector('.pv-banner').textContent");
     assert!(
@@ -1452,7 +1454,7 @@ fn the_chat_panel_stays_open_and_focused_across_a_push() {
         "revision 2",
     );
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         false,
         "still open"
     );
@@ -1876,7 +1878,7 @@ fn a_chat_draft_is_visible_after_a_reload() {
     page.navigate(&s.page_url());
     connected(&mut page);
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         false,
         "the panel opens for its draft"
     );
@@ -1902,18 +1904,21 @@ fn the_chat_panel_stays_closed_once_the_reviewer_closes_it() {
     page.click(".feedback-bar-chat");
     page.type_into(".pv-chat .composer textarea", "kept but closed");
     page.click(".feedback-bar-chat");
-    assert_eq!(page.eval("document.querySelector('.pv-chat').hidden"), true);
+    assert_eq!(
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
+        true
+    );
     page.eval(
         "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 999, events: [] })",
     );
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         true,
         "a frame does not reopen it"
     );
     comment(&mut page, "task:t-a", "a comment");
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         true,
         "an own reply does not reopen it"
     );
@@ -1931,7 +1936,10 @@ fn the_chat_panel_stays_closed_once_the_reviewer_closes_it() {
     page.click(".feedback-bar-chat");
     page.navigate(&s.page_url());
     connected(&mut page);
-    assert_eq!(page.eval("document.querySelector('.pv-chat').hidden"), true);
+    assert_eq!(
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
+        true
+    );
     assert_eq!(
         page.eval("Object.keys(window.artefactoPlan.debug().drafts).length"),
         0,
@@ -2460,7 +2468,7 @@ fn a_sent_chat_message_leaves_a_place_for_the_next() {
         "the message shown",
     );
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         false
     );
     assert_eq!(
@@ -2655,7 +2663,7 @@ fn a_push_after_a_sent_chat_message_leaves_the_panel_with_a_composer() {
         "revision 2",
     );
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         false,
         "still open"
     );
@@ -2854,7 +2862,7 @@ fn cancelling_the_chat_composer_closes_the_chat() {
     page.type_into(".pv-chat .composer textarea", "never mind");
     page.click(".pv-chat .composer .composer-cancel");
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         true,
         "Cancel closes the chat"
     );
@@ -2862,7 +2870,7 @@ fn cancelling_the_chat_composer_closes_the_chat() {
         "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 999, events: [] })",
     );
     assert_eq!(
-        page.eval("document.querySelector('.pv-chat').hidden"),
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         true,
         "and it stays closed"
     );
@@ -2953,7 +2961,7 @@ fn a_sent_review_is_unmistakable() {
         false
     );
     assert_eq!(
-        page.eval("document.querySelector('.feedback-bar-send').classList.contains('is-filled') || document.querySelector('.feedback-bar').classList.contains('is-sent')"),
+        page.eval("document.querySelector('.feedback-bar-send').classList.contains('is-filled') || document.querySelector('.pv-panel-foot').classList.contains('is-sent')"),
         false,
         "a new revision reopens the review: no verdict is filled"
     );
@@ -3214,9 +3222,9 @@ fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
         "after the first ask the mark alone is the control"
     );
     assert_eq!(
-        page.eval("document.querySelector('.feedback-bar-chat').classList.contains('is-labelled')"),
+        page.eval("!!document.querySelector('.pv-panel-handle .ag-mark')"),
         true,
-        "the bar keeps its label"
+        "the handle carries the mark"
     );
 
     let out = s
@@ -3372,9 +3380,10 @@ fn the_hint_line_shows_until_dismissed_and_stores_nothing_before() {
     page.navigate(&s.url);
     connected(&mut page);
 
+    page.click(".pv-panel-handle");
     let hint = page.text("document.querySelector('.feedback-bar-hint-text').textContent");
     assert!(
-        hint.contains("Comments wait") && hint.contains("Ask the agent"),
+        hint.contains("Comments wait") && hint.contains("reaches the agent now"),
         "the hint names both behaviours: {hint}"
     );
     let banner = page.text("document.querySelector('.pv-banner-text').textContent");
@@ -3383,9 +3392,9 @@ fn the_hint_line_shows_until_dismissed_and_stores_nothing_before() {
         "the banner says which of the two reaches the agent now: {banner}"
     );
     assert_eq!(
-        page.eval("window.localStorage.length"),
-        0,
-        "nothing is stored until the reviewer dismisses it"
+        page.eval("window.localStorage.getItem('artefacto.hint.ask')"),
+        serde_json::Value::Null,
+        "nothing is stored for the hint until the reviewer dismisses it"
     );
     page.click(".feedback-bar-hint-dismiss");
     assert_eq!(
@@ -3396,6 +3405,7 @@ fn the_hint_line_shows_until_dismissed_and_stores_nothing_before() {
 
     page.navigate(&s.page_url());
     connected(&mut page);
+    page.click(".pv-panel-handle");
     assert_eq!(
         page.eval("!document.querySelector('.feedback-bar-hint')"),
         true,
@@ -3691,7 +3701,7 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
     // Request changes is one verdict, Approve the other; the sent one fills.
     page.click(".feedback-bar-send");
     page.wait_until(
-        "document.querySelector('.feedback-bar').classList.contains('is-sent')",
+        "document.querySelector('.pv-panel-foot').classList.contains('is-sent')",
         "the bar to show the review as sent",
     );
     assert_eq!(
@@ -3718,7 +3728,7 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
     s.edit_plan("Demo plan", "Demo plan, revised");
     s.push(1, &[]);
     page.wait_until(
-        "document.body.dataset.artefactoRevision === '2' && !document.querySelector('.feedback-bar').classList.contains('is-sent')",
+        "document.body.dataset.artefactoRevision === '2' && !document.querySelector('.pv-panel-foot').classList.contains('is-sent')",
         "revision 2 to reopen the review",
     );
     page.click(".feedback-bar-approve");
@@ -4091,5 +4101,109 @@ fn a_follow_up_sends_once_and_keeps_its_place() {
         ),
         "one more thing",
         "the follow-up is in the recovery panel"
+    );
+}
+
+#[test]
+fn the_conversation_panel_starts_closed_docks_and_comes_back() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    let closed = "document.querySelector('.pv-dock').classList.contains('is-hidden') && !document.querySelector('.pv-panel-handle').hidden";
+    assert_eq!(
+        page.eval(closed),
+        true,
+        "closed by default, with the handle in reach"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-handle .pv-panel-count').textContent"),
+        "0"
+    );
+    assert_eq!(
+        page.eval("!document.querySelector('.feedback-bar')"),
+        true,
+        "no bottom bar on a served page"
+    );
+
+    page.click(".pv-panel-handle");
+    assert_eq!(page.eval("!document.querySelector('.pv-dock').classList.contains('is-hidden') && document.querySelector('.pv-panel-handle').hidden"), true, "the handle opens it and steps aside");
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-panel-foot .feedback-bar-send') && !!document.querySelector('.pv-panel-foot .feedback-bar-approve')"),
+        true,
+        "both verdicts live in the panel's foot"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-foot .feedback-bar-state-text').textContent"),
+        "Saved \u{b7} rev 1"
+    );
+
+    // Wide: docked and sticky, the sheet gives it room. Narrow: it floats and
+    // the sheet keeps its measure.
+    page.call("Emulation.setDeviceMetricsOverride", serde_json::json!({ "width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": false }));
+    assert_eq!(
+        page.text("getComputedStyle(document.querySelector('.pv-dock')).position"),
+        "sticky"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-sheet').getBoundingClientRect().width < 1100"),
+        true,
+        "the sheet narrowed for the dock"
+    );
+    page.screenshot(&screenshot_path("panel-docked-1440"));
+    page.call("Emulation.setDeviceMetricsOverride", serde_json::json!({ "width": 1280, "height": 900, "deviceScaleFactor": 1, "mobile": false }));
+    assert_eq!(
+        page.text("getComputedStyle(document.querySelector('.pv-dock')).position"),
+        "fixed"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-sheet').getBoundingClientRect().width >= 1170"),
+        true,
+        "the sheet keeps its measure under the overlay"
+    );
+    page.screenshot(&screenshot_path("panel-overlay-1280"));
+    page.call(
+        "Emulation.clearDeviceMetricsOverride",
+        serde_json::json!({}),
+    );
+
+    // A question from the panel counts on the handle and the top-bar link.
+    page.type_into(".pv-chat .composer textarea", "is this the whole plan?");
+    page.click(".pv-chat .composer .composer-send");
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 1",
+        "the question in the log",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-link .pv-panel-count').textContent"),
+        "1"
+    );
+
+    // The choice survives a reload; hiding returns to the handle, and that
+    // survives too.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(
+        page.eval("!document.querySelector('.pv-dock').classList.contains('is-hidden')"),
+        true,
+        "open stays open"
+    );
+    page.click(".pv-panel-hide");
+    assert_eq!(page.eval(closed), true, "the X returns to the handle");
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-handle .pv-panel-count').textContent"),
+        "1"
+    );
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    assert_eq!(page.eval(closed), true, "closed stays closed");
+    page.click(".pv-panel-link");
+    assert_eq!(
+        page.eval("!document.querySelector('.pv-dock').classList.contains('is-hidden')"),
+        true,
+        "the top-bar link opens it too"
     );
 }

@@ -10,7 +10,8 @@
       "**The mark is the ask control** (`p-mark`, `p-ask`): a ring around a point. Rest, working (the orbit), waiting, off. It sits beside Comment on every element, labels itself on hover, and becomes the avatar on the agent's messages.",
       "**A question thread is a conversation** (`p-ask`): a persistent one-line input that sends on Enter, the working state from send to answer, and a line that says who will hear it.",
       "**Two verdicts, autosave said out loud** (`p-bar`): *Request changes* and *Approve* as one group, the chosen one filled, and a *Saved · rev N* line so leaving is not losing.",
-      "**Vibe is a question, not a task** (`q-vibe`): the third theme swaps three font families the page would have to embed."
+      "**Vibe is a question, not a task** (`q-vibe`): the third theme swaps three font families the page would have to embed.",
+      "**The conversation moves into a panel** (`p-panel`, added at revision 10 from the second design round): one docked conversation with the agent, every message anchored to its element by a chip, the bottom bar folded into the panel's foot, and the inline question thread replaced by a spine, a count on the mark, and a one-line preview."
     ],
     "out_of_scope": [
       "Comments delivered live (that is `--passive live` in the re-plan; the bar copy has a batched and a live variant ready)",
@@ -19,7 +20,7 @@
     ],
     "agent": "claude",
     "created": "2026-09-12",
-    "revision": 9
+    "revision": 11
   },
   "phases": [
     {
@@ -660,6 +661,153 @@
           "estimate": "s"
         }
       ]
+    },
+    {
+      "id": "p-panel",
+      "title": "The conversation panel",
+      "summary_md": "The second design round (the *Auth Refactor Panel* page and section 08 of the sheet) moves the conversation with the agent out of the elements and into one panel docked beside the sheet. A question is still asked from an element's mark, but the composer lives in the panel and aims at that element; every message carries a context chip that scrolls to what it is about; the agent's presence, working state, nudges, revisions, and resolutions all render in the log; the panel's foot holds the state line and the two verdicts, so the bottom bar goes. Elements keep their comments inline; an element with discussion gets a teal spine, a count on its mark, and a one-line preview of the last message. Above 1400px the panel docks and the sheet narrows to 800px; below, it floats over the right margin and a counted *Conversation* button in the top bar reopens it. The port's stylesheet is `artefacto-v2.css` (section 8, additive).",
+      "tasks": [
+        {
+          "id": "t-panel-shell",
+          "title": "The shell, the dock, and the hidden state",
+          "summary_md": "`pv-shell` wraps the sheet and an `aside.pv-dock` holding `pv-panel`: a head (title, presence, an X that hides the panel), the log, the composer, the foot. Docked and sticky at 100dvh from 1400px up, fixed over the right margin below; Decided (`q-panel-default`: closed): the panel starts closed. What stays on screen is a floating handle, the agent's mark with the message count, fixed at the bottom right of the sheet and always in reach, that opens the panel with one click; the top bar keeps a plain *Conversation (N)* link as well. Hiding the panel returns to the handle. The served bottom bar goes: its state line and verdict group move to the panel foot, its hint to the panel head's first run. Static export unchanged.",
+          "status": "in_progress",
+          "risk": "medium",
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "mountPanel replaces mountBar on served pages"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify",
+              "note": "section 8 from artefacto-v2.css"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "at 1440px the panel is docked and the sheet is 800px wide; at 1280px it floats and the sheet keeps its measure",
+            "the page opens with the panel closed and the floating handle showing the count; the handle and the top-bar link both open it, hiding returns to the handle, and the choice survives a reload",
+            "no `.feedback-bar` on a served page; the state line and both verdicts are in the panel foot"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-panel-log",
+          "title": "One log for the whole conversation",
+          "summary_md": "The log renders, in time order: page-level chat, every question thread's messages and the asks inside comment threads, each message with the avatar, the actor, the time, and a context chip (`pv-ctx`) naming the element (kind and title) that scrolls to it on click; the working row while a question waits; `pv-panel-event` lines for a revision (*revision 3 pushed*) and for the agent attaching or leaving; the agent's nudge as `pv-panel-nudge`; a resolution as a `pv-ctx.is-resolution` chip. The log follows the newest message unless the reviewer has scrolled up.",
+          "status": "planned",
+          "risk": "medium",
+          "depends_on": [
+            "t-panel-shell"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "renderPanel from S.state; a merged, ordered view of chat + asked threads"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "a question asked on a task, its answer, a page-level question, and a resolution all appear in one log in order, each with the right chip",
+            "clicking a chip scrolls its element into view and flashes it",
+            "a nudge and a revision appear as log entries, not as page notices"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-panel-composer",
+          "title": "The composer aims at an element",
+          "summary_md": "One composer in the panel: the persistent input from the thread, with a target line above it (*asking about Lock contention*, with a clear button). Clicking an element's mark opens the panel and aims the composer at that element; with a target, Enter sends `chat.send` with `ref` (or with `thread` when the element already has a question thread); without one, page-level. The draft and the target survive a swap and a reload; focus comes back after a swap. The inline question thread and its persistent input go; the comment thread's *Ask the agent* aims the panel at that thread instead of opening a composer inline.",
+          "status": "planned",
+          "risk": "high",
+          "depends_on": [
+            "t-panel-log"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test",
+              "note": "the ask tests move from the inline thread to the panel"
+            }
+          ],
+          "acceptance": [
+            "a mark click aims the composer and focuses it; Enter opens the thread and the answer lands in the log",
+            "a second question on the same element goes to the same thread",
+            "the target and the text survive a push and a reload"
+          ],
+          "estimate": "l"
+        },
+        {
+          "id": "t-element-echo",
+          "title": "What the element shows",
+          "summary_md": "An element with a question thread carries `is-discussed` (the teal spine), its mark carries `ask-count` (messages in its thread), and `ask-preview` (avatar and the last message, one line) sits after the controls and opens the panel scrolled to that thread. Comments stay inline as today.",
+          "status": "planned",
+          "risk": "low",
+          "depends_on": [
+            "t-panel-composer"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "after a question and an answer the task shows the spine, a 2 on its mark, and the answer's first line",
+            "an element with only a comment shows none of the three"
+          ],
+          "estimate": "s"
+        },
+        {
+          "id": "t-panel-record",
+          "title": "Tests, screenshots, and the record",
+          "summary_md": "Screenshots at 1440 (docked) and 1280 (overlay) in light and dark with the panel open and hidden; the browser tests that named the inline question thread rewritten for the panel; spec 4.3 and the skill's page description updated; BUILD-STATUS.",
+          "status": "planned",
+          "risk": "low",
+          "depends_on": [
+            "t-element-echo"
+          ],
+          "files": [
+            {
+              "path": "docs/specs/2026-09-06-artefacto-design.md",
+              "action": "modify"
+            },
+            {
+              "path": "docs/BUILD-STATUS.md",
+              "action": "modify"
+            },
+            {
+              "path": "skills/artefacto-plan/SKILL.md",
+              "action": "modify"
+            }
+          ],
+          "acceptance": [
+            "the gate is green and every screenshot is linked from the record"
+          ],
+          "estimate": "s"
+        }
+      ]
     }
   ],
   "risks": [
@@ -692,6 +840,12 @@
       "title": "A working state that never ends",
       "severity": "low",
       "mitigation_md": "Timeboxed to two minutes, then *still waiting*; cleared by any agent message in the thread and by a lease going off."
+    },
+    {
+      "id": "r-panel-rewrite",
+      "title": "The panel replaces work that just landed",
+      "severity": "medium",
+      "mitigation_md": "The inline question thread, its persistent input, and the bottom bar were built this afternoon and are tested; the panel removes them. The tests are rewritten with the slice, not deleted, so every behaviour keeps a test: working state, single send, drafts, focus, resolution, verdicts."
     }
   ],
   "open_questions": [
@@ -713,6 +867,11 @@
     {
       "id": "q-live",
       "question_md": "The bar's copy has a batched and a live variant. Batched stays the default until `--passive live` exists; confirm, or make live the goal of the next plan.",
+      "blocking": false
+    },
+    {
+      "id": "q-panel-default",
+      "question_md": "Should the panel be open by default on a served page (the design's first-run state), or closed with the counted button until the reviewer asks something?",
       "blocking": false
     }
   ]

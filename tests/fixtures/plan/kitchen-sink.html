@@ -2558,30 +2558,111 @@ label.feedback-bar-approve {
   cursor: pointer;
 }
 label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
-.pv-chat {
-  position: fixed;
-  left: 50%;
-  bottom: 5.5rem;
-  transform: translateX(-50%);
-  z-index: 39;
-  width: min(1180px - 2 * 3.75rem, calc(100vw - 2.5rem));
-  max-height: 60vh;
-  overflow: auto;
-  padding: 0.875rem 1.125rem;
-  background: var(--surface);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-float);
+/* The conversation panel, docked beside the sheet. Above 1400px it is
+   sticky and the sheet gives it room; below, it floats over the right
+   margin and the sheet keeps its measure. Closed, it is a handle. */
+.pv-shell { display: flex; align-items: flex-start; justify-content: center; gap: 0; }
+.pv-shell .pv-sheet { flex: 0 1 1180px; min-width: 0; margin: 0; }
+.pv-dock {
+  position: sticky;
+  top: 0;
+  flex: 0 0 380px;
+  height: 100dvh;
+  box-sizing: border-box;
+  padding: 1rem 1rem 1.5rem 0;
 }
-.pv-chat[hidden] { display: none; }
-.pv-chat-head { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
-.pv-chat-title { font-family: var(--font-mono); font-size: 0.75rem; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; }
-.pv-chat-hint { font-family: var(--font-mono); font-size: 0.688rem; color: var(--muted); }
-.pv-chat-log { display: flex; flex-direction: column; gap: 0.375rem; margin-bottom: 0.5rem; }
-.pv-chat-log[hidden] { display: none; }
+.pv-dock.is-hidden { display: none; }
+.pv-dock .pv-panel { height: 100%; max-width: none; }
+@media (max-width: 87.5rem) {
+  .pv-dock {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 45;
+    flex: none;
+    width: min(396px, 92vw);
+    height: auto;
+    padding: 1rem 1rem 1.5rem;
+  }
+  .pv-dock .pv-panel { box-shadow: var(--shadow-float); }
+}
+.pv-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  background: var(--page);
+  border: var(--rule-w) solid var(--rule);
+  border-radius: var(--radius-lg);
+  font-family: var(--font-serif);
+  color: var(--ink);
+  overflow: hidden;
+}
+.pv-panel-head { display: flex; align-items: center; gap: 0.625rem; padding: 0.75rem 0.875rem; border-bottom: 1px solid var(--rule); }
+.pv-panel-title { font-family: var(--font-mono); font-size: 0.688rem; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3); flex: 1; }
+.pv-panel-head .pv-chat-hint { font-family: var(--font-mono); font-size: 0.625rem; color: var(--muted); }
+.pv-panel-hide { font-size: 1rem; line-height: 1; padding: 0 0.375rem; }
+.pv-panel .feedback-bar-hint { flex: none; padding: 0.5rem 0.875rem; border-bottom: 1px solid var(--rule); font-size: 0.75rem; }
+.pv-panel-log { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0.875rem; display: flex; flex-direction: column; gap: 0.875rem; }
+.pv-panel-log[hidden] { display: none; }
 .pv-chat-msg { display: grid; grid-template-columns: 3.25rem 1fr; gap: 0.5rem; align-items: baseline; }
 .pv-chat-msg[data-actor="agent"] .thread-actor { color: var(--agent); }
+.pv-chat-msg .thread-text { font-size: 0.9375rem; }
+.pv-panel-composer { border-top: 1px solid var(--rule); padding: 0.625rem 0.875rem 0.875rem; display: flex; flex-direction: column; gap: 0.5rem; background: var(--surface); flex: none; }
 .pv-chat .composer { margin-top: 0; }
+.pv-panel-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.75rem 0.875rem;
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: 0.688rem;
+  color: var(--ink-3);
+  flex: none;
+}
+.pv-panel-foot .feedback-bar-verdict { margin-left: auto; }
+.pv-panel-foot .feedback-bar-verdict .pv-btn { font-size: 0.625rem; padding: 0.375rem 0.625rem; min-height: 1.75rem; }
+.pv-panel-foot.is-sent { color: var(--ink-2); }
+/* The handle: the mark with the count, fixed at the bottom right. */
+.pv-panel-handle {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem 0.5rem 0.625rem;
+  border: 1px solid var(--agent-rule);
+  border-radius: 999px;
+  background: var(--page);
+  color: var(--agent);
+  box-shadow: var(--shadow-float);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.688rem;
+  font-weight: 600;
+}
+.pv-panel-handle .ag-mark { font-size: 1.125rem; }
+.pv-panel-handle:hover { background: var(--agent); color: var(--agent-ink); border-color: var(--agent); }
+.pv-panel-handle[hidden] { display: none; }
+.pv-panel-count { font-family: var(--font-mono); font-size: 0.656rem; }
+/* Styled like the top bar's links, but not one of them: a test or a script
+   that takes the first link there still gets the index. */
+.pv-panel-link {
+  appearance: none;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.719rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pv-panel-link:hover { color: var(--action); }
 
 @media print {
   /* Paper is white whatever theme is on: the light palette, re-declared. */
@@ -2627,6 +2708,8 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
   .pv-theme,
   .feedback-bar,
   .pv-chat,
+  .pv-dock,
+  .pv-panel-handle,
   .pv-presence,
   .thread-actions,
   .thread-composer,
@@ -4401,6 +4484,11 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
     function saveDraft(d) { const m = loadDraftMap(); m[d.id] = d; saveDraftMap(m); }
     function dropDraft(id) { const m = loadDraftMap(); delete m[id]; saveDraftMap(m); }
     S.threadDrafts = loadFollowups();
+    /* Declared here, above its first read: a const declared further down
+       would be in its dead zone when the session starts, and the guarded
+       read would quietly answer "closed". */
+    const PANEL_KEY = "artefacto.panel";
+    S.ui.chatOpen = panelStored();
 
     /* ---- transport ------------------------------------------------- */
 
@@ -5311,7 +5399,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
     }
 
     function renderBar() {
-      const bar = document.querySelector(".feedback-bar");
+      const bar = document.querySelector(".pv-panel-foot");
       if (!bar) return;
       const threads = S.state.threads.filter(function (t) { return t.status !== "unanchored"; });
       const open = threads.filter(function (t) { return t.status === "open"; });
@@ -5404,8 +5492,11 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
           el("p", { class: "thread-text", text: pending.text })));
       }
       log.hidden = S.state.chat.length === 0 && !pending;
-      const panel = document.querySelector(".pv-chat");
-      if (panel) panel.hidden = !S.ui.chatOpen;
+      const dock = document.querySelector(".pv-dock");
+      if (dock) dock.classList.toggle("is-hidden", !S.ui.chatOpen);
+      const handle = document.querySelector(".pv-panel-handle");
+      if (handle) handle.hidden = !!S.ui.chatOpen;
+      document.querySelectorAll(".pv-panel-count").forEach(function (n) { n.textContent = String(conversationCount()); });
     }
 
     /* An open panel always has somewhere to write. A body swap rebuilds
@@ -5458,67 +5549,105 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       try { return window.localStorage.getItem(HINT_KEY) === "1"; } catch (e) { return false; }
     }
 
-    function mountBar(root) {
-      if (root.querySelector(".feedback-bar")) return;
-      const bar = el("div", { class: "feedback-bar is-served" });
+    /* The conversation panel: one place for everything said to and by the
+       agent, docked beside the sheet. Closed by default; a floating handle
+       (the mark with the message count) and a top-bar link open it, the X
+       in its head hides it, and the choice is kept per browser. Its foot
+       holds the state line and the two verdicts, so the served page has no
+       bottom bar. */
+    function panelStored() {
+      try { return window.localStorage.getItem(PANEL_KEY) === "open"; } catch (e) { return false; }
+    }
+
+    function setPanelOpen(open) {
+      S.ui.chatOpen = open;
+      /* The reviewer has seen the panel; a draft in it no longer opens it
+         on their behalf. */
+      S.ui.chatDraftShown = true;
+      try { window.localStorage.setItem(PANEL_KEY, open ? "open" : "closed"); } catch (e) { /* best effort */ }
+      if (open) {
+        renderChat();
+        ensureChatComposer();
+        const ta = document.querySelector(".pv-chat-composers textarea");
+        if (ta) ta.focus({ preventScroll: true });
+      } else {
+        /* Closing with nothing written is not a draft worth keeping. */
+        document.querySelectorAll(".pv-chat .composer").forEach(function (c) {
+          const ta = c.querySelector("textarea");
+          if (ta && !ta.value.trim()) { dropDraft(c.getAttribute("data-composer")); c.remove(); }
+        });
+        renderChat();
+      }
+    }
+
+    /* What the handle and the top-bar link count: every message in the
+       conversation. */
+    function conversationCount() {
+      return S.state.chat.length;
+    }
+
+    function mountPanel(root) {
+      if (root.querySelector(".pv-dock")) return;
+      const sheet = root.querySelector(".pv-sheet");
+      if (!sheet) return;
+      const shell = el("div", { class: "pv-shell" });
+      sheet.parentNode.insertBefore(shell, sheet);
+      shell.appendChild(sheet);
+
+      const panel = el("div", { class: "pv-panel pv-chat" });
+      panel.appendChild(el("div", { class: "pv-panel-head" },
+        el("span", { class: "pv-panel-title", text: "Conversation" }),
+        el("span", { class: "pv-chat-hint" }),
+        el("button", { type: "button", class: "pv-btn is-quiet pv-panel-hide", "aria-label": "Hide conversation",
+          title: "Hide conversation", text: "\u00d7", onclick: function () { setPanelOpen(false); } })));
       if (!hintDismissed()) {
         const hint = el("div", { class: "feedback-bar-hint" },
-          el("span", { class: "feedback-bar-hint-text", text: "Comments wait for your review; \u201cAsk the agent\u201d reaches the agent now." }),
+          agentMark(""),
+          el("span", { class: "feedback-bar-hint-text", text: "Comments wait for your review; a question here reaches the agent now." }),
           el("button", { type: "button", class: "pv-btn is-quiet feedback-bar-hint-dismiss", text: "Got it", onclick: function () {
             try { window.localStorage.setItem(HINT_KEY, "1"); } catch (e) { /* an opaque origin; the hint returns next time */ }
             hint.remove();
           } }));
-        bar.appendChild(hint);
+        panel.appendChild(hint);
       }
-      const main = el("div", { class: "feedback-bar-main" });
-      main.appendChild(el("span", { class: "feedback-bar-state" },
+      panel.appendChild(el("div", { class: "pv-panel-log pv-chat-log" }));
+      panel.appendChild(el("div", { class: "pv-panel-composer pv-chat-composers" }));
+      const foot = el("div", { class: "pv-panel-foot" });
+      foot.appendChild(el("span", { class: "feedback-bar-state" },
         el("span", { class: "pv-dot" }), el("span", { class: "feedback-bar-state-text" })));
-      main.appendChild(el("span", { class: "feedback-bar-counts" },
+      foot.appendChild(el("span", { class: "feedback-bar-counts" },
         el("span", { class: "feedback-bar-count" }),
         el("span", { class: "feedback-bar-reviewed" }),
         el("span", { class: "feedback-bar-blocking is-alarm" })));
-      main.appendChild(el("span", { class: "feedback-bar-sent" }));
-      const actions = el("div", { class: "feedback-bar-actions" });
-      const askBar = el("button", { type: "button", class: "ask-btn is-labelled feedback-bar-chat",
-        dataset: { label: "Ask the agent" }, "aria-label": "Ask the agent about the plan", onclick: function () {
-        S.ui.chatOpen = !S.ui.chatOpen;
-        /* The reviewer has seen the panel; a draft in it no longer opens
-           it on their behalf. */
-        S.ui.chatDraftShown = true;
-        if (S.ui.chatOpen) {
-          renderChat();
-          openComposer({ kind: "chat" });
-        } else {
-          /* Closing with nothing written is not a draft worth keeping. */
-          document.querySelectorAll(".pv-chat .composer").forEach(function (c) {
-            const ta = c.querySelector("textarea");
-            if (ta && !ta.value.trim()) { dropDraft(c.getAttribute("data-composer")); c.remove(); }
-          });
-          renderChat();
-        }
-      } },
-        agentMark(""), el("span", { class: "ask-btn-label", text: "Ask the agent" }));
-      actions.appendChild(askBar);
+      foot.appendChild(el("span", { class: "feedback-bar-sent" }));
       /* Two verdicts on the plan, one group. Request changes is enabled with
          nothing written: it is a verdict on the plan, not on the comments. */
       const verdict = el("div", { class: "feedback-bar-verdict", role: "group", "aria-label": "Your verdict" });
-      verdict.appendChild(el("button", { type: "button", class: "pv-btn is-lg is-alarm feedback-bar-send", text: "Request changes",
+      verdict.appendChild(el("button", { type: "button", class: "pv-btn is-alarm feedback-bar-send", text: "Request changes",
         onclick: function () { submitReview("request_changes"); } }));
-      verdict.appendChild(el("button", { type: "button", class: "pv-btn is-lg feedback-bar-approve", text: "Approve",
+      verdict.appendChild(el("button", { type: "button", class: "pv-btn feedback-bar-approve", text: "Approve",
         onclick: function () { submitReview("approve"); } }));
-      actions.appendChild(verdict);
-      main.appendChild(actions);
-      bar.appendChild(main);
-      root.appendChild(bar);
-      wireLeaving();
+      foot.appendChild(verdict);
+      panel.appendChild(foot);
 
-      const chat = el("div", { class: "pv-chat", hidden: !S.ui.chatOpen });
-      chat.appendChild(el("div", { class: "pv-chat-head" },
-        el("span", { class: "pv-chat-title", text: "Ask the agent about the plan" }),
-        el("span", { class: "pv-chat-hint" })));
-      chat.appendChild(el("div", { class: "pv-chat-log" }));
-      chat.appendChild(el("div", { class: "pv-chat-composers" }));
-      root.appendChild(chat);
+      const dock = el("aside", { class: "pv-dock", "aria-label": "Conversation with the agent" });
+      dock.appendChild(panel);
+      shell.appendChild(dock);
+
+      /* The handle: always in reach, the mark with the count. It keeps the
+         old bar button's class so a page that opened the chat that way
+         still does. */
+      root.appendChild(el("button", { type: "button", class: "pv-panel-handle feedback-bar-chat",
+        "aria-label": "Open the conversation with the agent", title: "Conversation",
+        onclick: function () { setPanelOpen(!S.ui.chatOpen); } },
+        agentMark(""), el("span", { class: "pv-panel-count" })));
+      const right = root.querySelector(".pv-topbar-right");
+      if (right && !right.querySelector(".pv-panel-link")) {
+        right.insertBefore(el("button", { type: "button", class: "pv-panel-link",
+          onclick: function () { setPanelOpen(true); } },
+          "Conversation ", el("span", { class: "pv-panel-count" })), right.firstChild);
+      }
+      wireLeaving();
     }
 
     /* ---- the recovery panel -------------------------------------------
@@ -5723,11 +5852,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
         close();
         /* An open panel always gets a composer back, so cancelling the
            chat's is closing the chat. */
-        if (d.kind === "chat") {
-          S.ui.chatOpen = false;
-          S.ui.chatDraftShown = true;
-          renderChat();
-        }
+        if (d.kind === "chat") setPanelOpen(false);
       });
       sendBtn.addEventListener("click", function () {
         const text = ta.value.trim();
@@ -5789,7 +5914,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
            reviewer who then closes the panel has chosen. */
         if (d.kind === "chat" && d.text && !S.ui.chatDraftShown) {
           S.ui.chatDraftShown = true;
-          if (!S.ui.chatOpen) { S.ui.chatOpen = true; renderChat(); }
+          if (!S.ui.chatOpen) setPanelOpen(true);
         }
         openComposer({ id: d.id, clientId: d.clientId, kind: d.kind, ref: d.ref, thread: d.thread,
           revision: d.revision, text: d.text, blocking: d.blocking, quote: d.quote, silent: true });
@@ -5963,7 +6088,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       mountBanner(root);
       mountPresence(root);
       mountElements(root);
-      mountBar(root);
+      mountPanel(root);
       noticeHost();
       renderAll();
       if (!S.socket && !S.lost) connect();

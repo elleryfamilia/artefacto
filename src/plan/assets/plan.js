@@ -1745,6 +1745,11 @@
     function saveDraft(d) { const m = loadDraftMap(); m[d.id] = d; saveDraftMap(m); }
     function dropDraft(id) { const m = loadDraftMap(); delete m[id]; saveDraftMap(m); }
     S.threadDrafts = loadFollowups();
+    /* Declared here, above its first read: a const declared further down
+       would be in its dead zone when the session starts, and the guarded
+       read would quietly answer "closed". */
+    const PANEL_KEY = "artefacto.panel";
+    S.ui.chatOpen = panelStored();
 
     /* ---- transport ------------------------------------------------- */
 
@@ -2655,7 +2660,7 @@
     }
 
     function renderBar() {
-      const bar = document.querySelector(".feedback-bar");
+      const bar = document.querySelector(".pv-panel-foot");
       if (!bar) return;
       const threads = S.state.threads.filter(function (t) { return t.status !== "unanchored"; });
       const open = threads.filter(function (t) { return t.status === "open"; });
@@ -2748,8 +2753,11 @@
           el("p", { class: "thread-text", text: pending.text })));
       }
       log.hidden = S.state.chat.length === 0 && !pending;
-      const panel = document.querySelector(".pv-chat");
-      if (panel) panel.hidden = !S.ui.chatOpen;
+      const dock = document.querySelector(".pv-dock");
+      if (dock) dock.classList.toggle("is-hidden", !S.ui.chatOpen);
+      const handle = document.querySelector(".pv-panel-handle");
+      if (handle) handle.hidden = !!S.ui.chatOpen;
+      document.querySelectorAll(".pv-panel-count").forEach(function (n) { n.textContent = String(conversationCount()); });
     }
 
     /* An open panel always has somewhere to write. A body swap rebuilds
@@ -2802,67 +2810,105 @@
       try { return window.localStorage.getItem(HINT_KEY) === "1"; } catch (e) { return false; }
     }
 
-    function mountBar(root) {
-      if (root.querySelector(".feedback-bar")) return;
-      const bar = el("div", { class: "feedback-bar is-served" });
+    /* The conversation panel: one place for everything said to and by the
+       agent, docked beside the sheet. Closed by default; a floating handle
+       (the mark with the message count) and a top-bar link open it, the X
+       in its head hides it, and the choice is kept per browser. Its foot
+       holds the state line and the two verdicts, so the served page has no
+       bottom bar. */
+    function panelStored() {
+      try { return window.localStorage.getItem(PANEL_KEY) === "open"; } catch (e) { return false; }
+    }
+
+    function setPanelOpen(open) {
+      S.ui.chatOpen = open;
+      /* The reviewer has seen the panel; a draft in it no longer opens it
+         on their behalf. */
+      S.ui.chatDraftShown = true;
+      try { window.localStorage.setItem(PANEL_KEY, open ? "open" : "closed"); } catch (e) { /* best effort */ }
+      if (open) {
+        renderChat();
+        ensureChatComposer();
+        const ta = document.querySelector(".pv-chat-composers textarea");
+        if (ta) ta.focus({ preventScroll: true });
+      } else {
+        /* Closing with nothing written is not a draft worth keeping. */
+        document.querySelectorAll(".pv-chat .composer").forEach(function (c) {
+          const ta = c.querySelector("textarea");
+          if (ta && !ta.value.trim()) { dropDraft(c.getAttribute("data-composer")); c.remove(); }
+        });
+        renderChat();
+      }
+    }
+
+    /* What the handle and the top-bar link count: every message in the
+       conversation. */
+    function conversationCount() {
+      return S.state.chat.length;
+    }
+
+    function mountPanel(root) {
+      if (root.querySelector(".pv-dock")) return;
+      const sheet = root.querySelector(".pv-sheet");
+      if (!sheet) return;
+      const shell = el("div", { class: "pv-shell" });
+      sheet.parentNode.insertBefore(shell, sheet);
+      shell.appendChild(sheet);
+
+      const panel = el("div", { class: "pv-panel pv-chat" });
+      panel.appendChild(el("div", { class: "pv-panel-head" },
+        el("span", { class: "pv-panel-title", text: "Conversation" }),
+        el("span", { class: "pv-chat-hint" }),
+        el("button", { type: "button", class: "pv-btn is-quiet pv-panel-hide", "aria-label": "Hide conversation",
+          title: "Hide conversation", text: "\u00d7", onclick: function () { setPanelOpen(false); } })));
       if (!hintDismissed()) {
         const hint = el("div", { class: "feedback-bar-hint" },
-          el("span", { class: "feedback-bar-hint-text", text: "Comments wait for your review; \u201cAsk the agent\u201d reaches the agent now." }),
+          agentMark(""),
+          el("span", { class: "feedback-bar-hint-text", text: "Comments wait for your review; a question here reaches the agent now." }),
           el("button", { type: "button", class: "pv-btn is-quiet feedback-bar-hint-dismiss", text: "Got it", onclick: function () {
             try { window.localStorage.setItem(HINT_KEY, "1"); } catch (e) { /* an opaque origin; the hint returns next time */ }
             hint.remove();
           } }));
-        bar.appendChild(hint);
+        panel.appendChild(hint);
       }
-      const main = el("div", { class: "feedback-bar-main" });
-      main.appendChild(el("span", { class: "feedback-bar-state" },
+      panel.appendChild(el("div", { class: "pv-panel-log pv-chat-log" }));
+      panel.appendChild(el("div", { class: "pv-panel-composer pv-chat-composers" }));
+      const foot = el("div", { class: "pv-panel-foot" });
+      foot.appendChild(el("span", { class: "feedback-bar-state" },
         el("span", { class: "pv-dot" }), el("span", { class: "feedback-bar-state-text" })));
-      main.appendChild(el("span", { class: "feedback-bar-counts" },
+      foot.appendChild(el("span", { class: "feedback-bar-counts" },
         el("span", { class: "feedback-bar-count" }),
         el("span", { class: "feedback-bar-reviewed" }),
         el("span", { class: "feedback-bar-blocking is-alarm" })));
-      main.appendChild(el("span", { class: "feedback-bar-sent" }));
-      const actions = el("div", { class: "feedback-bar-actions" });
-      const askBar = el("button", { type: "button", class: "ask-btn is-labelled feedback-bar-chat",
-        dataset: { label: "Ask the agent" }, "aria-label": "Ask the agent about the plan", onclick: function () {
-        S.ui.chatOpen = !S.ui.chatOpen;
-        /* The reviewer has seen the panel; a draft in it no longer opens
-           it on their behalf. */
-        S.ui.chatDraftShown = true;
-        if (S.ui.chatOpen) {
-          renderChat();
-          openComposer({ kind: "chat" });
-        } else {
-          /* Closing with nothing written is not a draft worth keeping. */
-          document.querySelectorAll(".pv-chat .composer").forEach(function (c) {
-            const ta = c.querySelector("textarea");
-            if (ta && !ta.value.trim()) { dropDraft(c.getAttribute("data-composer")); c.remove(); }
-          });
-          renderChat();
-        }
-      } },
-        agentMark(""), el("span", { class: "ask-btn-label", text: "Ask the agent" }));
-      actions.appendChild(askBar);
+      foot.appendChild(el("span", { class: "feedback-bar-sent" }));
       /* Two verdicts on the plan, one group. Request changes is enabled with
          nothing written: it is a verdict on the plan, not on the comments. */
       const verdict = el("div", { class: "feedback-bar-verdict", role: "group", "aria-label": "Your verdict" });
-      verdict.appendChild(el("button", { type: "button", class: "pv-btn is-lg is-alarm feedback-bar-send", text: "Request changes",
+      verdict.appendChild(el("button", { type: "button", class: "pv-btn is-alarm feedback-bar-send", text: "Request changes",
         onclick: function () { submitReview("request_changes"); } }));
-      verdict.appendChild(el("button", { type: "button", class: "pv-btn is-lg feedback-bar-approve", text: "Approve",
+      verdict.appendChild(el("button", { type: "button", class: "pv-btn feedback-bar-approve", text: "Approve",
         onclick: function () { submitReview("approve"); } }));
-      actions.appendChild(verdict);
-      main.appendChild(actions);
-      bar.appendChild(main);
-      root.appendChild(bar);
-      wireLeaving();
+      foot.appendChild(verdict);
+      panel.appendChild(foot);
 
-      const chat = el("div", { class: "pv-chat", hidden: !S.ui.chatOpen });
-      chat.appendChild(el("div", { class: "pv-chat-head" },
-        el("span", { class: "pv-chat-title", text: "Ask the agent about the plan" }),
-        el("span", { class: "pv-chat-hint" })));
-      chat.appendChild(el("div", { class: "pv-chat-log" }));
-      chat.appendChild(el("div", { class: "pv-chat-composers" }));
-      root.appendChild(chat);
+      const dock = el("aside", { class: "pv-dock", "aria-label": "Conversation with the agent" });
+      dock.appendChild(panel);
+      shell.appendChild(dock);
+
+      /* The handle: always in reach, the mark with the count. It keeps the
+         old bar button's class so a page that opened the chat that way
+         still does. */
+      root.appendChild(el("button", { type: "button", class: "pv-panel-handle feedback-bar-chat",
+        "aria-label": "Open the conversation with the agent", title: "Conversation",
+        onclick: function () { setPanelOpen(!S.ui.chatOpen); } },
+        agentMark(""), el("span", { class: "pv-panel-count" })));
+      const right = root.querySelector(".pv-topbar-right");
+      if (right && !right.querySelector(".pv-panel-link")) {
+        right.insertBefore(el("button", { type: "button", class: "pv-panel-link",
+          onclick: function () { setPanelOpen(true); } },
+          "Conversation ", el("span", { class: "pv-panel-count" })), right.firstChild);
+      }
+      wireLeaving();
     }
 
     /* ---- the recovery panel -------------------------------------------
@@ -3067,11 +3113,7 @@
         close();
         /* An open panel always gets a composer back, so cancelling the
            chat's is closing the chat. */
-        if (d.kind === "chat") {
-          S.ui.chatOpen = false;
-          S.ui.chatDraftShown = true;
-          renderChat();
-        }
+        if (d.kind === "chat") setPanelOpen(false);
       });
       sendBtn.addEventListener("click", function () {
         const text = ta.value.trim();
@@ -3133,7 +3175,7 @@
            reviewer who then closes the panel has chosen. */
         if (d.kind === "chat" && d.text && !S.ui.chatDraftShown) {
           S.ui.chatDraftShown = true;
-          if (!S.ui.chatOpen) { S.ui.chatOpen = true; renderChat(); }
+          if (!S.ui.chatOpen) setPanelOpen(true);
         }
         openComposer({ id: d.id, clientId: d.clientId, kind: d.kind, ref: d.ref, thread: d.thread,
           revision: d.revision, text: d.text, blocking: d.blocking, quote: d.quote, silent: true });
@@ -3307,7 +3349,7 @@
       mountBanner(root);
       mountPresence(root);
       mountElements(root);
-      mountBar(root);
+      mountPanel(root);
       noticeHost();
       renderAll();
       if (!S.socket && !S.lost) connect();

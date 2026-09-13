@@ -2557,30 +2557,111 @@ label.feedback-bar-approve {
   cursor: pointer;
 }
 label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
-.pv-chat {
-  position: fixed;
-  left: 50%;
-  bottom: 5.5rem;
-  transform: translateX(-50%);
-  z-index: 39;
-  width: min(1180px - 2 * 3.75rem, calc(100vw - 2.5rem));
-  max-height: 60vh;
-  overflow: auto;
-  padding: 0.875rem 1.125rem;
-  background: var(--surface);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-float);
+/* The conversation panel, docked beside the sheet. Above 1400px it is
+   sticky and the sheet gives it room; below, it floats over the right
+   margin and the sheet keeps its measure. Closed, it is a handle. */
+.pv-shell { display: flex; align-items: flex-start; justify-content: center; gap: 0; }
+.pv-shell .pv-sheet { flex: 0 1 1180px; min-width: 0; margin: 0; }
+.pv-dock {
+  position: sticky;
+  top: 0;
+  flex: 0 0 380px;
+  height: 100dvh;
+  box-sizing: border-box;
+  padding: 1rem 1rem 1.5rem 0;
 }
-.pv-chat[hidden] { display: none; }
-.pv-chat-head { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
-.pv-chat-title { font-family: var(--font-mono); font-size: 0.75rem; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; }
-.pv-chat-hint { font-family: var(--font-mono); font-size: 0.688rem; color: var(--muted); }
-.pv-chat-log { display: flex; flex-direction: column; gap: 0.375rem; margin-bottom: 0.5rem; }
-.pv-chat-log[hidden] { display: none; }
+.pv-dock.is-hidden { display: none; }
+.pv-dock .pv-panel { height: 100%; max-width: none; }
+@media (max-width: 87.5rem) {
+  .pv-dock {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 45;
+    flex: none;
+    width: min(396px, 92vw);
+    height: auto;
+    padding: 1rem 1rem 1.5rem;
+  }
+  .pv-dock .pv-panel { box-shadow: var(--shadow-float); }
+}
+.pv-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  background: var(--page);
+  border: var(--rule-w) solid var(--rule);
+  border-radius: var(--radius-lg);
+  font-family: var(--font-serif);
+  color: var(--ink);
+  overflow: hidden;
+}
+.pv-panel-head { display: flex; align-items: center; gap: 0.625rem; padding: 0.75rem 0.875rem; border-bottom: 1px solid var(--rule); }
+.pv-panel-title { font-family: var(--font-mono); font-size: 0.688rem; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3); flex: 1; }
+.pv-panel-head .pv-chat-hint { font-family: var(--font-mono); font-size: 0.625rem; color: var(--muted); }
+.pv-panel-hide { font-size: 1rem; line-height: 1; padding: 0 0.375rem; }
+.pv-panel .feedback-bar-hint { flex: none; padding: 0.5rem 0.875rem; border-bottom: 1px solid var(--rule); font-size: 0.75rem; }
+.pv-panel-log { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0.875rem; display: flex; flex-direction: column; gap: 0.875rem; }
+.pv-panel-log[hidden] { display: none; }
 .pv-chat-msg { display: grid; grid-template-columns: 3.25rem 1fr; gap: 0.5rem; align-items: baseline; }
 .pv-chat-msg[data-actor="agent"] .thread-actor { color: var(--agent); }
+.pv-chat-msg .thread-text { font-size: 0.9375rem; }
+.pv-panel-composer { border-top: 1px solid var(--rule); padding: 0.625rem 0.875rem 0.875rem; display: flex; flex-direction: column; gap: 0.5rem; background: var(--surface); flex: none; }
 .pv-chat .composer { margin-top: 0; }
+.pv-panel-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.75rem 0.875rem;
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: 0.688rem;
+  color: var(--ink-3);
+  flex: none;
+}
+.pv-panel-foot .feedback-bar-verdict { margin-left: auto; }
+.pv-panel-foot .feedback-bar-verdict .pv-btn { font-size: 0.625rem; padding: 0.375rem 0.625rem; min-height: 1.75rem; }
+.pv-panel-foot.is-sent { color: var(--ink-2); }
+/* The handle: the mark with the count, fixed at the bottom right. */
+.pv-panel-handle {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem 0.5rem 0.625rem;
+  border: 1px solid var(--agent-rule);
+  border-radius: 999px;
+  background: var(--page);
+  color: var(--agent);
+  box-shadow: var(--shadow-float);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.688rem;
+  font-weight: 600;
+}
+.pv-panel-handle .ag-mark { font-size: 1.125rem; }
+.pv-panel-handle:hover { background: var(--agent); color: var(--agent-ink); border-color: var(--agent); }
+.pv-panel-handle[hidden] { display: none; }
+.pv-panel-count { font-family: var(--font-mono); font-size: 0.656rem; }
+/* Styled like the top bar's links, but not one of them: a test or a script
+   that takes the first link there still gets the index. */
+.pv-panel-link {
+  appearance: none;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.719rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pv-panel-link:hover { color: var(--action); }
 
 @media print {
   /* Paper is white whatever theme is on: the light palette, re-declared. */
@@ -2626,6 +2707,8 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
   .pv-theme,
   .feedback-bar,
   .pv-chat,
+  .pv-dock,
+  .pv-panel-handle,
   .pv-presence,
   .thread-actions,
   .thread-composer,
