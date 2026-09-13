@@ -20,7 +20,7 @@
     ],
     "agent": "claude",
     "created": "2026-09-12",
-    "revision": 11
+    "revision": 13
   },
   "phases": [
     {
@@ -671,7 +671,7 @@
           "id": "t-panel-shell",
           "title": "The shell, the dock, and the hidden state",
           "summary_md": "`pv-shell` wraps the sheet and an `aside.pv-dock` holding `pv-panel`: a head (title, presence, an X that hides the panel), the log, the composer, the foot. Docked and sticky at 100dvh from 1400px up, fixed over the right margin below; Decided (`q-panel-default`: closed): the panel starts closed. What stays on screen is a floating handle, the agent's mark with the message count, fixed at the bottom right of the sheet and always in reach, that opens the panel with one click; the top bar keeps a plain *Conversation (N)* link as well. Hiding the panel returns to the handle. The served bottom bar goes: its state line and verdict group move to the panel foot, its hint to the panel head's first run. Static export unchanged.",
-          "status": "in_progress",
+          "status": "done",
           "risk": "medium",
           "files": [
             {
@@ -700,7 +700,7 @@
           "id": "t-panel-log",
           "title": "One log for the whole conversation",
           "summary_md": "The log renders, in time order: page-level chat, every question thread's messages and the asks inside comment threads, each message with the avatar, the actor, the time, and a context chip (`pv-ctx`) naming the element (kind and title) that scrolls to it on click; the working row while a question waits; `pv-panel-event` lines for a revision (*revision 3 pushed*) and for the agent attaching or leaving; the agent's nudge as `pv-panel-nudge`; a resolution as a `pv-ctx.is-resolution` chip. The log follows the newest message unless the reviewer has scrolled up.",
-          "status": "planned",
+          "status": "done",
           "risk": "medium",
           "depends_on": [
             "t-panel-shell"
@@ -727,7 +727,7 @@
           "id": "t-panel-composer",
           "title": "The composer aims at an element",
           "summary_md": "One composer in the panel: the persistent input from the thread, with a target line above it (*asking about Lock contention*, with a clear button). Clicking an element's mark opens the panel and aims the composer at that element; with a target, Enter sends `chat.send` with `ref` (or with `thread` when the element already has a question thread); without one, page-level. The draft and the target survive a swap and a reload; focus comes back after a swap. The inline question thread and its persistent input go; the comment thread's *Ask the agent* aims the panel at that thread instead of opening a composer inline.",
-          "status": "planned",
+          "status": "done",
           "risk": "high",
           "depends_on": [
             "t-panel-log"
@@ -754,7 +754,7 @@
           "id": "t-element-echo",
           "title": "What the element shows",
           "summary_md": "An element with a question thread carries `is-discussed` (the teal spine), its mark carries `ask-count` (messages in its thread), and `ask-preview` (avatar and the last message, one line) sits after the controls and opens the panel scrolled to that thread. Comments stay inline as today.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-panel-composer"
@@ -783,7 +783,7 @@
           "id": "t-panel-record",
           "title": "Tests, screenshots, and the record",
           "summary_md": "Screenshots at 1440 (docked) and 1280 (overlay) in light and dark with the panel open and hidden; the browser tests that named the inline question thread rewritten for the panel; spec 4.3 and the skill's page description updated; BUILD-STATUS.",
-          "status": "planned",
+          "status": "in_progress",
           "risk": "low",
           "depends_on": [
             "t-element-echo"

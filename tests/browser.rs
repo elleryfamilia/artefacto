@@ -3287,6 +3287,11 @@ fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
         "the answer ends the working row"
     );
     assert_eq!(
+        page.text("document.querySelector('.pv-panel-msg[data-thread=\"c-1\"]').dataset.actor"),
+        "reviewer",
+        "the question comes before its answer, even within the same second"
+    );
+    assert_eq!(
         page.text("document.querySelector('.pv-presence').dataset.mode"),
         "waiting"
     );

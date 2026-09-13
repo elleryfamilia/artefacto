@@ -5675,7 +5675,13 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
         });
       });
       S.ui.panelEvents.forEach(function (ev) { out.push({ event: true, kind: ev.kind, text: ev.text, ts: ev.ts }); });
-      out.sort(function (a, b) { return (Date.parse(a.ts) || 0) - (Date.parse(b.ts) || 0); });
+      /* Ordered by time at one-second grain: the server stamps seconds,
+         the page's own events carry milliseconds, and an answer must not
+         sort ahead of its question because its stamp is coarser. Ties keep
+         insertion order, which is each thread's own order. */
+      out.sort(function (a, b) {
+        return Math.floor((Date.parse(a.ts) || 0) / 1000) - Math.floor((Date.parse(b.ts) || 0) / 1000);
+      });
       return out;
     }
 
