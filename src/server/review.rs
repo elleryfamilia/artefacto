@@ -86,6 +86,10 @@ pub struct Thread {
     pub target: String,
     pub quote: String,
     pub blocking: bool,
+    /// Opened by a question to the agent rather than by a comment: the
+    /// opening message was delivered as `chat.sent` and answered in place.
+    #[serde(default)]
+    pub asked: bool,
     pub status: ThreadStatus,
     pub messages: Vec<Message>,
 }

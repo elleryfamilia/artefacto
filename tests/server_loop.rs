@@ -767,3 +767,130 @@ fn resolving_a_thread_the_same_way_twice_records_it_once() {
     assert_eq!(l.server.count_events("thread.resolved"), 3);
     assert_eq!(l.server.thread_status(&thread), "declined");
 }
+
+#[test]
+fn a_question_asked_on_an_element_opens_its_thread_and_wakes_the_agent() {
+    let l = start();
+    let cookie = l.cookie();
+
+    // No comment first: the reviewer asks straight on the task.
+    let asked = l.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "chat.send", "client_id": "cid-1", "ref": "task:t-a", "quote": "Task A",
+            "text": "is this the whole plan?", "opened_revision": 1,
+        }),
+    );
+    assert_eq!(asked["ok"], true, "{asked}");
+    assert_eq!(
+        asked["assigned"], "c-1",
+        "the thread id is minted the way thread.open mints it"
+    );
+
+    // One event, active, naming the thread it opened.
+    let heard = l
+        .repo
+        .run(&["await", "--timeout", "5s", "--session", &l.session]);
+    let heard: serde_json::Value = serde_json::from_str(heard.success().stdout.trim()).unwrap();
+    assert_eq!(heard["status"], "chat");
+    let events = heard["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1, "no separate thread.opened: {events:?}");
+    let last = events.last().unwrap();
+    assert_eq!(last["type"], "chat.sent");
+    assert_eq!(last["data"]["thread"], "c-1");
+    assert_eq!(last["data"]["ref"], "task:t-a");
+    assert_eq!(last["data"]["quote"], "Task A");
+
+    // The fold has the thread, marked as asked, with the question as its
+    // opening message.
+    let status = l.repo.json(&["status", "--json"]);
+    let thread = &status["artifacts"][0]["threads"][0];
+    assert_eq!(thread["id"], "c-1");
+    assert_eq!(thread["ref"], "task:t-a");
+    assert_eq!(thread["asked"], true);
+    assert_eq!(thread["status"], "open");
+    assert_eq!(thread["messages"][0]["text"], "is this the whole plan?");
+    assert_eq!(status["artifacts"][0]["open_threads"], 1);
+
+    // The answer lands in that thread, and the next thread id follows on.
+    l.repo
+        .run(&[
+            "reply",
+            "--session",
+            &l.session,
+            "--thread",
+            "c-1",
+            "yes, all of it",
+        ])
+        .success();
+    let opened = l.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "thread.open", "client_id": "cid-2", "ref": "task:t-a",
+            "text": "then add a rollback step", "blocking": false, "opened_revision": 1,
+        }),
+    );
+    assert_eq!(
+        opened["assigned"], "c-2",
+        "the counter moved past the question's thread"
+    );
+    let status = l.repo.json(&["status", "--json"]);
+    let threads = status["artifacts"][0]["threads"].as_array().unwrap();
+    assert_eq!(threads[0]["messages"][1]["actor"], "agent");
+    assert_eq!(threads[0]["messages"][1]["text"], "yes, all of it");
+    assert_eq!(threads[1]["asked"], false, "a comment is not a question");
+
+    // The review document tells the two apart.
+    l.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "review.submit", "client_id": "cid-3", "verdict": "comment", "base_revision": 1,
+        }),
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(l.feedback_path()).unwrap()).unwrap();
+    assert_eq!(doc["comments"][0]["id"], "c-1");
+    assert_eq!(doc["comments"][0]["asked"], true);
+    assert_eq!(doc["comments"][1]["asked"], false);
+}
+
+#[test]
+fn a_question_names_a_thread_or_an_element_that_exists_not_both() {
+    let l = start();
+    let cookie = l.cookie();
+
+    let both = l.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "chat.send", "client_id": "cid-1", "thread": "c-1", "ref": "task:t-a",
+            "text": "which?", "opened_revision": 1,
+        }),
+    );
+    assert_eq!(both["ok"], false, "{both}");
+    assert!(
+        both["error"].as_str().unwrap_or("").contains("not both"),
+        "{both}"
+    );
+
+    let missing = l.server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "chat.send", "client_id": "cid-2", "ref": "task:t-nope",
+            "text": "where?", "opened_revision": 1,
+        }),
+    );
+    assert_eq!(missing["ok"], false, "{missing}");
+    assert!(
+        missing["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("no such element"),
+        "{missing}"
+    );
+    assert_eq!(l.server.count_events("chat.sent"), 0, "nothing was logged");
+}
