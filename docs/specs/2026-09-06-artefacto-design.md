@@ -342,24 +342,34 @@ Grotesque, Space Mono, Bungee, embedded like Newsreader and JetBrains Mono),
 squares every corner, and doubles every structural rule; radii and the
 rule weight are tokens for that reason.
 
-**The header (the third design round, 2026-09-13).** It carries the brand,
-the conversation, one link out, the revision, and the theme. Only one of
-those leaves the document, so only one of them is a link: *All artifacts*
-has a grid mark, the action colour, a rule under it, and a divider before
-the revision. The theme is a preference rather than part of the review, so
+**The header (the third design round, 2026-09-13).** The bar is the room,
+not the document: it carries the brand, one link out, and the theme, and
+nothing of the plan's own. The plan's name is the title, and its id and
+revision are the line above the title, beside who wrote it and when.
+
+*All artifacts* is the only control in the bar that leaves the document, so
+it is the only one styled as a link: a grid mark, the action colour, and a
+rule under it. The theme is a preference rather than part of the review, so
 it is one glyph at the end with the four choices behind it, closed by
 Escape or a click outside; the glyph's label says which theme is showing.
 The room is called *Plan* rather than *Plan viewer*: it shows many kinds of
 artifact, and is named after what is on screen.
 
-Everything else in the bar earns its place by changing. The plan's id is
-the eyebrow under its title, so the bar carries the revision alone. The
-conversation's count appears only once something has been said, because a
-zero beside the word reads as a status rather than a tally. **The presence
-pill appears only when nobody is there to hear the reviewer** -- no agent,
-a dropped connection, a stopped server, a signed-out page -- and names the
-agent that left. An attached agent is the normal case, and a header that
-announces the normal case is one a reader learns to stop reading.
+The conversation is reached one way, the floating handle, which is always
+in reach and steps aside when the panel is open; its count appears only
+once something has been said, because a zero beside the word reads as a
+status rather than a tally. **The presence pill appears only when nobody is
+there to hear the reviewer** -- no agent, a dropped connection, a stopped
+server, a signed-out page -- and names the agent that left. An attached
+agent is the normal case, and a header that announces the normal case is
+one a reader learns to stop reading.
+
+**The orientation banner is read once.** A reviewer opening a plan cold has
+no other way to know the page collects comments, and that is worth one
+reading. It appears on the first open of a plan in a browser, carries its
+own way out, and does not come back; another plan is a first open again. It
+is not a dialog, because the modal is reserved for the three things that
+stop the page and an explanation is not one of them.
 
 **The agent has a name.** Every agent event carries its lease name in
 `data.agent` (section 6.1), both folds keep it on the turn it wrote, and
@@ -383,7 +393,10 @@ the scrubber. The phases segment is a group: it carries a numeral per phase
 up to six and dense ticks past that, and flags a phase that holds a blocked
 task or a high risk. The numeral is the count; the strip does not also spell
 out *N of M* beside it, and the glyph on a segment is navigation furniture
-that never takes a colour in any state. A click on a segment scrolls the
+that never takes a colour in any state. The phase dependency graph is a
+section but not a segment: its label truncated beside the phases it belongs
+to and read as a second phases segment, and it is not a place a reader
+navigates to on its own. A click on a segment scrolls the
 section under the header, not behind it, and flashes it. Anchor jumps clear
 the header too: `plan.js` measures the bar into `--bar-h` and the page's
 `scroll-margin-top` follows it, because the strip made the header two rows
