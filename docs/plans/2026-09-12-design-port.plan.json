@@ -20,7 +20,7 @@
     ],
     "agent": "claude",
     "created": "2026-09-12",
-    "revision": 13
+    "revision": 14
   },
   "phases": [
     {
@@ -615,7 +615,7 @@
           "id": "t-tests",
           "title": "The suite and the screenshots",
           "summary_md": "Every browser test that named a class or a text the port changed is updated with the slice that changed it, never after. This task is the final pass: the full gate, three screenshots of the kitchen-sink page (light, dark, and vibe if shipped) with seeded threads of every kind and status, and a static one.",
-          "status": "in_progress",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-static",
@@ -636,7 +636,7 @@
           "id": "t-record",
           "title": "The record",
           "summary_md": "`docs/BUILD-STATUS.md` gets the port's section: what changed per slice, what the screenshots found, the mutations, the review round. Spec 4.3 names the presence modes and the two verdict buttons; the skill's reference lists the `working` mode.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-tests"
@@ -783,7 +783,7 @@
           "id": "t-panel-record",
           "title": "Tests, screenshots, and the record",
           "summary_md": "Screenshots at 1440 (docked) and 1280 (overlay) in light and dark with the panel open and hidden; the browser tests that named the inline question thread rewritten for the panel; spec 4.3 and the skill's page description updated; BUILD-STATUS.",
-          "status": "in_progress",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-element-echo"
