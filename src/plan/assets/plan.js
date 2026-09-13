@@ -4467,7 +4467,9 @@
     markIntroSeen(key);
     if (!banner.querySelector(".pv-banner-dismiss")) {
       banner.appendChild(el("button", {
-        type: "button", class: "pv-btn is-quiet pv-banner-dismiss", text: "Got it",
+        /* The page's one button family, outlined: a dismiss that reads as
+           another label in the row is a dismiss nobody presses. */
+        type: "button", class: "pv-btn pv-banner-dismiss", text: "Got it",
         onclick: function () { banner.remove(); },
       }));
     }
