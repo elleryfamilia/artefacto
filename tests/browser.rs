@@ -124,8 +124,8 @@ fn the_served_page_runs_its_script_under_the_nonce_policy() {
     );
     let banner = page.text("document.querySelector('.pv-banner').textContent");
     assert!(
-        banner.contains("send your review"),
-        "a served page ends in Send review: {banner}"
+        banner.contains("give your verdict") && banner.contains("conversation"),
+        "a served page ends in a verdict, given in the conversation: {banner}"
     );
     assert!(
         !banner.contains("copy"),
@@ -572,7 +572,7 @@ fn marking_reviewed_reaches_the_log_and_survives_a_reload() {
 }
 
 #[test]
-fn asking_the_agent_wakes_it_from_the_page_and_from_a_thread() {
+fn asking_the_agent_wakes_it_from_the_page_and_from_a_comment_thread() {
     let Some(browser) = Browser::launch() else {
         return;
     };
@@ -602,20 +602,31 @@ fn asking_the_agent_wakes_it_from_the_page_and_from_a_thread() {
     assert_eq!(r["status"], "chat");
     let seq = r["seq"].to_string();
 
-    // Inside a comment thread: Ask the agent aims the panel at that thread,
-    // and the question joins the thread on the element.
+    // A comment thread's Ask the agent hands off to the panel, aimed at the
+    // same element. The comment stays a comment where it was left; the
+    // question is its own conversation, and it shows in the panel.
     comment(&mut page, "task:t-a", "and this?");
     page.click(".thread[data-thread=\"c-1\"] .thread-ask");
     assert_eq!(
-        page.eval("!document.querySelector('.pv-panel-target').hidden"),
-        true,
-        "aimed at the thread"
+        page.text("document.querySelector('.pv-panel-target .pv-ctx').title"),
+        "task:t-a",
+        "aimed at the element, not into the comment"
     );
     page.type_into(".pv-panel-composer textarea", "really?");
     enter(&mut page, ".pv-panel-composer textarea");
     page.wait_until(
-        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
-        "the question to join the thread",
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-2\"]:not(.thread-working)').length === 1",
+        "the question to open its own thread in the panel",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length"),
+        1,
+        "the comment is still a comment on its element"
+    );
+    assert_eq!(
+        page.eval("!document.querySelector('.thread[data-thread=\"c-2\"]')"),
+        true,
+        "and the question is not rendered there"
     );
     let out = s.repo.run(&[
         "await",
@@ -629,7 +640,8 @@ fn asking_the_agent_wakes_it_from_the_page_and_from_a_thread() {
     let r: serde_json::Value = serde_json::from_str(out.success().stdout.trim()).unwrap();
     assert_eq!(r["status"], "chat");
     let last = r["events"].as_array().unwrap().last().unwrap().clone();
-    assert_eq!(last["data"]["thread"], "c-1");
+    assert_eq!(last["data"]["thread"], "c-2");
+    assert_eq!(last["data"]["ref"], "task:t-a");
     assert_eq!(last["data"]["text"], "really?");
 }
 
@@ -2636,11 +2648,16 @@ fn buffered_replies_drain_in_log_order() {
     );
     release_path(&mut page, "/state");
     connected(&mut page);
-    let messages = debug(&mut page)["threads"][0]["messages"].clone();
+    let threads = debug(&mut page)["threads"].clone();
     assert_eq!(
-        messages,
-        serde_json::json!(["reviewer: the comment", "reviewer: one", "reviewer: two"]),
+        threads[0]["messages"],
+        serde_json::json!(["reviewer: the comment", "reviewer: one"]),
         "log order, not arrival order"
+    );
+    assert_eq!(
+        threads[1]["messages"],
+        serde_json::json!(["reviewer: two"]),
+        "the question is its own thread on the same element"
     );
 }
 
@@ -3377,8 +3394,8 @@ fn the_hint_line_shows_until_dismissed_and_stores_nothing_before() {
     );
     let banner = page.text("document.querySelector('.pv-banner-text').textContent");
     assert!(
-        banner.contains("reaches it now") && !banner.contains("hears you"),
-        "the banner says which of the two reaches the agent now: {banner}"
+        banner.contains("ask the agent in the conversation") && banner.contains("saved as you go"),
+        "the banner sends the reviewer to the conversation and says nothing is lost: {banner}"
     );
     assert_eq!(
         page.eval("window.localStorage.getItem('artefacto.hint.ask')"),
@@ -3449,6 +3466,23 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
         "task:t-session-store",
         "why a trait rather than a plain struct here?",
         "c-1",
+    );
+    // The task's acceptance rows share its ref and carry their own marks:
+    // the count and the spine belong to the element, once.
+    assert_eq!(
+        page.eval("document.querySelectorAll('[data-plan-ref=\"task:t-session-store\"] .ask-count').length"),
+        1,
+        "one count on the element, not one per criterion row"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.is-discussed').length"),
+        1,
+        "and one spine"
+    );
+    assert_eq!(
+        page.eval("!document.querySelector('.acceptance li.is-discussed') && !document.querySelector('.acceptance .ask-count')"),
+        true,
+        "nothing on a criterion row"
     );
     s.repo
         .run(&[
@@ -3525,8 +3559,6 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
         0,
         "only the chosen verdict is ever filled"
     );
-    // The panel open beside the sheet, scrolled to the blocking comment.
-    page.click(".pv-panel-link");
     // The panel open beside the sheet, scrolled to the blocking comment.
     page.click(".pv-panel-link");
     page.eval("document.querySelector('.thread[data-thread=\"c-2\"]').scrollIntoView({ block: 'center' })");
@@ -3642,8 +3674,38 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
     let mut page = browser.new_page();
     page.navigate(&s.url);
     connected(&mut page);
-    let banner = page.text("document.querySelector('.pv-banner-steps').textContent");
-    assert!(banner.contains("come back later"), "{banner}");
+    let steps = page.text("document.querySelector('.pv-banner-steps').textContent");
+    assert!(
+        steps.contains("verdict"),
+        "the third step is the verdict: {steps}"
+    );
+    // The verdict lives in the panel, and the panel starts closed: the
+    // handle says what it is until this browser has opened it once.
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-handle').classList.contains('is-labelled')"),
+        true,
+        "the handle carries its name on a first visit"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.feedback-bar-approve').getBoundingClientRect().width"),
+        0,
+        "and the verdict is not reachable until it is opened"
+    );
+    page.click(".pv-panel-handle");
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-handle').classList.contains('is-labelled')"),
+        false,
+        "once opened, the mark and the count are enough"
+    );
+    assert_eq!(
+        page.eval(
+            "(function(){ const r = document.querySelector('.feedback-bar-approve').getBoundingClientRect(); \
+               const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); \
+               return r.width > 0 && r.height > 0 && !!el && el.closest('.feedback-bar-verdict') !== null; })()"
+        ),
+        true,
+        "the verdict buttons are visible and hittable in the open panel"
+    );
 
     // While a write is on its way the line says Saving; once answered, Saved.
     shape_fetch(&mut page, "/cmd", "hold-response", 900);
@@ -4127,10 +4189,17 @@ fn the_conversation_panel_starts_closed_docks_and_comes_back() {
         page.text("getComputedStyle(document.querySelector('.pv-dock')).position"),
         "sticky"
     );
+    let sheet = page.eval(
+        "(function(){ const r = document.querySelector('.pv-sheet').getBoundingClientRect(); \
+           return { left: Math.round(r.left), width: Math.round(r.width) }; })()",
+    );
     assert_eq!(
-        page.eval("document.querySelector('.pv-sheet').getBoundingClientRect().width < 1100"),
-        true,
-        "the sheet narrowed for the dock"
+        sheet["width"], 800,
+        "the sheet narrows to a reading measure for the dock: {sheet}"
+    );
+    assert!(
+        sheet["left"].as_f64().unwrap_or(0.0) > 24.0,
+        "and keeps a gutter from the edge: {sheet}"
     );
     page.screenshot(&screenshot_path("panel-docked-1440"));
     page.call("Emulation.setDeviceMetricsOverride", serde_json::json!({ "width": 1280, "height": 900, "deviceScaleFactor": 1, "mobile": false }));
@@ -4141,9 +4210,17 @@ fn the_conversation_panel_starts_closed_docks_and_comes_back() {
     assert_eq!(
         page.eval("document.querySelector('.pv-sheet').getBoundingClientRect().width >= 1170"),
         true,
-        "the sheet keeps its measure under the overlay"
+        "the sheet keeps its measure under the overlay: opening it reflows nothing"
     );
     page.screenshot(&screenshot_path("panel-overlay-1280"));
+    // Closing gives the page back whole, at either width.
+    page.click(".pv-panel-hide");
+    assert_eq!(
+        page.eval("document.querySelector('.pv-sheet').getBoundingClientRect().width >= 1170"),
+        true,
+        "closed, the sheet is the whole sheet"
+    );
+    page.click(".pv-panel-handle");
     page.call(
         "Emulation.clearDeviceMetricsOverride",
         serde_json::json!({}),
@@ -4185,4 +4262,139 @@ fn the_conversation_panel_starts_closed_docks_and_comes_back() {
         true,
         "the top-bar link opens it too"
     );
+}
+
+#[test]
+fn the_panel_opens_at_the_newest_message_and_keeps_its_foot_at_the_bottom() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    // Nothing said yet: the log is empty and the foot still sits at the
+    // bottom of the panel rather than half way up an empty box.
+    page.click(".feedback-bar-chat");
+    let gap = page.eval(
+        "(function(){ const p = document.querySelector('.pv-panel').getBoundingClientRect(); \
+           const f = document.querySelector('.pv-panel-foot').getBoundingClientRect(); \
+           return Math.round(p.bottom - f.bottom); })()",
+    );
+    assert!(
+        gap.as_f64().unwrap_or(999.0) < 8.0,
+        "the foot is at the bottom of the panel, not {gap} above it"
+    );
+
+    // A conversation long enough to scroll, arriving while the panel is
+    // closed: opening shows the newest message, not the oldest.
+    ask(&mut page, "task:t-a", "is this the whole plan?", "c-1");
+    page.click(".pv-panel-hide");
+    for i in 0..14 {
+        s.repo
+            .run(&[
+                "reply",
+                "--session",
+                &s.session,
+                "--thread",
+                "c-1",
+                &format!("answer number {i}, long enough to take a line of its own in the log"),
+            ])
+            .success();
+    }
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]').length === 15",
+        "every answer to land while the panel is closed",
+    );
+    page.click(".feedback-bar-chat");
+    let at = page.eval(
+        "(function(){ const l = document.querySelector('.pv-panel-log'); \
+           return { top: Math.round(l.scrollTop), max: Math.round(l.scrollHeight - l.clientHeight) }; })()",
+    );
+    let top = at["top"].as_f64().unwrap_or(0.0);
+    let max = at["max"].as_f64().unwrap_or(0.0);
+    assert!(max > 0.0, "the log scrolls: {at}");
+    assert!(
+        top >= max - 8.0,
+        "opening lands on the newest message, not the oldest: {at}"
+    );
+}
+
+#[test]
+fn the_preview_opens_the_newest_conversation_on_its_element() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    ask(&mut page, "task:t-a", "first question", "c-1");
+    s.repo
+        .run(&[
+            "resolve",
+            "c-1",
+            "--session",
+            &s.session,
+            "--declined",
+            "--note",
+            "Answered elsewhere.",
+        ])
+        .success();
+    page.wait_until(
+        "!!document.querySelector('.pv-panel-msg[data-thread=\"c-1\"] .pv-ctx.is-resolution')",
+        "the first conversation to close",
+    );
+    // A resolved conversation is closed: the next question is its own.
+    ask(&mut page, "task:t-a", "second question", "c-2");
+    assert_eq!(
+        page.text("document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-preview .ask-preview-text').textContent"),
+        "second question"
+    );
+    assert_eq!(
+        page.text(
+            "document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-preview').dataset.thread"
+        ),
+        "c-2",
+        "the preview follows the newest conversation, not whichever came first"
+    );
+}
+
+#[test]
+fn a_send_that_cannot_leave_the_page_leaves_the_composer_usable() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".feedback-bar-chat");
+    // A fetch that throws where it stands, the way a policy or an extension
+    // can: the send must fail like any other, not wedge the composer.
+    page.eval("(function(){ window.__fetch = window.fetch; window.fetch = function () { throw new Error('blocked'); }; return true; })()");
+    page.type_into(".pv-panel-composer textarea", "does this go anywhere?");
+    enter(&mut page, ".pv-panel-composer textarea");
+    page.wait_until(
+        "!!document.querySelector('.pv-panel-composer .pv-error')",
+        "the composer to say it was not sent",
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-composer .thread-composer-send').disabled"),
+        false,
+        "and to let the reviewer try again"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
+        "does this go anywhere?",
+        "with what they wrote still there"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-state-text').textContent"),
+        "Saved \u{b7} rev 1",
+        "the state line is not stuck saying Saving"
+    );
+    page.eval("(function(){ window.fetch = window.__fetch; return true; })()");
+    let _ = s;
 }

@@ -1787,7 +1787,12 @@
       S.inflight++;
       renderBar();
       const settle = function () { S.inflight = Math.max(0, S.inflight - 1); renderBar(); };
-      return post(cmd).then(function (reply) { settle(); return reply; }, function (e) { settle(); throw e; }).then(function (reply) {
+      /* Started inside a promise: a synchronous throw from `fetch` (a stub,
+         a policy, an extension) must reject like any other failure rather
+         than escape and leave the counter and the sender's flag set. */
+      return Promise.resolve().then(function () { return post(cmd); })
+        .then(function (reply) { settle(); return reply; }, function (e) { settle(); throw e; })
+        .then(function (reply) {
         if (!reply || !reply.ok) throw new Error((reply && reply.error) || "refused");
         if (reply.seq === 0) {
           resync();
@@ -2505,8 +2510,12 @@
       actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet thread-reply", text: "Reply", onclick: function () {
         openComposer({ kind: "reply", thread: t.id, ref: t.target });
       } }));
+      /* Not into this thread: a comment is feedback for the review, and a
+         question is a conversation. Asking here hands off to the panel,
+         aimed at the same element, where the element's question thread is
+         (or is opened). The comment stays where the reviewer left it. */
       actions.appendChild(el("button", { type: "button", class: "pv-btn is-agent thread-ask", text: "Ask the agent", onclick: function () {
-        aimPanel(t.target, t.quote, t.id);
+        aimPanel(t.target, t.quote, null);
       } }));
       actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet thread-edit", text: "Edit", onclick: function () {
         const current = S.state.threads.find(function (x) { return x.id === t.id; });
@@ -2717,14 +2726,17 @@
           }
         }
       });
-      log.hidden = entries.length === 0;
-      if (S.ui.panelFollow !== false) log.scrollTop = log.scrollHeight;
-      renderPanelComposer();
+      /* Shown first, then scrolled: a log inside a `display: none` dock has
+         no scrollHeight, and the render that opens the panel would land it
+         at the top of the conversation rather than at the newest message. */
       const dock = document.querySelector(".pv-dock");
       if (dock) dock.classList.toggle("is-hidden", !S.ui.chatOpen);
       const handle = document.querySelector(".pv-panel-handle");
       if (handle) handle.hidden = !!S.ui.chatOpen;
-      document.querySelectorAll(".pv-panel-count").forEach(function (n) { n.textContent = String(conversationCount()); });
+      const messages = entries.filter(function (e) { return !e.event; }).length;
+      document.querySelectorAll(".pv-panel-count").forEach(function (n) { n.textContent = String(messages); });
+      if (S.ui.panelFollow !== false) log.scrollTop = log.scrollHeight;
+      renderPanelComposer();
     }
 
     /* An open panel always has somewhere to write. A body swap rebuilds
@@ -2761,34 +2773,43 @@
     }
     function renderAskMarks() {
       if (!S.root) return;
+      /* The acceptance rows of a task share the task's ref and each carry
+         their own mark. The count and the spine belong to the element, so
+         only the first mark for a ref gets them. */
+      const seen = {};
       S.root.querySelectorAll(".ask-btn[data-ask-for]").forEach(function (b) {
         const ref = b.getAttribute("data-ask-for");
+        const first = !seen[ref];
+        seen[ref] = true;
         const threads = S.state.threads.filter(function (t) { return t.asked && t.target === ref; });
         const count = threads.reduce(function (n, t) { return n + t.messages.length; }, 0);
         b.classList.toggle("has-thread", !!askedThreadOn(ref));
         let badge = b.querySelector(".ask-count");
-        if (count && !badge) { badge = el("span", { class: "ask-count" }); b.appendChild(badge); }
-        if (badge) { if (count) badge.textContent = String(count); else badge.remove(); }
+        if (count && first && !badge) { badge = el("span", { class: "ask-count" }); b.appendChild(badge); }
+        if (badge) { if (count && first) badge.textContent = String(count); else badge.remove(); }
         /* The element with a discussion: a spine, and a one-line preview of
            the last message after the controls (not on criterion rows, which
            have no room). */
         const element = b.closest("[data-plan-ref]");
-        if (element) element.classList.toggle("is-discussed", count > 0);
+        if (element) element.classList.toggle("is-discussed", first && count > 0);
         const row = b.closest(".el-actions");
-        if (!row || row.closest(".acceptance")) return;
+        if (!first || !row || row.closest(".acceptance")) return;
         let preview = row.parentNode.querySelector(":scope > .ask-preview");
         const last = threads.length ? threads[threads.length - 1] : null;
         const msg = last && last.messages.length ? last.messages[last.messages.length - 1] : null;
         if (!msg) { if (preview) preview.remove(); return; }
         if (!preview) {
           preview = el("button", { type: "button", class: "ask-preview", title: "Open the conversation" });
+          /* The thread is read off the node, not closed over: a later render
+             re-points the preview at the newest conversation. */
           preview.addEventListener("click", function () {
             if (!S.ui.chatOpen) setPanelOpen(true);
-            const target = document.querySelector('.pv-panel-msg[data-thread="' + last.id + '"]');
+            const target = document.querySelector('.pv-panel-msg[data-thread="' + preview.getAttribute("data-thread") + '"]');
             if (target) target.scrollIntoView({ block: "nearest" });
           });
           row.insertAdjacentElement("afterend", preview);
         }
+        preview.setAttribute("data-thread", last.id);
         preview.replaceChildren(avatar(msg.actor), el("span", { class: "ask-preview-text", text: msg.text }));
       });
     }
@@ -2808,12 +2829,20 @@
       try { return window.localStorage.getItem(PANEL_KEY) === "open"; } catch (e) { return false; }
     }
 
+    /* Whether this browser has ever opened the panel. Until it has, the
+       handle carries its name: the verdict lives in there, and a reviewer
+       who has not seen it yet has no other way to know. */
+    function panelKnown() {
+      try { return window.localStorage.getItem(PANEL_KEY) !== null; } catch (e) { return false; }
+    }
+
     function setPanelOpen(open) {
       S.ui.chatOpen = open;
       /* The reviewer has seen the panel; a draft in it no longer opens it
          on their behalf. */
       S.ui.chatDraftShown = true;
       try { window.localStorage.setItem(PANEL_KEY, open ? "open" : "closed"); } catch (e) { /* best effort */ }
+      document.querySelectorAll(".pv-panel-handle.is-labelled").forEach(function (h) { h.classList.remove("is-labelled"); });
       renderChat();
       if (open) {
         const ta = document.querySelector(".pv-panel-composer textarea");
@@ -2826,31 +2855,32 @@
        (a revision, a nudge). Comment threads stay on their elements. */
     function conversationEntries() {
       const out = [];
+      /* Sorted by time, but each source's own order wins inside it: the
+         server stamps whole seconds and the page's own events carry
+         milliseconds, so an answer would otherwise sort ahead of the
+         question it answers. Carrying a running maximum per source keeps a
+         thread in its own order without flattening the page's finer stamps.
+         Ties keep insertion order. */
+      const run = function (m, floor) { return Math.max(floor, Date.parse(m.ts) || 0); };
+      let at = 0;
       S.state.chat.forEach(function (m, i) {
-        out.push({ ts: m.ts, actor: m.actor, text: m.text, key: "page", index: i });
+        at = run(m, at);
+        out.push({ at: at, ts: m.ts, actor: m.actor, text: m.text, key: "page", index: i });
       });
       S.state.threads.forEach(function (t) {
         if (!t.asked) return;
+        let tat = 0;
         t.messages.forEach(function (m, i) {
-          out.push({ ts: m.ts, actor: m.actor, text: m.text, key: t.id, ref: t.target, index: i,
+          tat = run(m, tat);
+          out.push({ at: tat, ts: m.ts, actor: m.actor, text: m.text, key: t.id, ref: t.target, index: i,
             note: !!m.note, status: t.status, unanchored: t.status === "unanchored" });
         });
       });
-      S.ui.panelEvents.forEach(function (ev) { out.push({ event: true, kind: ev.kind, text: ev.text, ts: ev.ts }); });
-      /* Ordered by time at one-second grain: the server stamps seconds,
-         the page's own events carry milliseconds, and an answer must not
-         sort ahead of its question because its stamp is coarser. Ties keep
-         insertion order, which is each thread's own order. */
-      out.sort(function (a, b) {
-        return Math.floor((Date.parse(a.ts) || 0) / 1000) - Math.floor((Date.parse(b.ts) || 0) / 1000);
+      S.ui.panelEvents.forEach(function (ev) {
+        out.push({ at: Date.parse(ev.ts) || 0, event: true, kind: ev.kind, text: ev.text, ts: ev.ts });
       });
+      out.sort(function (a, b) { return a.at - b.at; });
       return out;
-    }
-
-    /* What the handle and the top-bar link count: every message in the
-       conversation. */
-    function conversationCount() {
-      return conversationEntries().filter(function (e) { return !e.event; }).length;
     }
 
     function panelEvent(kind, text) {
@@ -3051,10 +3081,13 @@
       /* The handle: always in reach, the mark with the count. It keeps the
          old bar button's class so a page that opened the chat that way
          still does. */
-      root.appendChild(el("button", { type: "button", class: "pv-panel-handle feedback-bar-chat",
+      root.appendChild(el("button", { type: "button",
+        class: "pv-panel-handle feedback-bar-chat" + (panelKnown() ? "" : " is-labelled"),
         "aria-label": "Open the conversation with the agent", title: "Conversation",
         onclick: function () { setPanelOpen(!S.ui.chatOpen); } },
-        agentMark(""), el("span", { class: "pv-panel-count" })));
+        agentMark(""),
+        el("span", { class: "pv-panel-handle-label", text: "Conversation" }),
+        el("span", { class: "pv-panel-count" })));
       const right = root.querySelector(".pv-topbar-right");
       if (right && !right.querySelector(".pv-panel-link")) {
         right.insertBefore(el("button", { type: "button", class: "pv-panel-link",
@@ -3464,8 +3497,8 @@
         text.setAttribute("data-served", "");
         text.replaceChildren(
           document.createTextNode("This plan is under live review. "),
-          el("strong", { text: "Comment on anything, answer the questions, then send your review." }),
-          document.createTextNode(" Comments reach the agent with your review; \u201cAsk the agent\u201d reaches it now."));
+          el("strong", { text: "Comment on anything, ask the agent in the conversation, then give your verdict there." }),
+          document.createTextNode(" Everything you write is saved as you go."));
       }
       const steps = root.querySelector(".pv-banner-steps");
       if (steps && !steps.hasAttribute("data-served")) {
@@ -3473,7 +3506,7 @@
         steps.replaceChildren(
           el("b", { text: "01" }), document.createTextNode(" skim  "),
           el("b", { text: "02" }), document.createTextNode(" comment  "),
-          el("b", { text: "03" }), document.createTextNode(" send, or come back later"));
+          el("b", { text: "03" }), document.createTextNode(" verdict, in the conversation"));
       }
     }
 

@@ -1,0 +1,20 @@
+{
+  "answers": [],
+  "base_revision": 1,
+  "comments": [
+    {
+      "blocking": false,
+      "id": "c-1",
+      "quote": "Make it installable",
+      "ref": "phase:p-release",
+      "replies": [],
+      "status": "open",
+      "text": "will we be able to select which agents to install it to during instal?"
+    }
+  ],
+  "format": "artefacto.feedback/1",
+  "plan_hash": "sha256:6f10f2e5f8036924622964976aa740c3389a041dff2bfcfc252e4050fb927c31",
+  "plan_id": "plan-6-replan",
+  "reviewed": [],
+  "verdict": "comment"
+}

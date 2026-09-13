@@ -1,0 +1,44 @@
+{
+  "answers": [
+    {
+      "question": "q-empty-request",
+      "text": "yes, requesting changes is on the plan, not the comments"
+    },
+    {
+      "question": "q-ids",
+      "text": "remove it"
+    },
+    {
+      "question": "q-panel-default",
+      "text": "closed. but ideally the panel should have some sort of floating or more present artifact to allow pulling it up quickly"
+    },
+    {
+      "question": "q-vibe",
+      "text": "yes"
+    }
+  ],
+  "base_revision": 10,
+  "comments": [
+    {
+      "asked": true,
+      "blocking": false,
+      "id": "c-1",
+      "quote": "OpenThe bar's copy has a batched and a live variant. Batched stays the default u",
+      "ref": "question:q-live",
+      "replies": [
+        {
+          "actor": "agent",
+          "text": "Today a comment, an answer, or a \"mark reviewed\" tick is saved on the server the moment you make it, but the agent only hears about it with the next active event: a question you ask, or the review you send. That is \"batched\". Earlier today you typed a comment and asked me whether I saw it, and I had not; that is batched behaviour.\n\n\"Live\" would deliver those as they happen, at most one frame every 30 seconds so the agent is not woken on every keystroke. The bar's sentence changes with it: batched says \"Comments wait for your review; Ask the agent reaches the agent now\"; live would say \"The agent sees comments as you write them\".\n\nLive is not built yet. It is the `--passive live` task in the re-plan (spec 6.3; the flag parses and does nothing). My recommendation: keep batched as the default for this port, build live next in the re-plan, and switch the default when it exists, since your reaction earlier today is the best evidence that a reviewer expects it. If you agree, answer this question \"batched now, live next\" and I will mark it that way.",
+          "ts": "2026-09-12T22:15:09Z"
+        }
+      ],
+      "status": "open",
+      "text": "explain this one"
+    }
+  ],
+  "format": "artefacto.feedback/1",
+  "plan_hash": "sha256:b121ddd43c698444f01353430698da572cc883580f6697446fd3aa8bb7b6e820",
+  "plan_id": "design-port",
+  "reviewed": [],
+  "verdict": "approve"
+}
