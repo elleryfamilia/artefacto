@@ -1674,10 +1674,6 @@
       /* Questions the agent has not answered yet: thread id (or "page") ->
          { since }. Page-side, so a body swap keeps the working row. */
       pending: {},
-      /* What is typed into a question thread's persistent input, by
-         thread id, so a swap re-creates the input with its text. Mirrored
-         to session storage so a reload keeps it too. */
-      threadDrafts: {},
 
       lastPing: 0,
       previousTitle: null,
@@ -3007,7 +3003,7 @@
       sheet.parentNode.insertBefore(shell, sheet);
       shell.appendChild(sheet);
 
-      const panel = el("div", { class: "pv-panel pv-chat" });
+      const panel = el("div", { class: "pv-panel" });
       panel.appendChild(el("div", { class: "pv-panel-head" },
         el("span", { class: "pv-panel-title", text: "Conversation" }),
         el("span", { class: "pv-chat-hint" }),

@@ -1921,8 +1921,6 @@ pre code { font-size: 1em; }
 }
 .thread-working .thread-text { color: var(--ink-3); font-style: italic; }
 .thread-working .thread-actor { color: var(--agent); }
-.pv-chat-working { display: grid; grid-template-columns: 1.375rem auto minmax(0, 1fr); gap: 0.5rem; align-items: baseline; }
-.pv-chat-working .thread-text { color: var(--ink-3); font-style: italic; }
 
 /* The persistent input of a question thread: one line, grows, Enter sends. */
 .thread-composer {
@@ -2703,7 +2701,6 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
 .is-discussed { box-shadow: inset 3px 0 0 var(--agent); padding-left: 0.75rem; margin-left: -0.75rem; }
 .is-jumped { animation: pv-flash var(--t-slow) var(--ease) both; }
 .pv-panel-composer { border-top: 1px solid var(--rule); padding: 0.625rem 0.875rem 0.875rem; display: flex; flex-direction: column; gap: 0.5rem; background: var(--surface); flex: none; }
-.pv-chat .composer { margin-top: 0; }
 .pv-panel-foot {
   display: flex;
   align-items: center;
