@@ -399,35 +399,28 @@ fn summary_risk_line(plan: &Plan) -> Option<(String, bool)> {
 /// A phase's estimate distribution for the executive-summary rollup table,
 /// e.g. `"2 small, 1 medium"` — only sizes that occur, empty when no task in
 /// the phase carries an estimate.
-fn phase_estimate_dist(phase: &Phase) -> String {
-    let mut sizes = [0usize; 3]; // s, m, l
-    for t in &phase.tasks {
-        match t.estimate {
-            Some(Estimate::S) => sizes[0] += 1,
-            Some(Estimate::M) => sizes[1] += 1,
-            Some(Estimate::L) => sizes[2] += 1,
-            None => {}
-        }
+/// How much work a phase holds, for the summary ledger: how many tasks are
+/// in it.
+///
+/// The cell used to carry the estimate mix -- `1s · 2m · 1l` -- which is a
+/// code the page never gives the reader the key to, three numbers deep, in
+/// the narrowest column on the page. The sizes are still on every task's own
+/// rail, spelled out, where a reader who wants them is already looking.
+fn phase_task_count(phase: &Phase) -> String {
+    match phase.tasks.len() {
+        0 => String::new(),
+        1 => "1 task".to_string(),
+        n => format!("{n} tasks"),
     }
-    sizes
-        .iter()
-        .zip(["s", "m", "l"])
-        .filter(|(n, _)| **n > 0)
-        .map(|(n, label)| format!("{n}{label}"))
-        .collect::<Vec<_>>()
-        .join(" · ")
 }
 
 /// Whether the summary ledger's right-hand column would carry anything at
-/// all: true as soon as one phase has an estimate distribution or a risk
-/// heat. A plan whose tasks are all unestimated and unrated fills that column
-/// with nothing in every row, and an `EST · RISK` header over a stack of empty
-/// cells reads as a rendering failure rather than as "not stated" — so the
-/// column is dropped instead (see the ledger markup).
+/// all: true as soon as one phase has a task to count. A plan whose phases
+/// are all empty fills that column with nothing in every row, and a `TASKS`
+/// header over a stack of empty cells reads as a rendering failure rather
+/// than as "none yet" — so the column is dropped instead.
 fn ledger_has_figures(plan: &Plan) -> bool {
-    plan.phases
-        .iter()
-        .any(|p| !phase_estimate_dist(p).is_empty() || !phase_risk_heat(p).is_empty())
+    plan.phases.iter().any(|p| !p.tasks.is_empty())
 }
 
 /// The rail's phase cell: the head of a `title — subtitle` name, capped for
@@ -438,28 +431,23 @@ fn short_phase_title(title: &str) -> String {
     truncate_chars(head, 28)
 }
 
-/// A phase's risk heat for the rollup table: the count of tasks at the
-/// *highest* risk severity present in the phase, e.g. `"1 high"`. A phase
-/// with one high-risk task and two medium-risk tasks reports only "1 high"
-/// — once a higher severity is present, the lower counts don't also need
-/// spelling out in this compact a cell. Empty when no task in the phase
-/// carries a risk rating.
-fn phase_risk_heat(phase: &Phase) -> String {
-    let mut counts = [0usize; 3]; // high, medium, low
-    for t in &phase.tasks {
-        match t.risk {
-            Some(RiskLevel::High) => counts[0] += 1,
-            Some(RiskLevel::Medium) => counts[1] += 1,
-            Some(RiskLevel::Low) => counts[2] += 1,
-            None => {}
-        }
-    }
-    counts
+/// The count of high-risk tasks in a phase, or nothing.
+///
+/// Only high. Medium and low were called out here too, which put a risk word
+/// in almost every row: a column that says something about every phase says
+/// nothing about any of them. A reader scanning the ledger is looking for the
+/// phase that could go wrong, and the lower ratings are on each task's rail.
+fn phase_high_risk(phase: &Phase) -> String {
+    let n = phase
+        .tasks
         .iter()
-        .zip(["high", "medium", "low"])
-        .find(|(n, _)| **n > 0)
-        .map(|(n, label)| format!("{n} {label}"))
-        .unwrap_or_default()
+        .filter(|t| matches!(t.risk, Some(RiskLevel::High)))
+        .count();
+    if n == 0 {
+        String::new()
+    } else {
+        format!("{n} high")
+    }
 }
 
 /// One task: a body column (heading, markdown summary, files, acceptance
@@ -718,7 +706,7 @@ pub fn render(plan: &Plan) -> String {
                                             thead {
                                                 tr {
                                                     th { "Phase" }
-                                                    @if figures { th { "Est · risk" } }
+                                                    @if figures { th { "Tasks" } }
                                                 }
                                             }
                                             tbody {
@@ -730,16 +718,16 @@ pub fn render(plan: &Plan) -> String {
                                                             }
                                                         }
                                                         @if figures {
-                                                            @let heat = phase_risk_heat(phase);
+                                                            @let high = phase_high_risk(phase);
                                                             td class=(
-                                                                if heat.contains("high") {
-                                                                    "pv-ledger-fig is-hot"
-                                                                } else {
+                                                                if high.is_empty() {
                                                                     "pv-ledger-fig"
+                                                                } else {
+                                                                    "pv-ledger-fig is-hot"
                                                                 }
                                                             ) {
-                                                                (phase_estimate_dist(phase))
-                                                                @if !heat.is_empty() { " · " (heat) }
+                                                                (phase_task_count(phase))
+                                                                @if !high.is_empty() { " · " (high) }
                                                             }
                                                         }
                                                     }
@@ -1171,6 +1159,35 @@ mod tests {
         assert!(seen >= 4, "the kitchen sink should have every part: {seen}");
     }
 
+    /// The current row in the phase ledger draws an accent bar down its left
+    /// edge. Without an inset the phase name sits on that bar, which is what
+    /// the cell padding is for -- so it is not a free-floating number.
+    #[test]
+    fn the_ledger_keeps_its_text_off_the_rules() {
+        let css = stylesheet();
+        let cell = css
+            .split_once(".pv-ledger td {")
+            .expect(".pv-ledger td")
+            .1
+            .split_once('}')
+            .expect("a closed rule")
+            .0;
+        let padding = cell
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("padding:"))
+            .expect("a padding declaration")
+            .trim()
+            .trim_end_matches(';');
+        let horizontal = padding
+            .split_whitespace()
+            .nth(1)
+            .expect("a horizontal padding");
+        assert_ne!(
+            horizontal, "0",
+            "the ledger's text would sit on the current row's accent bar"
+        );
+    }
+
     /// The strip's glyphs are navigation furniture. They take the neutral
     /// the rest of the segment takes and no colour of their own, in any
     /// state -- a colour there reads as a status the segment does not have.
@@ -1509,10 +1526,32 @@ mod tests {
         assert!(html.contains("<table class=\"pv-ledger\">"), "{html}");
         assert!(html.contains("href=\"#phase-p-core\""), "{html}");
         assert!(html.contains("id=\"phase-p-core\""), "{html}");
-        // This plan's tasks carry estimates and risk ratings, so the ledger's
-        // figure column is present. (`no_summary_shows_missing_note_and_ready_state`
-        // covers the plan that drops it.)
-        assert!(html.contains("<th>Est · risk</th>"), "{html}");
+        // The figure column counts the phase's tasks, and calls out a high
+        // risk when the phase holds one. Nothing else: the estimate mix and
+        // the lower ratings are on each task's own rail.
+        assert!(html.contains("<th>Tasks</th>"), "{html}");
+        assert!(
+            html.contains("2 tasks</td>") && html.contains("3 tasks · 1 high</td>"),
+            "{html}"
+        );
+        assert!(
+            !html.contains("medium</td>") && !html.contains("low</td>"),
+            "only a high risk is called out here: {html}"
+        );
+        // And the row that holds it is the one marked hot.
+        let hot = html
+            .split_once("pv-ledger-fig is-hot\">")
+            .expect("the phase with a high risk is marked hot")
+            .1;
+        assert!(
+            hot.starts_with("3 tasks · 1 high"),
+            "the hot cell is the one with the high risk: {hot:.40}"
+        );
+        assert_eq!(
+            html.matches("pv-ledger-fig is-hot").count(),
+            1,
+            "and it is the only one: {html}"
+        );
 
         // (f2) an open question's text is wrapped as the row's heading line,
         // so the Answer button plan.js injects lands beside it rather than
@@ -1637,12 +1676,19 @@ mod tests {
         // Nothing has started, so the banner says so rather than narrating
         // progress that does not exist.
         assert!(html.contains("nothing is built yet."), "{html}");
-        // No task here carries an estimate or a risk rating, so the ledger is
-        // one column: an `Est · risk` header over a stack of empty cells reads
-        // as a rendering failure, not as "not stated".
+        // No task here carries an estimate or a risk rating, and the ledger
+        // no longer reports either: it counts the tasks, which this plan has.
         assert!(html.contains("<table class=\"pv-ledger\">"), "{html}");
+        assert!(html.contains("<th>Tasks</th>"), "{html}");
+        assert!(
+            html.contains("1 task</td>"),
+            "one task is not one tasks: {html}"
+        );
         assert!(!html.contains("Est · risk"), "{html}");
-        assert!(!html.contains("pv-ledger-fig\">"), "{html}");
+        assert!(
+            !html.contains(" high</td>"),
+            "nothing is rated, so nothing is called out: {html}"
+        );
     }
 
     #[test]

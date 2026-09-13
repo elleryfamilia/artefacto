@@ -1965,6 +1965,29 @@ the server is the only store, and the orientation's "seen once" note lives
 there. It now names the keys it expects, so review data leaking into the
 browser still fails it. Gate: 550 tests.
 
+### The owner's fourth pass: the summary's phase ledger
+
+The right-hand table in the summary read `1s · 2m · 2 medium` per phase --
+the estimate mix and the risk heat. Two problems, both raised from the
+rendered page (`b1e2d3c`):
+
+- **The numbers were a code with no key.** `1s · 2m · 1l` is "one small, two
+  medium, one large task", three numbers deep, in the narrowest column on
+  the page, and nothing on the page says so. The cell now counts the tasks:
+  `3 tasks`. The sizes are still on every task's own rail, spelled out,
+  where a reader who wants them is already looking.
+- **The risk column said something about every phase.** Medium and low were
+  called out beside high, so almost every row carried a risk word and none
+  of them stood out. Only high is called out now, and only that row is
+  marked hot.
+- **The text sat on the rules.** The cells had no horizontal padding, so a
+  phase name in the current row sat directly on the accent bar that row
+  draws down its left edge. The text is inset; the rules and the row's wash
+  still run the table's full width.
+
+Six mutations, all caught, including the singular "1 task" and which row
+gets the hot marker. Gate: 551 tests.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart

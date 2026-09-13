@@ -1280,7 +1280,7 @@ code {
    darker than the hairlines between rows -- same relationship the section
    rules have to the rules inside a task. */
 .pv-ledger th {
-  padding: 0 0 0.625rem;
+  padding: 0 0.5rem 0.625rem;
   border-bottom: 1px solid var(--ink-3);
   text-align: left;
   font-family: var(--font-mono);
@@ -1292,8 +1292,11 @@ code {
   color: var(--muted);
 }
 
+/* The text is inset; the rules and the current row's wash are not, because
+   they are the table's structure and run its full width. Without the inset a
+   phase name sat on the accent bar the current row draws down its left edge. */
 .pv-ledger td {
-  padding: 0.6875rem 0;
+  padding: 0.6875rem 0.5rem;
   border-bottom: var(--rule-w) solid var(--rule);
   vertical-align: baseline;
   font-size: 1rem;

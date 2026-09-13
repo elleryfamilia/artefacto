@@ -1281,7 +1281,7 @@ code {
    darker than the hairlines between rows -- same relationship the section
    rules have to the rules inside a task. */
 .pv-ledger th {
-  padding: 0 0 0.625rem;
+  padding: 0 0.5rem 0.625rem;
   border-bottom: 1px solid var(--ink-3);
   text-align: left;
   font-family: var(--font-mono);
@@ -1293,8 +1293,11 @@ code {
   color: var(--muted);
 }
 
+/* The text is inset; the rules and the current row's wash are not, because
+   they are the table's structure and run its full width. Without the inset a
+   phase name sat on the accent bar the current row draws down its left edge. */
 .pv-ledger td {
-  padding: 0.6875rem 0;
+  padding: 0.6875rem 0.5rem;
   border-bottom: var(--rule-w) solid var(--rule);
   vertical-align: baseline;
   font-size: 1rem;
@@ -2998,7 +3001,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
 }
 </style></head><body data-plan-fingerprint="sha256:01bdbd56aa2b3524013a7662173ece75a446a5ab6aa9b228f2275e58b358b01e"><div class="pv-sheet"><header class="pv-topbar"><div class="pv-brand"><span class="pv-brand-mark" aria-hidden="true"></span><span class="pv-brand-name">artefacto</span><span class="pv-brand-surface">Plan</span></div><div class="pv-topbar-right"></div></header><div class="pv-banner"><span class="pv-chip pv-chip-solid">For review</span><p class="pv-banner-text">This plan is being worked through — <strong>the statuses below are the agent's own record.</strong> Comment on anything, then copy your feedback back into the conversation.</p><span class="pv-banner-steps"><b>01</b> skim  <b>02</b> comment  <b>03</b> copy feedback</span></div><main class="pv-main"><div class="pv-head"><p class="pv-eyebrow">by claude · 2026-07-07 · <span class="pv-eyebrow-rev">revision 2</span></p><h1>Auth refactor</h1><div class="pv-lede"><p>Extract <em>session</em> handling.</p>
 </div></div><div class="pv-stats"><div class="pv-stat"><span class="pv-stat-n">5</span><span class="pv-stat-l">Tasks · 1 done</span></div><div class="pv-stat"><span class="pv-stat-n">2</span><span class="pv-stat-l">Phases</span></div><div class="pv-stat is-hot"><span class="pv-stat-n">1</span><span class="pv-stat-l">Risks · 1 high</span></div><div class="pv-stat is-hot"><span class="pv-stat-n">2</span><span class="pv-stat-l">Questions · 1 blocking</span></div></div><div class="pv-rule" data-part="summary"><span class="pv-label">Summary</span><span class="pv-rule-line"></span></div><section class="plan-summary" data-plan-ref="meta:auth-refactor"><div class="summary-grid"><div class="summary-exec"><p>This refactor extracts <code>SessionStore</code> behind a trait so a Redis-backed implementation can slot in without touching call sites. It ships behind a config flag and closes the <em>lock contention</em> risk by sharding the store. The ask: review the trait boundary in <code>t-session-store</code> before Redis work starts.</p>
-</div><aside class="summary-glance"><table class="pv-ledger"><thead><tr><th>Phase</th><th>Est · risk</th></tr></thead><tbody><tr data-phase-row="p-core"><td><a href="#phase-p-core">Core</a></td><td class="pv-ledger-fig">1s · 1m · 1 medium</td></tr><tr data-phase-row="p-backend"><td><a href="#phase-p-backend">Backend</a></td><td class="pv-ledger-fig is-hot">1l · 1 high</td></tr></tbody></table><p class="summary-ask has-blocking"><span class="pv-dot pv-dot-high" aria-hidden="true"></span><span>1 blocking question(s) must be resolved before implementation: <a href="#question-q-ttl">Session TTL?</a></span></p></aside></div><ul class="summary-keypoints"><li><p><strong>Trait extraction</strong> decouples session persistence from its backing store, gated behind a config flag.</p>
+</div><aside class="summary-glance"><table class="pv-ledger"><thead><tr><th>Phase</th><th>Tasks</th></tr></thead><tbody><tr data-phase-row="p-core"><td><a href="#phase-p-core">Core</a></td><td class="pv-ledger-fig">2 tasks</td></tr><tr data-phase-row="p-backend"><td><a href="#phase-p-backend">Backend</a></td><td class="pv-ledger-fig is-hot">3 tasks · 1 high</td></tr></tbody></table><p class="summary-ask has-blocking"><span class="pv-dot pv-dot-high" aria-hidden="true"></span><span>1 blocking question(s) must be resolved before implementation: <a href="#question-q-ttl">Session TTL?</a></span></p></aside></div><ul class="summary-keypoints"><li><p><strong>Trait extraction</strong> decouples session persistence from its backing store, gated behind a config flag.</p>
 </li><li><p><strong>Redis backend</strong> (<code>t-redis</code>) is blocked on the trait boundary landing first.</p>
 </li><li><p><strong>Lock contention</strong> (<code>r-locking</code>) is mitigated by sharding the store, not by removing the lock.</p>
 </li></ul><p class="summary-outofscope"><strong>Out of scope: </strong>Migrating existing sessions between backends, Multi-region session replication</p></section><div class="pv-rule" data-part="questions"><span class="pv-label">Open questions</span><span class="pv-rule-line"></span></div><section class="pv-rows questions"><div class="pv-row" id="question-q-ttl" data-plan-ref="question:q-ttl"><span class="pv-chip pv-chip-high">Blocking</span><div class="pv-row-body"><div class="pv-row-head"><div class="pv-prose"><p>Session TTL?</p>
