@@ -2604,9 +2604,104 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
 .pv-panel .feedback-bar-hint { flex: none; padding: 0.5rem 0.875rem; border-bottom: 1px solid var(--rule); font-size: 0.75rem; }
 .pv-panel-log { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0.875rem; display: flex; flex-direction: column; gap: 0.875rem; }
 .pv-panel-log[hidden] { display: none; }
-.pv-chat-msg { display: grid; grid-template-columns: 3.25rem 1fr; gap: 0.5rem; align-items: baseline; }
-.pv-chat-msg[data-actor="agent"] .thread-actor { color: var(--agent); }
-.pv-chat-msg .thread-text { font-size: 0.9375rem; }
+.pv-panel-msg { display: grid; grid-template-columns: 1.375rem minmax(0, 1fr); gap: 0.625rem; align-items: start; }
+.pv-panel-msg-body { display: flex; flex-direction: column; gap: 0.3125rem; min-width: 0; }
+.pv-panel-msg .thread-text { font-size: 0.9375rem; }
+.pv-panel-msg[data-actor="agent"] .thread-actor { color: var(--agent); }
+.pv-panel-msg .thread-actor { display: inline-flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.pv-panel-msg .thread-when { font-family: var(--font-mono); font-size: 0.625rem; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.pv-panel-msg.thread-working .thread-text { color: var(--ink-3); font-style: italic; }
+.pv-panel-event {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pv-panel-event::before,
+.pv-panel-event::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+.pv-panel-event.is-revision { color: var(--action); }
+/* The context chip: which element this is about. Action-coloured because it
+   is a link into the page; the small square is the element's kind dot. */
+.pv-ctx {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  max-width: 100%;
+  padding: 0.1875rem 0.5rem 0.1875rem 0.375rem;
+  border: 1px solid var(--action-rule);
+  border-radius: var(--radius);
+  background: var(--action-wash);
+  color: var(--action);
+  text-decoration: none;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.pv-ctx::before { content: ""; width: 5px; height: 5px; background: currentColor; flex: none; }
+.pv-ctx:hover { background: var(--action); color: var(--action-ink); }
+.pv-ctx .pv-ctx-kind { color: inherit; opacity: 0.7; text-transform: uppercase; }
+.pv-ctx.is-resolution { border-color: var(--ok); color: var(--ok); background: var(--ok-wash); cursor: default; }
+.pv-panel-nudge {
+  padding: 0.625rem 0.75rem;
+  border-left: 3px solid var(--agent);
+  background: var(--agent-wash);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  font-size: 0.9375rem;
+  line-height: 1.45;
+}
+.pv-panel-nudge .pv-notice-kicker { color: var(--agent); }
+.pv-panel-target { display: flex; align-items: center; gap: 0.5rem; font-family: var(--font-mono); font-size: 0.625rem; color: var(--muted); letter-spacing: 0.04em; }
+.pv-panel-target[hidden] { display: none; }
+.pv-panel-target .pv-ctx { max-width: 60%; }
+.pv-panel-target .pv-btn { margin-left: auto; min-height: 1.375rem; padding: 0.125rem 0.375rem; font-size: 0.594rem; }
+.pv-panel-composer .thread-composer { margin: 0; }
+/* On the element: the mark carries a count, a spine marks the discussion,
+   and a one-line preview of the last message sits after the controls. */
+.ask-btn .ask-count {
+  position: absolute;
+  top: -0.375rem;
+  right: -0.375rem;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  background: var(--agent);
+  color: var(--agent-ink);
+  font-family: var(--font-mono);
+  font-size: 0.594rem;
+  font-weight: 600;
+  line-height: 1rem;
+  text-align: center;
+}
+.ask-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  max-width: 34ch;
+  margin-left: 0.5rem;
+  border: 0;
+  background: none;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 0.656rem;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.ask-preview .pv-avatar { width: 1rem; height: 1rem; font-size: 0.625rem; }
+.ask-preview span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-preview:hover { color: var(--agent); }
+.is-discussed { box-shadow: inset 3px 0 0 var(--agent); padding-left: 0.75rem; margin-left: -0.75rem; }
+.is-jumped { animation: pv-flash var(--t-slow) var(--ease) both; }
 .pv-panel-composer { border-top: 1px solid var(--rule); padding: 0.625rem 0.875rem 0.875rem; display: flex; flex-direction: column; gap: 0.5rem; background: var(--surface); flex: none; }
 .pv-chat .composer { margin-top: 0; }
 .pv-panel-foot {

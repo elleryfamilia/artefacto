@@ -1678,8 +1678,7 @@
          thread id, so a swap re-creates the input with its text. Mirrored
          to session storage so a reload keeps it too. */
       threadDrafts: {},
-      /* Threads with a follow-up send in flight: the input sends once. */
-      threadSending: {},
+
       lastPing: 0,
       previousTitle: null,
       own: {},
@@ -1717,21 +1716,6 @@
        revision 3 never arrives labelled revision 4, and the same client
        id, so a send repeated after a reload is not a second comment. */
     const DRAFTS_KEY = "artefacto:drafts:" + artifact;
-    const FOLLOWUPS_KEY = "artefacto:followups:" + artifact;
-    function loadFollowups() {
-      try {
-        const raw = window.sessionStorage.getItem(FOLLOWUPS_KEY);
-        const map = raw ? JSON.parse(raw) : {};
-        return map && typeof map === "object" ? map : {};
-      } catch (e) { return {}; }
-    }
-    function saveFollowups() {
-      try { window.sessionStorage.setItem(FOLLOWUPS_KEY, JSON.stringify(S.threadDrafts)); } catch (e) { /* best effort */ }
-    }
-    function setFollowup(thread, text) {
-      if (text) S.threadDrafts[thread] = text; else delete S.threadDrafts[thread];
-      saveFollowups();
-    }
     function loadDraftMap() {
       try {
         const raw = window.sessionStorage.getItem(DRAFTS_KEY);
@@ -1744,12 +1728,26 @@
     }
     function saveDraft(d) { const m = loadDraftMap(); m[d.id] = d; saveDraftMap(m); }
     function dropDraft(id) { const m = loadDraftMap(); delete m[id]; saveDraftMap(m); }
-    S.threadDrafts = loadFollowups();
     /* Declared here, above its first read: a const declared further down
        would be in its dead zone when the session starts, and the guarded
        read would quietly answer "closed". */
     const PANEL_KEY = "artefacto.panel";
     S.ui.chatOpen = panelStored();
+    /* The panel's composer: its text and what it is aimed at (an element,
+       or a thread), kept across a swap and a reload. */
+    const PANEL_DRAFT_KEY = "artefacto:panel:" + artifact;
+    function loadPanelDraft() {
+      try {
+        const raw = window.sessionStorage.getItem(PANEL_DRAFT_KEY);
+        const d = raw ? JSON.parse(raw) : null;
+        return d && typeof d === "object" ? d : {};
+      } catch (e) { return {}; }
+    }
+    function savePanelDraft() {
+      try { window.sessionStorage.setItem(PANEL_DRAFT_KEY, JSON.stringify(S.ui.panel)); } catch (e) { /* best effort */ }
+    }
+    S.ui.panel = Object.assign({ text: "", ref: null, thread: null, quote: null }, loadPanelDraft());
+    S.ui.panelEvents = [];
 
     /* ---- transport ------------------------------------------------- */
 
@@ -2156,6 +2154,7 @@
             break;
           case "nudge":
             notice("nudge", (e.data && e.data.text) || "The agent asked for your attention.", { dismiss: true });
+            panelEvent("nudge", (e.data && e.data.text) || "The agent asked for your attention.");
             break;
           case "server.stopping":
             S.stopping = true;
@@ -2184,11 +2183,10 @@
       const active = document.activeElement;
       if (active && (active.tagName === "TEXTAREA" || active.tagName === "INPUT")) {
         const composer = active.closest("[data-composer]");
-        const thread = active.closest(".thread-composer") ? active.closest(".thread[data-thread]") : null;
         if (composer) {
           focus = { composer: composer.getAttribute("data-composer"), start: active.selectionStart, end: active.selectionEnd };
-        } else if (thread) {
-          focus = { thread: thread.getAttribute("data-thread"), start: active.selectionStart, end: active.selectionEnd };
+        } else if (active.closest(".pv-panel-composer")) {
+          focus = { panel: true, start: active.selectionStart, end: active.selectionEnd };
         }
       }
       const anchors = [];
@@ -2223,8 +2221,8 @@
     }
 
     function applyFocus(f) {
-      const box = f.thread
-        ? document.querySelector('.thread[data-thread="' + f.thread + '"] .thread-composer textarea')
+      const box = f.panel
+        ? document.querySelector(".pv-panel-composer textarea")
         : document.querySelector('[data-composer="' + f.composer + '"] textarea');
       if (!box) return false;
       box.focus({ preventScroll: true });
@@ -2357,6 +2355,7 @@
       const orphaned = core.unanchored(S.state).length;
       if (orphaned) text += " " + orphaned + (orphaned === 1 ? " thread lost its element." : " threads lost their elements.");
       notice("revision", text, { dismiss: true, title: S.previousTitle ? "Previously: " + S.previousTitle : null });
+      panelEvent("revision", "revision " + S.state.revision + " pushed");
     }
 
     /* ---- presence ----------------------------------------------------- */
@@ -2490,17 +2489,8 @@
          it, so the Ask button goes too. */
       node.querySelector(".thread-reply").hidden = !!t.asked;
       node.querySelector(".thread-ask").hidden = !!t.asked;
-      /* The input stays while the thread is open, and while it holds text
-         the reviewer has not sent, whatever happened to the thread: a
-         resolution must not make a half-written follow-up vanish. */
-      const composer = node.querySelector(".thread-composer");
-      const draft = (S.threadDrafts[t.id] || "").trim();
-      composer.hidden = !(t.asked && (open || draft));
-      if (!composer.hidden) {
-        composer.querySelector(".thread-composer-hint").textContent = S.state.presence ? "Enter to send" : "waits for an agent";
-        setMarkState(composer.querySelector(".ag-mark"), S.state.presence ? "" : "off");
-        composer.querySelector(".thread-composer-send").disabled = !!S.threadSending[t.id];
-      }
+      /* A question thread is not rendered here at all: it lives in the
+         conversation panel. */
     }
 
     function threadNode(t) {
@@ -2515,58 +2505,12 @@
         el("span", { class: "thread-when" })));
       node.appendChild(el("div", { class: "thread-msgs" }));
       node.appendChild(el("div", { class: "thread-resolution", hidden: true }));
-      /* A question thread is a conversation: one line that stays, Enter
-         sends, Shift+Enter breaks a line. The text lives in S.threadDrafts
-         so a body swap re-creates the input with it. */
-      const composer = el("div", { class: "thread-composer", hidden: true });
-      const ta = el("textarea", { rows: "1", placeholder: "Ask a follow-up\u2026", "aria-label": "Ask the agent a follow-up" });
-      const hint = el("span", { class: "thread-composer-hint" });
-      const sendBtn = el("button", { type: "button", class: "pv-btn is-agent thread-composer-send", text: "Send" });
-      composer.appendChild(agentMark(""));
-      composer.appendChild(ta);
-      composer.appendChild(hint);
-      composer.appendChild(sendBtn);
-      ta.value = S.threadDrafts[t.id] || "";
-      const grow = function () { ta.rows = Math.min(6, ta.value.split("\n").length); };
-      grow();
-      /* The send is keyed by thread, not by this node: a body swap while
-         it is in flight re-creates the input, and the reply must clear
-         and re-enable the live one, not the one that was replaced. */
-      const live = function (sel) { return document.querySelector('.thread[data-thread="' + t.id + '"] .thread-composer ' + sel); };
-      const submit = function () {
-        const text = ta.value.trim();
-        if (!text || S.threadSending[t.id]) return;
-        S.threadSending[t.id] = true;
-        sendBtn.disabled = true;
-        send({ cmd: "chat.send", thread: t.id, text: text, opened_revision: S.state.revision })
-          .then(function () {
-            delete S.threadSending[t.id];
-            setFollowup(t.id, "");
-            const box = live("textarea");
-            if (box) { box.value = ""; box.rows = 1; box.focus({ preventScroll: true }); }
-            const btn = live(".thread-composer-send");
-            if (btn) { btn.disabled = false; cleared(btn); }
-            markAsked();
-          })
-          .catch(function (e) {
-            delete S.threadSending[t.id];
-            const btn = live(".thread-composer-send") || sendBtn;
-            btn.disabled = false;
-            failed(btn, e);
-          });
-      };
-      ta.addEventListener("input", function () { setFollowup(t.id, ta.value); grow(); });
-      ta.addEventListener("keydown", function (ev) {
-        if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); submit(); }
-      });
-      sendBtn.addEventListener("click", submit);
-      node.appendChild(composer);
       const actions = el("div", { class: "thread-actions" });
       actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet thread-reply", text: "Reply", onclick: function () {
         openComposer({ kind: "reply", thread: t.id, ref: t.target });
       } }));
       actions.appendChild(el("button", { type: "button", class: "pv-btn is-agent thread-ask", text: "Ask the agent", onclick: function () {
-        openComposer({ kind: "ask", thread: t.id, ref: t.target });
+        aimPanel(t.target, t.quote, t.id);
       } }));
       actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet thread-edit", text: "Edit", onclick: function () {
         const current = S.state.threads.find(function (x) { return x.id === t.id; });
@@ -2610,7 +2554,7 @@
       if (!root) return;
       root.querySelectorAll(".pv-threads[data-threads-for]").forEach(function (host) {
         const ref = host.getAttribute("data-threads-for");
-        if (ref) renderThreadsIn(host, core.threadsOn(S.state, ref));
+        if (ref) renderThreadsIn(host, core.threadsOn(S.state, ref).filter(function (t) { return !t.asked; }));
       });
     }
 
@@ -2740,19 +2684,46 @@
       const log = document.querySelector(".pv-chat-log");
       if (!log) return;
       log.replaceChildren();
-      S.state.chat.forEach(function (m) {
-        log.appendChild(el("div", { class: "pv-chat-msg", dataset: { actor: m.actor }, title: m.ts },
-          el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
-          el("p", { class: "thread-text", text: m.text })));
+      const entries = conversationEntries();
+      const lastOf = {};
+      entries.forEach(function (e, i) { if (!e.event) lastOf[e.key] = i; });
+      entries.forEach(function (e, i) {
+        if (e.event) {
+          if (e.kind === "nudge") {
+            const nudge = el("div", { class: "pv-panel-nudge" }, el("span", { class: "pv-notice-kicker", text: "The agent" }));
+            nudge.appendChild(richText(e.text));
+            log.appendChild(nudge);
+          } else {
+            log.appendChild(el("div", { class: "pv-panel-event is-revision", text: e.text }));
+          }
+          return;
+        }
+        const actorRow = el("span", { class: "thread-actor" }, document.createTextNode(actorLabel(e.actor)));
+        if (e.ref) actorRow.appendChild(chipFor(e.ref));
+        if (e.note) actorRow.appendChild(el("span", { class: "pv-ctx is-resolution", text: e.status }));
+        actorRow.appendChild(el("span", { class: "thread-when", text: whenLabel(e.ts) }));
+        const attrs = { class: "pv-panel-msg" + (e.key === "page" ? " pv-chat-msg" : ""), dataset: { actor: e.actor }, title: e.ts };
+        if (e.key !== "page") attrs.dataset.thread = e.key;
+        log.appendChild(el("div", attrs, avatar(e.actor),
+          el("div", { class: "pv-panel-msg-body" }, actorRow, el("p", { class: "thread-text", text: e.text }))));
+        /* From the question until the answer: the mark at work, right
+           after the last message of that thread. */
+        if (lastOf[e.key] === i) {
+          const pending = pendingLabel(e.key);
+          if (pending) {
+            const wattrs = { class: "pv-panel-msg thread-working" + (e.key === "page" ? " pv-chat-working" : ""), dataset: { actor: "agent" } };
+            if (e.key !== "page") wattrs.dataset.thread = e.key;
+            log.appendChild(el("div", wattrs,
+              el("span", { class: "pv-avatar" }, agentMark(pending.state)),
+              el("div", { class: "pv-panel-msg-body" },
+                el("span", { class: "thread-actor", text: "agent" }),
+                el("p", { class: "thread-text", text: pending.text }))));
+          }
+        }
       });
-      const pending = pendingLabel("page");
-      if (pending) {
-        log.appendChild(el("div", { class: "pv-chat-working", dataset: { actor: "agent" } },
-          el("span", { class: "pv-avatar" }, agentMark(pending.state)),
-          el("span", { class: "thread-actor", text: "agent" }),
-          el("p", { class: "thread-text", text: pending.text })));
-      }
-      log.hidden = S.state.chat.length === 0 && !pending;
+      log.hidden = entries.length === 0;
+      if (S.ui.panelFollow !== false) log.scrollTop = log.scrollHeight;
+      renderPanelComposer();
       const dock = document.querySelector(".pv-dock");
       if (dock) dock.classList.toggle("is-hidden", !S.ui.chatOpen);
       const handle = document.querySelector(".pv-panel-handle");
@@ -2765,13 +2736,7 @@
        has typed into has no draft, so it is opened again here — after the
        drafts, so a stored one is not joined by an empty twin. */
     function ensureChatComposer() {
-      const panel = document.querySelector(".pv-chat");
-      if (S.ui.chatOpen && panel && !panel.querySelector(".composer")) {
-        /* Under a stable id, so a swap re-creates it as the same composer
-           and focus finds its way back (spec 4.3), draft or no draft. */
-        if (!S.ui.chatComposerId) S.ui.chatComposerId = newId("composer");
-        openComposer({ kind: "chat", silent: true, lazy: true, id: S.ui.chatComposerId });
-      }
+      /* The panel's composer is built with the panel; nothing to open. */
     }
 
     /* One line, until the reviewer says they have read it: the difference
@@ -2801,7 +2766,34 @@
     function renderAskMarks() {
       if (!S.root) return;
       S.root.querySelectorAll(".ask-btn[data-ask-for]").forEach(function (b) {
-        b.classList.toggle("has-thread", !!askedThreadOn(b.getAttribute("data-ask-for")));
+        const ref = b.getAttribute("data-ask-for");
+        const threads = S.state.threads.filter(function (t) { return t.asked && t.target === ref; });
+        const count = threads.reduce(function (n, t) { return n + t.messages.length; }, 0);
+        b.classList.toggle("has-thread", !!askedThreadOn(ref));
+        let badge = b.querySelector(".ask-count");
+        if (count && !badge) { badge = el("span", { class: "ask-count" }); b.appendChild(badge); }
+        if (badge) { if (count) badge.textContent = String(count); else badge.remove(); }
+        /* The element with a discussion: a spine, and a one-line preview of
+           the last message after the controls (not on criterion rows, which
+           have no room). */
+        const element = b.closest("[data-plan-ref]");
+        if (element) element.classList.toggle("is-discussed", count > 0);
+        const row = b.closest(".el-actions");
+        if (!row || row.closest(".acceptance")) return;
+        let preview = row.parentNode.querySelector(":scope > .ask-preview");
+        const last = threads.length ? threads[threads.length - 1] : null;
+        const msg = last && last.messages.length ? last.messages[last.messages.length - 1] : null;
+        if (!msg) { if (preview) preview.remove(); return; }
+        if (!preview) {
+          preview = el("button", { type: "button", class: "ask-preview", title: "Open the conversation" });
+          preview.addEventListener("click", function () {
+            if (!S.ui.chatOpen) setPanelOpen(true);
+            const target = document.querySelector('.pv-panel-msg[data-thread="' + last.id + '"]');
+            if (target) target.scrollIntoView({ block: "nearest" });
+          });
+          row.insertAdjacentElement("afterend", preview);
+        }
+        preview.replaceChildren(avatar(msg.actor), el("span", { class: "ask-preview-text", text: msg.text }));
       });
     }
 
@@ -2826,25 +2818,179 @@
          on their behalf. */
       S.ui.chatDraftShown = true;
       try { window.localStorage.setItem(PANEL_KEY, open ? "open" : "closed"); } catch (e) { /* best effort */ }
+      renderChat();
       if (open) {
-        renderChat();
-        ensureChatComposer();
-        const ta = document.querySelector(".pv-chat-composers textarea");
+        const ta = document.querySelector(".pv-panel-composer textarea");
         if (ta) ta.focus({ preventScroll: true });
-      } else {
-        /* Closing with nothing written is not a draft worth keeping. */
-        document.querySelectorAll(".pv-chat .composer").forEach(function (c) {
-          const ta = c.querySelector("textarea");
-          if (ta && !ta.value.trim()) { dropDraft(c.getAttribute("data-composer")); c.remove(); }
-        });
-        renderChat();
       }
+    }
+
+    /* Everything said to and by the agent, in time order: the page-level
+       chat, every question thread's messages, and the panel's own events
+       (a revision, a nudge). Comment threads stay on their elements. */
+    function conversationEntries() {
+      const out = [];
+      S.state.chat.forEach(function (m, i) {
+        out.push({ ts: m.ts, actor: m.actor, text: m.text, key: "page", index: i });
+      });
+      S.state.threads.forEach(function (t) {
+        if (!t.asked) return;
+        t.messages.forEach(function (m, i) {
+          out.push({ ts: m.ts, actor: m.actor, text: m.text, key: t.id, ref: t.target, index: i,
+            note: !!m.note, status: t.status, unanchored: t.status === "unanchored" });
+        });
+      });
+      S.ui.panelEvents.forEach(function (ev) { out.push({ event: true, kind: ev.kind, text: ev.text, ts: ev.ts }); });
+      out.sort(function (a, b) { return (Date.parse(a.ts) || 0) - (Date.parse(b.ts) || 0); });
+      return out;
     }
 
     /* What the handle and the top-bar link count: every message in the
        conversation. */
     function conversationCount() {
-      return S.state.chat.length;
+      return conversationEntries().filter(function (e) { return !e.event; }).length;
+    }
+
+    function panelEvent(kind, text) {
+      S.ui.panelEvents.push({ kind: kind, text: text, ts: nowIso() });
+      renderChat();
+    }
+
+    /* The context chip: which element a message is about. A link into the
+       page: it scrolls the element into view and flashes it. */
+    function chipFor(ref) {
+      const target = ref ? findRef(S.root, ref) : null;
+      const title = target ? elementQuote(target) : ref || "";
+      const chip = el("button", { type: "button", class: "pv-ctx", title: ref || "" },
+        el("span", { class: "pv-ctx-kind", text: ref ? refKind(ref) : "plan" }),
+        el("span", { class: "pv-ctx-title", text: title.slice(0, 48) }));
+      chip.addEventListener("click", function () { jumpTo(ref); });
+      return chip;
+    }
+
+    function jumpTo(ref) {
+      const target = findRef(S.root, ref);
+      if (!target) return;
+      const details = target.closest("details.phase");
+      if (details && details !== target && phaseIsShut(details)) setPhaseOpen(details, true, false);
+      if (target.tagName === "DETAILS" && phaseIsShut(target)) setPhaseOpen(target, true, false);
+      target.scrollIntoView({ block: "center" });
+      target.classList.remove("is-jumped");
+      void target.offsetWidth;
+      target.classList.add("is-jumped");
+    }
+
+    /* Aim the panel's composer at an element (or at a thread on it), open
+       the panel, and put the cursor in the input. */
+    function aimPanel(ref, quote, thread) {
+      const existing = ref && !thread ? askedThreadOn(ref) : null;
+      S.ui.panel.ref = ref || null;
+      S.ui.panel.quote = quote || null;
+      S.ui.panel.thread = thread || (existing ? existing.id : null);
+      savePanelDraft();
+      if (!S.ui.chatOpen) setPanelOpen(true);
+      renderPanelComposer();
+      const ta = document.querySelector(".pv-panel-composer textarea");
+      if (ta) ta.focus({ preventScroll: true });
+    }
+
+    function panelComposer() {
+      const composer = el("div", { class: "pv-panel-composer" });
+      const targetLine = el("div", { class: "pv-panel-target", hidden: true },
+        el("span", { class: "pv-panel-target-label", text: "asking about" }),
+        el("span", { class: "pv-panel-target-chip" }),
+        el("button", { type: "button", class: "pv-btn is-quiet pv-panel-target-clear", text: "the whole plan instead",
+          onclick: function () {
+            S.ui.panel.ref = null; S.ui.panel.thread = null; S.ui.panel.quote = null;
+            savePanelDraft();
+            renderPanelComposer();
+          } }));
+      const box = el("div", { class: "thread-composer" });
+      const ta = el("textarea", { rows: "1", placeholder: "Ask the agent\u2026", "aria-label": "Ask the agent" });
+      const hint = el("span", { class: "thread-composer-hint" });
+      const sendBtn = el("button", { type: "button", class: "pv-btn is-agent thread-composer-send composer-send", text: "Send" });
+      box.appendChild(agentMark(""));
+      box.appendChild(ta);
+      box.appendChild(hint);
+      box.appendChild(sendBtn);
+      ta.value = S.ui.panel.text || "";
+      const grow = function () { ta.rows = Math.min(6, ta.value.split("\n").length); };
+      grow();
+      ta.addEventListener("input", function () { S.ui.panel.text = ta.value; savePanelDraft(); grow(); });
+      ta.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); sendPanel(); }
+      });
+      sendBtn.addEventListener("click", sendPanel);
+      composer.appendChild(targetLine);
+      composer.appendChild(box);
+      return composer;
+    }
+
+    function renderPanelComposer() {
+      const composer = document.querySelector(".pv-panel-composer");
+      if (!composer) return;
+      const p = S.ui.panel;
+      /* A target thread that is gone (deleted, or a snapshot without it)
+         is dropped; the text stays, aimed at the plan as a whole. */
+      if (p.thread && !S.syncing && S.state.lastSeq > 0 && !S.state.threads.some(function (t) { return t.id === p.thread; })) {
+        p.thread = null;
+        p.ref = null;
+        p.quote = null;
+        savePanelDraft();
+      }
+      const line = composer.querySelector(".pv-panel-target");
+      const aimed = !!(p.ref || p.thread);
+      line.hidden = !aimed;
+      if (aimed) {
+        const thread = p.thread ? S.state.threads.find(function (t) { return t.id === p.thread; }) : null;
+        const ref = p.ref || (thread ? thread.target : null);
+        const chipHost = line.querySelector(".pv-panel-target-chip");
+        chipHost.replaceChildren(chipFor(ref));
+      }
+      composer.querySelector(".thread-composer-hint").textContent = S.state.presence ? "Enter to send" : "waits for an agent";
+      setMarkState(composer.querySelector(".thread-composer .ag-mark"), S.state.presence ? "" : "off");
+      composer.querySelector(".thread-composer-send").disabled = !!S.ui.panelSending;
+    }
+
+    /* One send at a time, keyed by the panel, not by its node: a body swap
+       while the send is in flight rebuilds the panel, and the reply must
+       clear and re-enable the live input. */
+    function sendPanel() {
+      const ta = document.querySelector(".pv-panel-composer textarea");
+      const text = ta ? ta.value.trim() : "";
+      if (!text || S.ui.panelSending) return;
+      const p = S.ui.panel;
+      const cmd = { cmd: "chat.send", text: text, opened_revision: S.state.revision };
+      const existing = p.ref && !p.thread ? askedThreadOn(p.ref) : null;
+      if (p.thread) {
+        cmd.thread = p.thread;
+      } else if (existing) {
+        cmd.thread = existing.id;
+      } else if (p.ref) {
+        const target = findRef(S.root, p.ref);
+        cmd.ref = p.ref;
+        cmd.quote = p.quote || (target ? elementQuote(target) : "");
+      }
+      S.ui.panelSending = true;
+      renderPanelComposer();
+      send(cmd)
+        .then(function () {
+          S.ui.panelSending = false;
+          S.ui.panel = { text: "", ref: null, thread: null, quote: null };
+          savePanelDraft();
+          markAsked();
+          renderPanelComposer();
+          const box = document.querySelector(".pv-panel-composer textarea");
+          if (box) { box.value = ""; box.rows = 1; box.focus({ preventScroll: true }); }
+          const btn = document.querySelector(".pv-panel-composer .thread-composer-send");
+          if (btn) cleared(btn);
+        })
+        .catch(function (e) {
+          S.ui.panelSending = false;
+          renderPanelComposer();
+          const btn = document.querySelector(".pv-panel-composer .thread-composer-send");
+          if (btn) failed(btn, e);
+        });
     }
 
     function mountPanel(root) {
@@ -2871,8 +3017,13 @@
           } }));
         panel.appendChild(hint);
       }
-      panel.appendChild(el("div", { class: "pv-panel-log pv-chat-log" }));
-      panel.appendChild(el("div", { class: "pv-panel-composer pv-chat-composers" }));
+      const log = el("div", { class: "pv-panel-log pv-chat-log" });
+      /* Follow the newest message unless the reviewer has scrolled up. */
+      log.addEventListener("scroll", function () {
+        S.ui.panelFollow = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+      });
+      panel.appendChild(log);
+      panel.appendChild(panelComposer());
       const foot = el("div", { class: "pv-panel-foot" });
       foot.appendChild(el("span", { class: "feedback-bar-state" },
         el("span", { class: "pv-dot" }), el("span", { class: "feedback-bar-state-text" })));
@@ -2919,7 +3070,7 @@
        thread survives the next render. */
     function renderRecovery() {
       let panel = document.querySelector(".pv-recovery");
-      const orphans = core.unanchored(S.state);
+      const orphans = core.unanchored(S.state).filter(function (t) { return !t.asked; });
       const drafts = orphanedDrafts();
       if (!orphans.length && !drafts.length) { if (panel) panel.remove(); return; }
       if (!panel) {
@@ -2947,7 +3098,7 @@
         row.appendChild(el("span", { class: "pv-orphan-draft-what", text: draftLabel(d) + (d.kind === "followup" ? " \u2014 its thread is gone" : " \u2014 its element is gone") }));
         row.appendChild(el("p", { class: "thread-text", text: d.text }));
         row.appendChild(el("button", { type: "button", class: "pv-btn is-quiet", text: "Discard", onclick: function () {
-          if (d.kind === "followup") setFollowup(d.thread, ""); else dropDraft(d.id);
+          dropDraft(d.id);
           renderRecovery();
         } }));
         list.appendChild(row);
@@ -2974,13 +3125,6 @@
         const d = map[id];
         if (!draftTarget(d)) out.push(d);
       }
-      /* A follow-up typed into a question thread that is no longer here. */
-      Object.keys(S.threadDrafts).forEach(function (thread) {
-        const text = (S.threadDrafts[thread] || "").trim();
-        if (!text) return;
-        if (S.state.threads.some(function (t) { return t.id === thread; })) return;
-        out.push({ id: "followup:" + thread, kind: "followup", thread: thread, text: text });
-      });
       return out;
     }
 
@@ -3173,10 +3317,6 @@
         /* A message half-written is not hidden behind a closed panel:
            the first time the page finds it, the panel opens. Once. A
            reviewer who then closes the panel has chosen. */
-        if (d.kind === "chat" && d.text && !S.ui.chatDraftShown) {
-          S.ui.chatDraftShown = true;
-          if (!S.ui.chatOpen) setPanelOpen(true);
-        }
         openComposer({ id: d.id, clientId: d.clientId, kind: d.kind, ref: d.ref, thread: d.thread,
           revision: d.revision, text: d.text, blocking: d.blocking, quote: d.quote, silent: true });
       }
@@ -3216,15 +3356,7 @@
         ask.appendChild(el("span", { class: "ask-btn-label", text: "Ask the agent" }));
         ask.addEventListener("click", function (e) {
           e.stopPropagation();
-          if (target.tagName === "DETAILS" && phaseIsShut(target)) setPhaseOpen(target, true, true);
-          const existing = askedThreadOn(ref);
-          const input = existing && S.root.querySelector('.thread[data-thread="' + existing.id + '"] .thread-composer textarea');
-          if (input) {
-            input.scrollIntoView({ block: "center" });
-            input.focus({ preventScroll: true });
-            return;
-          }
-          openComposer({ kind: "ask", ref: ref, quote: quote });
+          aimPanel(ref, quote, null);
         });
         (slots.btn || target).appendChild(el("span", { class: "el-actions" }, btn, ask));
         if (!first) return;

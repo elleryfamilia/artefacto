@@ -581,9 +581,16 @@ fn asking_the_agent_wakes_it_from_the_page_and_from_a_thread() {
     page.navigate(&s.url);
     connected(&mut page);
 
+    // Page level: the handle opens the panel, the composer is aimed at the
+    // plan as a whole.
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "is this the whole plan?");
-    page.click(".pv-chat .composer .composer-send");
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-target').hidden"),
+        true,
+        "no target: the whole plan"
+    );
+    page.type_into(".pv-panel-composer textarea", "is this the whole plan?");
+    enter(&mut page, ".pv-panel-composer textarea");
     page.wait_until(
         "document.querySelectorAll('.pv-chat-msg').length === 1",
         "the chat message to show",
@@ -595,10 +602,17 @@ fn asking_the_agent_wakes_it_from_the_page_and_from_a_thread() {
     assert_eq!(r["status"], "chat");
     let seq = r["seq"].to_string();
 
+    // Inside a comment thread: Ask the agent aims the panel at that thread,
+    // and the question joins the thread on the element.
     comment(&mut page, "task:t-a", "and this?");
     page.click(".thread[data-thread=\"c-1\"] .thread-ask");
-    page.type_into(".thread[data-thread=\"c-1\"] .composer textarea", "really?");
-    page.click(".thread[data-thread=\"c-1\"] .composer .composer-send");
+    assert_eq!(
+        page.eval("!document.querySelector('.pv-panel-target').hidden"),
+        true,
+        "aimed at the thread"
+    );
+    page.type_into(".pv-panel-composer textarea", "really?");
+    enter(&mut page, ".pv-panel-composer textarea");
     page.wait_until(
         "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
         "the question to join the thread",
@@ -1444,8 +1458,8 @@ fn the_chat_panel_stays_open_and_focused_across_a_push() {
     page.navigate(&s.url);
     connected(&mut page);
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "half a question");
-    page.eval("(function(){ document.querySelector('.pv-chat .composer textarea').focus(); return true; })()");
+    page.type_into(".pv-panel-composer textarea", "half a question");
+    page.eval("(function(){ document.querySelector('.pv-panel-composer textarea').focus(); return true; })()");
 
     s.edit_plan("Demo plan", "Demo plan, revised");
     s.push(1, &[]);
@@ -1459,12 +1473,12 @@ fn the_chat_panel_stays_open_and_focused_across_a_push() {
         "still open"
     );
     assert_eq!(
-        page.text("document.querySelector('.pv-chat .composer textarea').value"),
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
         "half a question"
     );
     assert_eq!(
         page.eval(
-            "document.activeElement === document.querySelector('.pv-chat .composer textarea')"
+            "document.activeElement === document.querySelector('.pv-panel-composer textarea')"
         ),
         true
     );
@@ -1874,7 +1888,7 @@ fn a_chat_draft_is_visible_after_a_reload() {
     page.navigate(&s.url);
     connected(&mut page);
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "half a question");
+    page.type_into(".pv-panel-composer textarea", "half a question");
     page.navigate(&s.page_url());
     connected(&mut page);
     assert_eq!(
@@ -1883,7 +1897,7 @@ fn a_chat_draft_is_visible_after_a_reload() {
         "the panel opens for its draft"
     );
     assert_eq!(
-        page.text("document.querySelector('.pv-chat .composer textarea').value"),
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
         "half a question"
     );
 }
@@ -1902,7 +1916,7 @@ fn the_chat_panel_stays_closed_once_the_reviewer_closes_it() {
     page.navigate(&s.url);
     connected(&mut page);
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "kept but closed");
+    page.type_into(".pv-panel-composer textarea", "kept but closed");
     page.click(".feedback-bar-chat");
     assert_eq!(
         page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
@@ -1923,7 +1937,7 @@ fn the_chat_panel_stays_closed_once_the_reviewer_closes_it() {
         "an own reply does not reopen it"
     );
     assert_eq!(
-        page.text("document.querySelector('.pv-chat .composer textarea').value"),
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
         "kept but closed",
         "the draft is kept"
     );
@@ -1932,7 +1946,7 @@ fn the_chat_panel_stays_closed_once_the_reviewer_closes_it() {
     page.click(".feedback-bar-chat");
     page.click(".feedback-bar-chat");
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "");
+    page.type_into(".pv-panel-composer textarea", "");
     page.click(".feedback-bar-chat");
     page.navigate(&s.page_url());
     connected(&mut page);
@@ -2461,8 +2475,8 @@ fn a_sent_chat_message_leaves_a_place_for_the_next() {
     page.navigate(&s.url);
     connected(&mut page);
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "first");
-    page.click(".pv-chat .composer .composer-send");
+    page.type_into(".pv-panel-composer textarea", "first");
+    page.click(".pv-panel-composer .thread-composer-send");
     page.wait_until(
         "document.querySelectorAll('.pv-chat-msg').length === 1",
         "the message shown",
@@ -2472,12 +2486,12 @@ fn a_sent_chat_message_leaves_a_place_for_the_next() {
         false
     );
     assert_eq!(
-        page.eval("!!document.querySelector('.pv-chat .composer textarea')"),
+        page.eval("!!document.querySelector('.pv-panel-composer textarea')"),
         true,
         "a fresh composer"
     );
     assert_eq!(
-        page.text("document.querySelector('.pv-chat .composer textarea').value"),
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
         ""
     );
     let _ = s;
@@ -2600,17 +2614,14 @@ fn buffered_replies_drain_in_log_order() {
         "the reply landed",
     );
     page.click(".thread[data-thread=\"c-1\"] .thread-ask");
-    page.type_into(
-        ".thread[data-thread=\"c-1\"] .composer[data-kind=\"ask\"] textarea",
-        "two",
-    );
-    page.click(".thread[data-thread=\"c-1\"] .composer[data-kind=\"ask\"] .composer-send");
+    page.type_into(".pv-panel-composer textarea", "two");
+    enter(&mut page, ".pv-panel-composer textarea");
     support::wait_for(
         || s.server().count_events("chat.sent") == 1,
         "the question landed",
     );
     page.wait_until(
-        "!document.querySelector('.composer[data-kind=\"ask\"]')",
+        "document.querySelector('.pv-panel-composer textarea').value === ''",
         "the question's reply to be in",
     );
     release_path(&mut page, "/cmd");
@@ -2645,8 +2656,8 @@ fn a_push_after_a_sent_chat_message_leaves_the_panel_with_a_composer() {
     page.navigate(&s.url);
     connected(&mut page);
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "first");
-    page.click(".pv-chat .composer .composer-send");
+    page.type_into(".pv-panel-composer textarea", "first");
+    page.click(".pv-panel-composer .thread-composer-send");
     page.wait_until(
         "document.querySelectorAll('.pv-chat-msg').length === 1",
         "the message shown",
@@ -2668,12 +2679,12 @@ fn a_push_after_a_sent_chat_message_leaves_the_panel_with_a_composer() {
         "still open"
     );
     assert_eq!(
-        page.eval("!!document.querySelector('.pv-chat .composer textarea')"),
+        page.eval("!!document.querySelector('.pv-panel-composer textarea')"),
         true,
         "and still somewhere to write"
     );
     assert_eq!(
-        page.eval("document.querySelectorAll('.pv-chat .composer').length"),
+        page.eval("document.querySelectorAll('.pv-panel-composer').length"),
         1
     );
 }
@@ -2785,7 +2796,7 @@ fn a_lost_page_is_not_left_catching_up() {
 // --- the round-eleven fix slice, reviewed fresh --------------------------------
 
 #[test]
-fn focus_in_an_untyped_chat_composer_survives_a_push() {
+fn focus_in_the_panel_composer_survives_a_push() {
     let Some(browser) = Browser::launch() else {
         return;
     };
@@ -2794,15 +2805,14 @@ fn focus_in_an_untyped_chat_composer_survives_a_push() {
     page.navigate(&s.url);
     connected(&mut page);
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "first");
-    page.click(".pv-chat .composer .composer-send");
+    page.type_into(".pv-panel-composer textarea", "first");
+    page.click(".pv-panel-composer .thread-composer-send");
     page.wait_until(
         "document.querySelectorAll('.pv-chat-msg').length === 1",
-        "the message shown",
+        "the message to land",
     );
-    page.eval("(function(){ document.querySelector('.pv-chat .composer textarea').focus(); return true; })()");
-    let id = page.text("document.querySelector('.pv-chat .composer').dataset.composer");
-
+    // Nothing typed since: the cursor sits in the empty composer.
+    page.eval("(function(){ document.querySelector('.pv-panel-composer textarea').focus(); return true; })()");
     s.edit_plan("Demo plan", "Demo plan, revised");
     s.push(1, &[]);
     page.wait_until(
@@ -2810,16 +2820,21 @@ fn focus_in_an_untyped_chat_composer_survives_a_push() {
         "revision 2",
     );
     assert_eq!(
-        page.text("document.querySelector('.pv-chat .composer').dataset.composer"),
-        id,
-        "the same composer"
+        page.eval("!document.querySelector('.pv-dock').classList.contains('is-hidden')"),
+        true,
+        "the panel is still open"
     );
     assert_eq!(
         page.eval(
-            "document.activeElement === document.querySelector('.pv-chat .composer textarea')"
+            "document.activeElement === document.querySelector('.pv-panel-composer textarea')"
         ),
         true,
-        "focus came back to it"
+        "and the cursor is back in its composer"
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-chat-msg').length"),
+        1,
+        "the log kept its message"
     );
 }
 
@@ -2850,7 +2865,7 @@ fn retry_clears_the_notice_and_the_pill() {
 }
 
 #[test]
-fn cancelling_the_chat_composer_closes_the_chat() {
+fn hiding_the_panel_keeps_what_was_typed() {
     let Some(browser) = Browser::launch() else {
         return;
     };
@@ -2859,12 +2874,12 @@ fn cancelling_the_chat_composer_closes_the_chat() {
     page.navigate(&s.url);
     connected(&mut page);
     page.click(".feedback-bar-chat");
-    page.type_into(".pv-chat .composer textarea", "never mind");
-    page.click(".pv-chat .composer .composer-cancel");
+    page.type_into(".pv-panel-composer textarea", "never mind");
+    page.click(".pv-panel-hide");
     assert_eq!(
         page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         true,
-        "Cancel closes the chat"
+        "the X hides the panel"
     );
     page.eval(
         "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 999, events: [] })",
@@ -2872,15 +2887,15 @@ fn cancelling_the_chat_composer_closes_the_chat() {
     assert_eq!(
         page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
         true,
-        "and it stays closed"
+        "and it stays hidden"
     );
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    page.click(".feedback-bar-chat");
     assert_eq!(
-        page.eval("document.querySelectorAll('.pv-chat .composer').length"),
-        0
-    );
-    assert_eq!(
-        page.eval("Object.keys(window.artefactoPlan.debug().drafts).length"),
-        0
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
+        "never mind",
+        "what was typed is still there after a reload"
     );
     let _ = s;
 }
@@ -3157,56 +3172,73 @@ fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
     page.navigate(&s.url);
     connected(&mut page);
 
-    // Every element that offers Comment offers Ask beside it.
+    // Every element that offers Comment offers the mark beside it, labelled
+    // until the first question on this browser.
     assert_eq!(
         page.eval(
             "document.querySelectorAll('.el-actions .ask-btn').length > 0 && \
              document.querySelectorAll('.el-actions .ask-btn').length === document.querySelectorAll('.comment-btn').length"
         ),
         true,
-        "one ask button per comment button"
+        "one mark per comment button"
     );
-
-    // Until the first question on this browser, the mark carries its label.
     assert_eq!(
         page.eval("document.querySelectorAll('[data-plan-ref] .ask-btn.is-labelled').length > 0"),
         true,
         "the ask control is labelled before the first ask"
     );
+
+    // The mark opens the panel aimed at the task; Enter opens the thread.
     page.click("[data-plan-ref=\"task:t-a\"] .ask-btn");
-    page.type_into(
-        "[data-plan-ref=\"task:t-a\"] .pv-composers .composer[data-kind=\"ask\"] textarea",
-        "is this the whole plan?",
-    );
-    page.click(
-        "[data-plan-ref=\"task:t-a\"] .pv-composers .composer[data-kind=\"ask\"] .composer-send",
-    );
     page.wait_until(
-        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 1",
-        "the question to open its thread",
+        "!document.querySelector('.pv-dock').classList.contains('is-hidden')",
+        "the panel to open",
     );
     assert_eq!(
-        page.text(
-            "document.querySelector('.thread[data-thread=\"c-1\"] .thread-label').textContent"
-        ),
-        "Question"
+        page.text("document.querySelector('.pv-panel-target .pv-ctx').title"),
+        "task:t-a",
+        "the composer is aimed at the task"
     );
     assert_eq!(
         page.eval(
-            "!document.querySelector('[data-plan-ref=\"task:t-a\"] .pv-composers .composer')"
+            "document.activeElement === document.querySelector('.pv-panel-composer textarea')"
         ),
         true,
-        "the composer closed once the server accepted the question"
+        "and focused"
     );
-    // From the question until the answer: the working row, the pill at work,
-    // the control tinted, and the labels gone from the element rows.
+    page.type_into(".pv-panel-composer textarea", "is this the whole plan?");
+    enter(&mut page, ".pv-panel-composer textarea");
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]:not(.thread-working)').length === 1",
+        "the question to open its thread in the log",
+    );
     assert_eq!(
-        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .thread-working .thread-text').textContent"),
+        page.eval("document.querySelector('.pv-panel-target').hidden"),
+        true,
+        "the target clears after the send"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-composer textarea').value"),
+        "",
+        "and so does the text"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-msg[data-thread=\"c-1\"] .pv-ctx').title"),
+        "task:t-a",
+        "the message carries its context chip"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.thread[data-thread=\"c-1\"]')"),
+        false,
+        "a question thread is not rendered on the element"
+    );
+
+    // From the question until the answer: the working row in the log, the
+    // pill at work, the mark tinted and counted, the element spined, and the
+    // labels gone from the element rows.
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-1\"] .thread-text').textContent"),
         "thinking\u{2026}"
-    );
-    assert_eq!(
-        page.eval("document.querySelector('.thread[data-thread=\"c-1\"] .thread-working .ag-mark').classList.contains('is-working')"),
-        true
     );
     assert_eq!(
         page.text("document.querySelector('.pv-presence').dataset.mode"),
@@ -3216,15 +3248,12 @@ fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
         page.eval("document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-btn').classList.contains('has-thread')"),
         true
     );
+    assert_eq!(page.text("document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-btn .ask-count').textContent"), "1");
+    assert_eq!(page.eval("document.querySelector('[data-plan-ref=\"task:t-a\"]').classList.contains('is-discussed')"), true);
     assert_eq!(
         page.eval("document.querySelectorAll('[data-plan-ref] .ask-btn.is-labelled').length"),
         0,
         "after the first ask the mark alone is the control"
-    );
-    assert_eq!(
-        page.eval("!!document.querySelector('.pv-panel-handle .ag-mark')"),
-        true,
-        "the handle carries the mark"
     );
 
     let out = s
@@ -3249,11 +3278,11 @@ fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
         ])
         .success();
     page.wait_until(
-        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
-        "the answer to join the thread",
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]:not(.thread-working)').length === 2",
+        "the answer to join the log",
     );
     assert_eq!(
-        page.eval("!document.querySelector('.thread[data-thread=\"c-1\"] .thread-working')"),
+        page.eval("!document.querySelector('.pv-panel-msg.thread-working')"),
         true,
         "the answer ends the working row"
     );
@@ -3261,97 +3290,49 @@ fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
         page.text("document.querySelector('.pv-presence').dataset.mode"),
         "waiting"
     );
-    page.screenshot(&screenshot_path("ask-on-a-task"));
-
-    // Circle for the agent, square for the reviewer; the kind on the card;
-    // and no thread id anywhere a person reads.
-    assert_eq!(
-        page.eval("!!document.querySelector('.thread[data-thread=\"c-1\"] .thread-msg[data-actor=\"agent\"] .pv-avatar .ag-mark')"),
-        true,
-        "the agent's avatar is the mark"
-    );
-    assert_eq!(
-        page.eval("!!document.querySelector('.thread[data-thread=\"c-1\"] .thread-msg[data-actor=\"reviewer\"] .pv-avatar.is-you')"),
-        true,
-        "the reviewer's avatar is the square"
-    );
-    assert_eq!(
-        page.text("document.querySelector('.thread[data-thread=\"c-1\"]').dataset.kind"),
-        "question"
-    );
-    assert_eq!(
-        page.eval(
-            "Array.from(document.querySelectorAll('.thread *')).some(function (n) { \
-               return n.children.length === 0 && /c-[0-9]+/.test(n.textContent); })"
-        ),
-        false,
-        "no leaf inside a thread card shows a thread id (textContent, because innerText \
-         reads as empty inside a content-visibility region)"
-    );
-
-    // A reload shows the same thread from the server's state.
-    page.navigate(&s.page_url());
-    connected(&mut page);
     assert_eq!(
         page.text(
-            "document.querySelector('.thread[data-thread=\"c-1\"] .thread-label').textContent"
+            "document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-preview-text').textContent"
         ),
-        "Question"
+        "yes, all of it",
+        "the element previews the last message"
+    );
+    assert_eq!(page.text("document.querySelector('[data-plan-ref=\"task:t-a\"] .ask-btn .ask-count').textContent"), "2");
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-panel-msg[data-thread=\"c-1\"][data-actor=\"agent\"] .pv-avatar .ag-mark') && !!document.querySelector('.pv-panel-msg[data-thread=\"c-1\"][data-actor=\"reviewer\"] .pv-avatar.is-you')"),
+        true,
+        "circle for the agent, square for the reviewer"
     );
     assert_eq!(
-        page.eval("document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length"),
+        page.eval("Array.from(document.querySelectorAll('.pv-panel-log *')).some(function (n) { return n.children.length === 0 && /c-[0-9]+/.test(n.textContent); })"),
+        false,
+        "no thread id is shown in the log"
+    );
+    page.screenshot(&screenshot_path("ask-on-a-task"));
+
+    // The chip is a link into the page.
+    page.click(".pv-panel-msg[data-thread=\"c-1\"] .pv-ctx");
+    assert_eq!(page.eval("document.querySelector('[data-plan-ref=\"task:t-a\"]').classList.contains('is-jumped')"), true, "the chip jumps to its element");
+
+    // A reload shows the same log from the server's state, and the mark
+    // aims a follow-up at the same thread.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    page.click(".pv-panel-link");
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]').length"),
         2
     );
-
-    // On a question thread every follow-up is a question: no Reply, which
-    // would wait for the sent review, no second Ask button, one input that
-    // stays, says who hears it, and sends on Enter.
+    page.click("[data-plan-ref=\"task:t-a\"] .ask-btn");
     assert_eq!(
-        page.eval("document.querySelector('.thread[data-thread=\"c-1\"] .thread-reply').hidden"),
+        page.eval("!document.querySelector('.pv-panel-target').hidden"),
         true,
-        "no passive Reply on a question thread"
+        "aimed at the existing thread"
     );
-    assert_eq!(
-        page.eval("document.querySelector('.thread[data-thread=\"c-1\"] .thread-ask').hidden"),
-        true,
-        "the persistent input replaces the Ask button"
-    );
-    assert_eq!(
-        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .thread-composer-hint').textContent"),
-        "Enter to send"
-    );
-    // A draft in the input survives a push: the input is re-created with it.
-    page.type_into(
-        ".thread[data-thread=\"c-1\"] .thread-composer textarea",
-        "and the CLI layer?",
-    );
-    let plan = s.repo.path().join("plan.json");
-    s.repo
-        .run(&[
-            "plan",
-            "push",
-            plan.to_str().unwrap(),
-            "--json",
-            "--session",
-            &s.session,
-            "--base-revision",
-            "1",
-        ])
-        .success();
+    page.type_into(".pv-panel-composer textarea", "and the CLI layer?");
+    enter(&mut page, ".pv-panel-composer textarea");
     page.wait_until(
-        "window.artefactoPlan.debug().revision === 2 && !window.artefactoPlan.debug().syncing",
-        "revision 2 to land",
-    );
-    assert_eq!(
-        page.text("document.querySelector('.thread[data-thread=\"c-1\"] .thread-composer textarea').value"),
-        "and the CLI layer?",
-        "the draft survived the swap"
-    );
-    page.eval(
-        "document.querySelector('.thread[data-thread=\"c-1\"] .thread-composer textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))",
-    );
-    page.wait_until(
-        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 3",
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]:not(.thread-working)').length === 3",
         "the follow-up to join the thread",
     );
     let out = s.repo.run(&[
@@ -3366,7 +3347,10 @@ fn asking_on_an_element_with_no_comment_opens_a_question_thread() {
     let r: serde_json::Value = serde_json::from_str(out.success().stdout.trim()).unwrap();
     assert_eq!(r["status"], "chat", "the follow-up woke the agent: {r}");
     let last = r["events"].as_array().unwrap().last().unwrap().clone();
-    assert_eq!(last["data"]["thread"], "c-1");
+    assert_eq!(
+        last["data"]["thread"], "c-1",
+        "a second question on the element goes to the same thread"
+    );
     assert_eq!(last["data"]["text"], "and the CLI layer?");
 }
 
@@ -3455,17 +3439,11 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
         "every ask button sits right of its comment button on one line"
     );
 
-    page.click("[data-plan-ref=\"task:t-session-store\"] .ask-btn");
-    page.type_into(
-        "[data-plan-ref=\"task:t-session-store\"] .pv-composers .composer[data-kind=\"ask\"] textarea",
+    ask(
+        &mut page,
+        "task:t-session-store",
         "why a trait rather than a plain struct here?",
-    );
-    page.click(
-        "[data-plan-ref=\"task:t-session-store\"] .pv-composers .composer[data-kind=\"ask\"] .composer-send",
-    );
-    page.wait_until(
-        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 1",
-        "the question to open its thread",
+        "c-1",
     );
     s.repo
         .run(&[
@@ -3478,8 +3456,8 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
         ])
         .success();
     page.wait_until(
-        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
-        "the answer to join the thread",
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]:not(.thread-working)').length === 2",
+        "the answer to join the log",
     );
     // Seed one thread of every other kind and status, so the screenshots
     // show the card in each of its states: a blocking comment left open, a
@@ -3542,7 +3520,11 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
         0,
         "only the chosen verdict is ever filled"
     );
-    page.eval("document.querySelector('.thread[data-thread=\"c-1\"]').scrollIntoView({ block: 'center' })");
+    // The panel open beside the sheet, scrolled to the blocking comment.
+    page.click(".pv-panel-link");
+    // The panel open beside the sheet, scrolled to the blocking comment.
+    page.click(".pv-panel-link");
+    page.eval("document.querySelector('.thread[data-thread=\"c-2\"]').scrollIntoView({ block: 'center' })");
     page.screenshot(&screenshot_path("ask-on-kitchen-sink"));
     // The same page in the dark theme, from the toggle, so both palettes are
     // looked at whenever the page changes.
@@ -3570,7 +3552,7 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
 }
 
 #[test]
-fn a_question_composer_says_when_no_agent_will_hear_it() {
+fn the_panel_says_when_no_agent_will_hear_it() {
     let Some(browser) = Browser::launch() else {
         return;
     };
@@ -3579,17 +3561,19 @@ fn a_question_composer_says_when_no_agent_will_hear_it() {
     page.navigate(&s.url);
     connected(&mut page);
 
-    // A question already waiting when the agent goes: the page says so as
-    // a notice, and takes it back when an agent attaches.
-    page.click("[data-plan-ref=\"phase:p-one\"] .ask-btn");
-    page.type_into(
-        "[data-plan-ref=\"phase:p-one\"] .composer[data-kind=\"ask\"] textarea",
-        "how long?",
+    ask(&mut page, "phase:p-one", "how long?", "c-1");
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-1\"]')"),
+        true,
+        "the question waits"
     );
-    page.click("[data-plan-ref=\"phase:p-one\"] .composer[data-kind=\"ask\"] .composer-send");
-    page.wait_until(
-        "!!document.querySelector('.thread[data-thread=\"c-1\"] .thread-working')",
-        "the question to wait",
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-composer .thread-composer-hint').textContent"),
+        "Enter to send"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-head .pv-chat-hint').textContent"),
+        "The agent hears this at once."
     );
     assert_eq!(
         page.eval("!!document.querySelector('.pv-notice[data-kind=\"noagent\"]')"),
@@ -3597,34 +3581,28 @@ fn a_question_composer_says_when_no_agent_will_hear_it() {
         "an agent holds the lease"
     );
 
-    page.click("[data-plan-ref=\"task:t-a\"] .ask-btn");
-    let line = "document.querySelector('[data-plan-ref=\"task:t-a\"] .composer[data-kind=\"ask\"] .composer-presence').textContent";
-    assert_eq!(page.text(line), "The agent hears this at once.");
-
-    // The lease expires while the composer is open: the line changes under
-    // the reviewer's cursor, the way the pill does.
+    // The lease expires while the question waits: the composer, the head,
+    // the working row, and a notice all say so.
     s.server()
         .age_lease(artefacto::server::lease::TTL + std::time::Duration::from_secs(1));
     page.wait_until(
-        &format!("{line} === 'No agent is attached. Your question will wait for one.'"),
+        "document.querySelector('.pv-panel-composer .thread-composer-hint').textContent === 'waits for an agent'",
         "the composer to say the question will wait",
     );
     assert_eq!(
-        page.text("document.querySelector('.pv-notice[data-kind=\"noagent\"] .pv-notice-text').textContent"),
-        "No agent is attached. Your question waits for one.",
-        "the waiting question is a notice while nobody holds the lease"
+        page.text("document.querySelector('.pv-panel-head .pv-chat-hint').textContent"),
+        "No agent is attached. Your message will wait for one."
     );
-
-    // A composer opened while no agent is attached says so from the start
-    // (on the summary, which has no question yet; the phase's mark would
-    // go to its thread's input instead).
-    page.click("[data-plan-ref=\"meta:demo\"] .ask-btn");
     assert_eq!(
-        page.text("document.querySelector('[data-plan-ref=\"meta:demo\"] .composer[data-kind=\"ask\"] .composer-presence').textContent"),
-        "No agent is attached. Your question will wait for one."
+        page.text("document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-1\"] .thread-text').textContent"),
+        "waiting for an agent\u{2026}"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-notice[data-kind=\"noagent\"] .pv-notice-text').textContent"),
+        "No agent is attached. Your question waits for one."
     );
 
-    // And an agent arriving restores the promise in every open composer.
+    // An agent arriving restores the promise everywhere.
     s.repo
         .run(&[
             "await",
@@ -3636,7 +3614,7 @@ fn a_question_composer_says_when_no_agent_will_hear_it() {
         ])
         .success();
     page.wait_until(
-        &format!("{line} === 'The agent hears this at once.'"),
+        "document.querySelector('.pv-panel-composer .thread-composer-hint').textContent === 'Enter to send'",
         "the composer to say the agent hears it",
     );
     assert_eq!(
@@ -3645,13 +3623,8 @@ fn a_question_composer_says_when_no_agent_will_hear_it() {
         "the notice goes with the agent's arrival"
     );
     assert_eq!(
-        page.eval("document.querySelectorAll('.composer-presence').length"),
-        2,
-        "one line per open question composer"
-    );
-    assert_eq!(
-        page.eval("Array.from(document.querySelectorAll('.composer-presence')).every(function (n) { return n.textContent === 'The agent hears this at once.'; })"),
-        true
+        page.text("document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-1\"] .thread-text').textContent"),
+        "thinking\u{2026}"
     );
 }
 
@@ -3763,22 +3736,28 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
     );
 }
 
-/// Open a question on `target` with `text` and wait for its thread `c-N`.
+/// Ask a question about `target` from the panel and wait for it in the log
+/// as thread `c-N`. The element's mark aims the panel; Enter sends.
 fn ask(page: &mut support::browser::Page, target: &str, text: &str, thread: &str) {
     page.click(&format!("[data-plan-ref=\"{target}\"] .ask-btn"));
-    page.type_into(
-        &format!(
-            "[data-plan-ref=\"{target}\"] .pv-composers .composer[data-kind=\"ask\"] textarea"
-        ),
-        text,
-    );
-    page.click(&format!(
-        "[data-plan-ref=\"{target}\"] .pv-composers .composer[data-kind=\"ask\"] .composer-send"
-    ));
     page.wait_until(
-        &format!("document.querySelectorAll('.thread[data-thread=\"{thread}\"] .thread-msg').length === 1"),
-        "the question to open its thread",
+        "!document.querySelector('.pv-dock').classList.contains('is-hidden') && !document.querySelector('.pv-panel-target').hidden",
+        "the panel to open, aimed at the element",
     );
+    page.type_into(".pv-panel-composer textarea", text);
+    enter(page, ".pv-panel-composer textarea");
+    page.wait_until(
+        &format!("document.querySelectorAll('.pv-panel-msg[data-thread=\"{thread}\"]:not(.thread-working)').length === 1"),
+        "the question to appear in the log",
+    );
+}
+
+/// Press Enter in an input, the way the panel's composer sends.
+fn enter(page: &mut support::browser::Page, selector: &str) {
+    page.eval(&format!(
+        "document.querySelector({sel}).dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', bubbles: true }}))",
+        sel = serde_json::to_string(selector).unwrap()
+    ));
 }
 
 #[test]
@@ -3790,17 +3769,16 @@ fn the_working_state_follows_the_servers_state() {
     let mut page = browser.new_page();
     page.navigate(&s.url);
     connected(&mut page);
+    let working = "!!document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-1\"]')";
     ask(&mut page, "task:t-a", "is this the whole plan?", "c-1");
-    assert_eq!(
-        page.eval("!!document.querySelector('.thread[data-thread=\"c-1\"] .thread-working')"),
-        true
-    );
+    assert_eq!(page.eval(working), true);
 
     // A reload shows the question still waiting: the state says so.
     page.navigate(&s.page_url());
     connected(&mut page);
+    page.click(".pv-panel-link");
     assert_eq!(
-        page.eval("!!document.querySelector('.thread[data-thread=\"c-1\"] .thread-working')"),
+        page.eval(working),
         true,
         "the working row is derived from the state, not from this page's memory"
     );
@@ -3824,11 +3802,11 @@ fn the_working_state_follows_the_servers_state() {
         .success();
     page.set_offline(false);
     page.wait_until(
-        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]:not(.thread-working)').length === 2",
         "the answer to arrive in the snapshot",
     );
     assert_eq!(
-        page.eval("!!document.querySelector('.thread[data-thread=\"c-1\"] .thread-working')"),
+        page.eval(working),
         false,
         "an answer carried by a snapshot ends the working row"
     );
@@ -3838,10 +3816,11 @@ fn the_working_state_follows_the_servers_state() {
     );
 
     // A second question, resolved by the agent without an answer: resolving
-    // it ends the working state too, and no no-agent notice follows.
+    // it ends the working state too, shows as a chip, and no no-agent
+    // notice follows.
     ask(&mut page, "phase:p-one", "how long?", "c-2");
     assert_eq!(
-        page.eval("!!document.querySelector('.thread[data-thread=\"c-2\"] .thread-working')"),
+        page.eval("!!document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-2\"]')"),
         true
     );
     s.repo
@@ -3856,11 +3835,12 @@ fn the_working_state_follows_the_servers_state() {
         ])
         .success();
     page.wait_until(
-        "document.querySelector('.thread[data-thread=\"c-2\"]').dataset.status === 'declined'",
-        "the resolution to land",
+        "!!document.querySelector('.pv-panel-msg[data-thread=\"c-2\"] .pv-ctx.is-resolution')",
+        "the resolution to land in the log",
     );
+    assert_eq!(page.text("document.querySelector('.pv-panel-msg[data-thread=\"c-2\"] .pv-ctx.is-resolution').textContent"), "declined");
     assert_eq!(
-        page.eval("!!document.querySelector('.thread[data-thread=\"c-2\"] .thread-working')"),
+        page.eval("!!document.querySelector('.pv-panel-msg.thread-working[data-thread=\"c-2\"]')"),
         false
     );
     assert_eq!(
@@ -3948,7 +3928,7 @@ fn a_resolution_stays_the_resolution_after_a_reply() {
 }
 
 #[test]
-fn a_follow_up_sends_once_and_keeps_its_place() {
+fn the_panel_composer_sends_once_and_keeps_its_place() {
     let Some(browser) = Browser::launch() else {
         return;
     };
@@ -3961,18 +3941,16 @@ fn a_follow_up_sends_once_and_keeps_its_place() {
         .run(&["reply", "--session", &s.session, "--thread", "c-1", "yes"])
         .success();
     page.wait_until(
-        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 2",
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]:not(.thread-working)').length === 2",
         "the answer",
     );
-    let input = ".thread[data-thread=\"c-1\"] .thread-composer textarea";
+    let input = ".pv-panel-composer textarea";
 
-    // Focus and caret survive a swap, and the draft survives a reload. The
-    // phase is opened first: a closed disclosure cannot hold focus.
-    page.click("#phases-actions .pv-btn");
+    // Aimed at the thread, with text and a caret: all three survive a swap,
+    // and the text and the aim survive a reload.
+    page.click("[data-plan-ref=\"task:t-a\"] .ask-btn");
     page.type_into(input, "and the CLI layer?");
-    page.eval(&format!(
-        "document.querySelector('{input}').setSelectionRange(4, 7)"
-    ));
+    page.eval(&format!("(function(){{ const t = document.querySelector('{input}'); t.focus(); t.setSelectionRange(4, 7); return true; }})()"));
     let plan = s.repo.path().join("plan.json");
     s.repo
         .run(&[
@@ -3995,6 +3973,16 @@ fn a_follow_up_sends_once_and_keeps_its_place() {
         true,
         "focus and caret came back after the swap"
     );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-target .pv-ctx').title"),
+        "task:t-a",
+        "still aimed"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-panel-event.is-revision')"),
+        true,
+        "the revision is in the log"
+    );
     page.navigate(&s.page_url());
     connected(&mut page);
     assert_eq!(
@@ -4002,15 +3990,18 @@ fn a_follow_up_sends_once_and_keeps_its_place() {
         "and the CLI layer?",
         "the draft survived a reload"
     );
-
-    // A swap while the send is in flight: the input sends once, the live
-    // input is cleared and re-enabled when the reply lands.
-    shape_fetch(&mut page, "/cmd", "hold-response", 1200);
-    page.eval(&format!("document.querySelector('{input}').dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', bubbles: true }}))"));
     assert_eq!(
-        page.eval(
-            "document.querySelector('.thread[data-thread=\"c-1\"] .thread-composer-send').disabled"
-        ),
+        page.text("document.querySelector('.pv-panel-target .pv-ctx').title"),
+        "task:t-a",
+        "and so did the aim"
+    );
+
+    // A swap while the send is in flight: it sends once, and the live input
+    // is cleared and re-enabled when the reply lands.
+    shape_fetch(&mut page, "/cmd", "hold-response", 1200);
+    enter(&mut page, input);
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-composer .thread-composer-send').disabled"),
         true,
         "disabled in flight"
     );
@@ -4031,15 +4022,13 @@ fn a_follow_up_sends_once_and_keeps_its_place() {
         "revision 3",
     );
     assert_eq!(
-        page.eval(
-            "document.querySelector('.thread[data-thread=\"c-1\"] .thread-composer-send').disabled"
-        ),
+        page.eval("document.querySelector('.pv-panel-composer .thread-composer-send').disabled"),
         true,
         "still disabled after the swap"
     );
-    page.eval(&format!("document.querySelector('{input}').dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', bubbles: true }}))"));
+    enter(&mut page, input);
     page.wait_until(
-        "document.querySelectorAll('.thread[data-thread=\"c-1\"] .thread-msg').length === 3",
+        "document.querySelectorAll('.pv-panel-msg[data-thread=\"c-1\"]:not(.thread-working)').length === 3",
         "the follow-up to land",
     );
     std::thread::sleep(std::time::Duration::from_millis(1500));
@@ -4054,53 +4043,38 @@ fn a_follow_up_sends_once_and_keeps_its_place() {
         "the live input was cleared"
     );
     assert_eq!(
-        page.eval(
-            "document.querySelector('.thread[data-thread=\"c-1\"] .thread-composer-send').disabled"
-        ),
+        page.eval("document.querySelector('.pv-panel-composer .thread-composer-send').disabled"),
         false
     );
 
-    // A half-written follow-up outlives a resolution, and is listed when
-    // its thread is deleted.
+    // Aimed at a thread that is then deleted: the aim is dropped, the text
+    // stays, and it sends to the plan as a whole.
+    page.click("[data-plan-ref=\"task:t-a\"] .ask-btn");
     page.type_into(input, "one more thing");
-    s.repo
-        .run(&[
-            "resolve",
-            "c-1",
-            "--session",
-            &s.session,
-            "--declined",
-            "--note",
-            "Enough.",
-        ])
-        .success();
+    let cookie = s.server().session_cookie("plan:demo");
+    s.server().post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({ "cmd": "thread.delete", "client_id": "cid-del", "thread": "c-1" }),
+    );
     page.wait_until(
-        "document.querySelector('.thread[data-thread=\"c-1\"]').dataset.status === 'declined'",
-        "declined",
+        "!document.querySelector('.pv-panel-msg[data-thread=\"c-1\"]')",
+        "the thread to go from the log",
     );
     assert_eq!(
-        page.eval(
-            "!document.querySelector('.thread[data-thread=\"c-1\"] .thread-composer').hidden"
-        ),
+        page.eval("document.querySelector('.pv-panel-target').hidden"),
         true,
-        "the input stays while it holds text"
+        "the aim is dropped with the thread"
     );
     assert_eq!(
         page.text(&format!("document.querySelector('{input}').value")),
-        "one more thing"
-    );
-    page.click(".thread[data-thread=\"c-1\"] .thread-delete");
-    page.click(".thread[data-thread=\"c-1\"] .thread-delete");
-    page.wait_until(
-        "!document.querySelector('.thread[data-thread=\"c-1\"]')",
-        "the thread to go",
-    );
-    assert_eq!(
-        page.text(
-            "document.querySelector('.pv-recovery .pv-orphan-draft .thread-text').textContent"
-        ),
         "one more thing",
-        "the follow-up is in the recovery panel"
+        "the text stays"
+    );
+    enter(&mut page, input);
+    page.wait_until(
+        "document.querySelectorAll('.pv-chat-msg').length === 1",
+        "it went to the plan as a whole",
     );
 }
 
@@ -4171,8 +4145,8 @@ fn the_conversation_panel_starts_closed_docks_and_comes_back() {
     );
 
     // A question from the panel counts on the handle and the top-bar link.
-    page.type_into(".pv-chat .composer textarea", "is this the whole plan?");
-    page.click(".pv-chat .composer .composer-send");
+    page.type_into(".pv-panel-composer textarea", "is this the whole plan?");
+    page.click(".pv-panel-composer .thread-composer-send");
     page.wait_until(
         "document.querySelectorAll('.pv-chat-msg').length === 1",
         "the question in the log",
