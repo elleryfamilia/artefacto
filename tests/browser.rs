@@ -3717,7 +3717,7 @@ fn a_turn_keeps_the_name_of_whoever_took_it() {
         ])
         .success();
     page.wait_until(
-        "document.querySelectorAll('.pv-panel-msg').length === 2",
+        "document.querySelectorAll('.pv-panel-msg:not(.thread-working)').length === 2",
         "the second answer",
     );
 
@@ -3755,6 +3755,120 @@ fn a_turn_keeps_the_name_of_whoever_took_it() {
                return n.firstChild.textContent; })"
         ),
         serde_json::json!(["agent", "codex"])
+    );
+}
+
+#[test]
+fn what_you_said_about_a_question_can_become_the_answer() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("kitchen-sink.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    // Talking a question through with the agent is not answering it: the
+    // conversation and the answer field are two different places.
+    page.click("[data-plan-ref=\"question:q-ttl\"] .ask-btn");
+    page.type_into(
+        ".pv-panel-composer textarea",
+        "thirty days, matching the refresh token",
+    );
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "!!document.querySelector('.pv-panel-lift-btn')",
+        "the offer to make it the answer",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-lift-btn').textContent"),
+        "Use as your answer"
+    );
+    assert_eq!(
+        page.eval("document.querySelector('[data-plan-ref=\"question:q-ttl\"] .pv-answer').hidden"),
+        true,
+        "and until it is taken, the question is still unanswered"
+    );
+
+    // A question asked on something that is not an open question carries no
+    // offer: there is no answer field for it to go into.
+    page.click("[data-plan-ref=\"task:t-redis\"] .ask-btn");
+    page.type_into(".pv-panel-composer textarea", "is this the only backend?");
+    page.click(".pv-panel-composer .thread-composer-send");
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg:not(.thread-working)').length === 2",
+        "the second question",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-panel-lift-btn').length"),
+        1,
+        "only the one about an open question"
+    );
+
+    // The agent answers in the same thread. Its words are not the
+    // reviewer's answer, so they carry no offer: an answer is the
+    // reviewer's to give.
+    let thread =
+        page.text("document.querySelector('.pv-panel-msg:has(.pv-panel-lift-btn)').dataset.thread");
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--thread",
+            &thread,
+            "thirty days matches the refresh token, yes",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg:not(.thread-working)').length === 3",
+        "the agent's reply",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-panel-lift-btn').length"),
+        1,
+        "only the reviewer's own message can become their answer"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-msg:has(.pv-panel-lift-btn)').dataset.actor"),
+        "reviewer"
+    );
+
+    // One click records it, word for word, as the reviewer's own answer.
+    page.click(".pv-panel-lift-btn");
+    page.wait_until(
+        "document.querySelector('.pv-panel-lift-btn').disabled",
+        "the offer to say it has been taken",
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-panel-lift-btn').textContent"),
+        "This is your answer"
+    );
+    assert_eq!(
+        s.server().last_event_of_type("question.answered")["data"]["text"],
+        "thirty days, matching the refresh token",
+        "and the agent reads it where answers live"
+    );
+    assert_eq!(
+        page.text(
+            "document.querySelector('[data-plan-ref=\"question:q-ttl\"] .pv-answer-text').textContent"
+        ),
+        "thirty days, matching the refresh token",
+        "and it shows on the question, word for word"
+    );
+
+    // It survives a reload, because it is the server's now.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    page.click(".pv-panel-handle");
+    page.wait_until(
+        "!!document.querySelector('.pv-panel-lift-btn')",
+        "the message and its offer after a reload",
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-lift-btn').disabled"),
+        true,
+        "still taken"
     );
 }
 
@@ -4998,6 +5112,17 @@ fn a_long_plan_gets_ticks_instead_of_numerals() {
         page.eval("document.querySelectorAll('.pv-map-ph').length"),
         0,
         "and no numerals to run out of room"
+    );
+    // The first tick keeps clear of the label: against it, it reads as part
+    // of the word rather than as the first phase.
+    assert_eq!(
+        page.eval(
+            "(function(){ const label = document.querySelector('[data-map-part=\"phases\"] .pv-map-label'); \
+               const first = document.querySelector('.pv-map-tick'); \
+               return first.getBoundingClientRect().left - label.getBoundingClientRect().right >= 8; })()"
+        ),
+        true,
+        "the ticks start clear of the phases label"
     );
     assert_eq!(
         page.eval(

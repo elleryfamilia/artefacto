@@ -1988,6 +1988,36 @@ rendered page (`9ac7283`):
 Six mutations, all caught, including the singular "1 task" and which row
 gets the hot marker. Gate: 551 tests.
 
+### The owner's fifth pass: a question talked through is still a question
+
+Found from the live review. A resolution note on the `q-live` question read
+"Answered in this thread: batched is what runs today…" while that question's
+`answers` entry was empty. The note was wrong, and it was wrong because
+nothing in the product connects the two:
+
+- **The gap.** An open question has an answer field. A question thread is a
+  conversation about it. A reviewer can talk a question through at length
+  and leave it unanswered, and the page says nothing. Every message the
+  reviewer wrote in a thread anchored to an open question now carries one
+  action, *Use as your answer*, which records that text word for word.
+  Offered only on the reviewer's own messages: the answer is theirs, and
+  guessing what they decided from a conversation is not the page's to do.
+  Once taken, the action says so and the question shows the answer.
+- **The skill.** It now says plainly that a question is answered when
+  `status --json` carries it under `answers` and not before, and that a
+  conversation about it does not count.
+
+Two layout notes from the same look: the ledger's figure column is a step
+smaller so the phase names have room, and the strip's dense ticks take the
+same left margin the numerals do -- without it the first tick butted against
+the "PHASES" label and read as part of the word.
+
+Eleven mutations. Two survived and were the same defect: `refQuestion`
+parsed the id out of the ref with a prefix check and a lookup, and each
+guard only covered what the other missed, so neither could be mutated alone.
+It compares whole refs now, which is also the version a plan whose question
+id is the tail of another element's ref cannot fool. Gate: 553 tests.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart

@@ -347,7 +347,9 @@
 .pv-map-track a.pv-map-ph:hover, .pv-map-track a.pv-map-ph:focus-visible { color: var(--action); }
 .pv-map-ph:focus-visible, .pv-map-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 /* Dense treatment: one tick per phase, numeral only on the one you are in. */
-.pv-map-ticks { display: flex; align-items: flex-end; flex: 1 1 auto; min-width: 0; height: 1.125rem; }
+/* The same gap the numerals take: without it the first tick butts against
+   the "PHASES" label and reads as part of the word. */
+.pv-map-ticks { display: flex; align-items: flex-end; flex: 1 1 auto; min-width: 0; height: 1.125rem; margin-left: 0.875rem; }
 .pv-map-tick { position: relative; display: flex; align-items: flex-end; justify-content: flex-start; flex: 1 1 auto; min-width: 0; height: 100%; text-decoration: none; }
 .pv-map-tick-mark { width: var(--rule-w); height: 0.5rem; background: var(--numeral); transition: height var(--t-fast) var(--ease), background var(--t-fast) linear; }
 .pv-map-tick.is-past .pv-map-tick-mark { background: var(--ink-3); }
@@ -1318,10 +1320,13 @@ code {
 
 .pv-ledger td a:hover { color: var(--action); }
 
-/* The right-hand cell is always mono metadata (estimate + risk heat). */
+/* The right-hand cell is always mono metadata (the task count, and a high
+   risk when there is one). A step smaller than the phase names beside it:
+   the names are what a reader is scanning, and this column was taking room
+   from them to say less. */
 .pv-ledger-fig {
   font-family: var(--font-mono);
-  font-size: 0.781rem;
+  font-size: 0.688rem;
   color: var(--ink-3);
   white-space: nowrap;
 }
@@ -2924,6 +2929,11 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
 .pv-panel-handle:hover { background: var(--agent); color: var(--agent-ink); border-color: var(--agent); }
 .pv-panel-handle[hidden] { display: none; }
 .pv-panel-count { font-family: var(--font-mono); font-size: 0.656rem; }
+
+/* The one action a message carries: turning what the reviewer said into the
+   answer the question is waiting for. Sits under the text, not in the actor
+   row, because it acts on the message rather than describing it. */
+.pv-panel-lift { margin-top: 0.4375rem; }
 
 @media print {
   /* Paper is white whatever theme is on: the light palette, re-declared. */

@@ -274,6 +274,16 @@ Behaviour added in server mode:
 - notices through one component (the mark, a kicker naming who speaks, the
   text, the actions): a nudge, a new revision, a sent review, no agent with
   a question waiting, the server stopping or gone, signed out
+- **a question talked through is still a question.** An open question's
+  answer field and the conversation about it are two different places, and
+  nothing joined them: a reviewer could discuss a question at length and
+  leave it unanswered without the page saying so. Every message the reviewer
+  wrote in a thread anchored to an open question carries one action, *Use as
+  your answer*, which records that text, word for word, as the answer.
+  Offered only on the reviewer's own messages -- the answer is theirs to
+  give, and working out what they decided from a conversation is not the
+  page's to guess. Spec 7: an agent must not report a question as answered
+  unless `answers` carries it
 - open questions rendered as inputs, so answers arrive as data. In v1 an answer
   is free text, because `artefacto.plan/1` questions have no options field
   (`model.rs:134-139`). An optional `options` list is an additive later change.

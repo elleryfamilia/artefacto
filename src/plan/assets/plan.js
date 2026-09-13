@@ -3314,8 +3314,11 @@
         actorRow.appendChild(el("span", { class: "thread-when", text: whenLabel(e.ts) }));
         const attrs = { class: "pv-panel-msg" + (e.key === "page" ? " pv-chat-msg" : ""), dataset: { actor: e.actor }, title: e.ts };
         if (e.key !== "page") attrs.dataset.thread = e.key;
-        log.appendChild(el("div", attrs, avatar(e.actor, e),
-          el("div", { class: "pv-panel-msg-body" }, actorRow, el("p", { class: "thread-text", text: e.text }))));
+        const body = el("div", { class: "pv-panel-msg-body" }, actorRow,
+          el("p", { class: "thread-text", text: e.text }));
+        const lift = answerLift(e);
+        if (lift) body.appendChild(lift);
+        log.appendChild(el("div", attrs, avatar(e.actor, e), body));
         /* From the question until the answer: the mark at work, right
            after the last message of that thread. */
         if (lastOf[e.key] === i) {
@@ -3449,6 +3452,55 @@
         const ta = document.querySelector(".pv-panel-composer textarea");
         if (ta) ta.focus({ preventScroll: true });
       }
+    }
+
+    /* A question the reviewer talked through is still an unanswered
+       question: the conversation and the answer field are two different
+       places, and nothing joined them. Working out what the reviewer
+       decided from a thread is not the page's to guess, so it offers the
+       one thing it can be sure of -- this is what you said, make it the
+       answer -- on the reviewer's own messages in a thread about an open
+       question. One click, no retyping, and the answer is theirs. */
+    /* The open question a ref names, or "".
+    
+       Built from the questions rather than parsed out of the ref: slicing a
+       prefix off and looking the tail up needs two guards that each only
+       cover what the other misses, and a plan whose question id is the tail
+       of another element's ref slips between them. Comparing whole refs
+       cannot. */
+    function refQuestion(ref) {
+      const questions = (S.state.plan && S.state.plan.open_questions) || [];
+      const found = questions.find(function (q) { return "question:" + q.id === ref; });
+      return found ? found.id : "";
+    }
+
+    function answerLift(entry) {
+      /* A resolution note needs no clause of its own: it is the agent's,
+         and only the reviewer's own words can become the reviewer's
+         answer. */
+      if (entry.actor !== "reviewer") return null;
+      if (!entry.text) return null;
+      const question = refQuestion(entry.ref);
+      if (!question) return null;
+      const already = (S.state.answers[question] || "") === entry.text;
+      const row = el("div", { class: "pv-panel-lift" });
+      row.appendChild(el("button", {
+        type: "button", class: "pv-btn pv-panel-lift-btn",
+        text: already ? "This is your answer" : "Use as your answer",
+        title: already
+          ? "The question carries this, word for word"
+          : "Record this as your answer to the question",
+        disabled: already || undefined,
+        onclick: function () { answerWith(question, entry.text); },
+      }));
+      return row;
+    }
+
+    function answerWith(question, text) {
+      send({
+        cmd: "question.answer", question: question, text: text,
+        opened_revision: S.state.revision,
+      }).then(function () { render(); }, function () { /* the bar says it failed */ });
     }
 
     /* Everything said to and by the agent, in time order: the page-level

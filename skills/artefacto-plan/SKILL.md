@@ -274,6 +274,15 @@ artefacto resolve c-2 --session "$SESSION" --declined --note "Out of scope here;
 
 `--changed` is the other verdict.
 
+**Never say a question has been answered unless it has.** An open question
+is answered when `status --json` carries it under that artifact's `answers`,
+and nothing else counts: a conversation about it, however long, leaves it
+open. Writing "answered in this thread" in a resolution note when the
+`answers` map is empty tells the reviewer the plan is further along than it
+is. Say what was discussed, and say the question is still open. The reviewer
+can turn something they said in that thread into the answer with one click
+on the page; you cannot answer it for them.
+
 ## 4. Exit codes you branch on
 
 | exit | meaning | do |
