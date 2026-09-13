@@ -370,6 +370,9 @@ scroll. Three causes and no others:
    `nudge` event as `data.interrupt`, so a page that predates it still
    shows the nudge as a line. There is no other way to stop the page, and
    `--interrupt` without `--nudge` is refused.
+
+   A revision that lands while one of these is up takes it down: whatever
+   the dialog was about, it was about the plan that is being replaced.
 2. **The ground moved.** A revision left a thread the reviewer wrote
    hanging on an element the plan no longer has. Once per revision, and its
    button goes to the thread or to the recovery panel.
@@ -379,7 +382,9 @@ scroll. Three causes and no others:
    leaves on its own rather than standing in the way.
 
 One at a time, and once per cause: an interrupt the reviewer dismissed does
-not come back for the same reason.
+not come back for the same reason. A second one that arrives while the first
+is up waits in one slot rather than being lost, because the nudge that
+carries it is never written to the log.
 
 ### 4.4 The artifact index
 
@@ -567,8 +572,11 @@ Behaviour that matters:
   and is never written to the log, because it records nothing about the review.
   `--interrupt` makes that nudge stop the page: the reviewer gets the dialog of
   section 4.3 rather than a line. It requires `--nudge`, and `--title` and
-  `--ref` require it. Use it for the one case it is for -- you have stopped and
-  cannot go on without an answer only the reviewer can give.
+  `--ref` require it. `--title` is one line, capped at 120 characters; `--ref`
+  must name an element the plan has, because a ref it does not have reaches the
+  reviewer as "element gone", which says a revision moved it. Use the flag for
+  the one case it is for — you have stopped and cannot go on without an answer
+  only the reviewer can give.
 - `status --json` prints port, artifacts, revisions, open and unanchored
   threads, the last event sequence, each lease's `acked_seq`, the lease holder
   and its age, reviewer presence, and the exact `events --follow` command line

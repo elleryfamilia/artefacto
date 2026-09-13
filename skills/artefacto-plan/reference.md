@@ -289,7 +289,7 @@ artefacto skill  (--print | --install DIR)
 | `await` | one long poll: returns within `--timeout` (default 90s) with one JSON result; exits 0 whenever the server answered |
 | `events` | the backlog as NDJSON, then exits; with `--follow`, stays attached and prints each frame as it happens, exiting 0 when the server stops |
 | `ack` | acknowledges every event up to `--seq`; at or behind the cursor is a no-op |
-| `reply` | a message in a thread (`--thread`) or on the page (`--artifact`, omitted when the server has one artifact); `--nudge` posts a banner instead and logs nothing; `--nudge --interrupt` stops the page with a dialog, for the one case in the skill |
+| `reply` | a message in a thread (`--thread`) or on the page (`--artifact`, omitted when the server has one artifact); `--nudge` posts a banner instead and logs nothing; `--nudge --interrupt` stops the page with a dialog, for the one case in the skill (`--title` at most 120 characters, `--ref` must name an element the plan has) |
 | `resolve` | marks a thread `changed` or `declined`, with a note the reviewer reads in it |
 | `status` | the review as an agent needs it to rejoin; never the token |
 | `list` | every artifact for this repository, newest first, from the index; needs no server |

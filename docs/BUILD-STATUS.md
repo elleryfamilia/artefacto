@@ -1798,7 +1798,7 @@ at all: a sent review is not a hanging one, no agent means nobody is
 waiting, and a second revision may interrupt again after the first was
 dismissed. The server side had no test of its own either, so it has three:
 what the event carries, that a plain nudge carries none, and that
-`--interrupt` cannot be used without `--nudge`. Gate: 541 tests.
+`--interrupt` cannot be used without `--nudge`.
 
 ### What the screenshots found
 
@@ -1820,6 +1820,69 @@ Three things, none of which a test was looking for:
   nothing else, so the most common revision a plan under review gets reached
   the banner as a lie. It counts what became done, and every other status
   move beside it.
+
+### Review round twenty-one: the strip and the interrupt, reviewed fresh
+
+A fresh session reviewed both slices in a detached worktree and reproduced
+everything in a running browser rather than reading it off the page. Five
+bugs and four weak tests, all fixed in `485e5e9` and `5269750`.
+
+The two a reviewer would have hit in ordinary use:
+
+- **A revision while an interrupt was up froze the page for good.** The
+  backdrop lived in the body, so `replaceChildren` destroyed it while the
+  scroll lock stayed on `documentElement`: no dialog, no scrolling, nothing
+  saying why, and `S.ui.interrupt` still set, so every later interrupt was
+  blocked for the life of the page. Escape was the only way out and nothing
+  said so. The reviewer drove real wheel and PageDown input through DevTools
+  to show it. The backdrop now lives on the root, and a body swap takes the
+  dialog down itself: whatever it was about, it was about the revision being
+  replaced.
+- **The strip made the header two rows tall and the scroll margin stayed at
+  one.** 98px became 172px; `scroll-margin-top` was still `5rem`. Every
+  fragment link the page renders -- a task's dependency, the phase ledger,
+  the summary's blocking-question link -- landed entirely behind the header.
+  The bar measures itself into `--bar-h` and the margin follows it, so the
+  next change to the header does not break it again.
+
+The other three:
+
+- **A second interrupt was dropped.** The guard returned before recording
+  anything, and the nudge that carries a blocked interrupt is never logged,
+  so the agent's "I have stopped" was lost. One waits in a slot now; a
+  blocked one displaces whatever is waiting.
+- **The caret pointed at one segment while another was lit.** The caret was
+  placed by a linear map of the document and the segments by flex-grow with
+  floors and gaps, so the two disagreed once a floor bit: at 70% through the
+  kitchen-sink plan the caret sat over Phases while Risks was active. Both
+  now work from the segments' measured boxes, and the scrubber inverts the
+  same walk.
+- **A long message pushed the buttons off a page that could not scroll.**
+  The agent writes the body and nothing bounded it. The backdrop scrolls and
+  the message is capped at 40vh.
+
+Smaller, from the same round: a phase's flag read the same fact twice (the
+high-risk chip counts the phase's high-risk tasks, which is the same as a
+high dot on a task's rail), the hanging dialog was keyed by the blocking
+item as well as the revision so adding a blocking comment raised it again in
+the same quiet spell, the strip set no `aria-current` and gave the flag no
+label, a plan that fits the viewport read as unstarted, `--ref` was passed
+through unchecked so an agent's typo reached the reviewer as "element gone",
+and `--title` had no bound.
+
+Four tests asserted less than they read. Both "it does not come back" checks
+injected an empty frame, which cannot raise a dialog under any
+implementation; they replay a real event now. The summary test had one of
+each count, so swapping the two branches produced the same sentence. The
+floor under a segment had no test. Two of the three flag clauses had no
+coverage, because the kitchen-sink phase that triggers one triggers all
+three.
+
+Twenty-one mutations on the fixes, five of which survived the first pass and
+each named a test that was weaker than it read -- the caret's drift depends
+on the viewport width, the floor shows as squeezed numerals rather than a
+sliver, and the dialog fits a 420px viewport once its message is capped, so
+the backdrop's own scrolling needed a 240px one. Gate: 547 tests.
 
 ## Where the code diverges from plan 2b, with the reason
 

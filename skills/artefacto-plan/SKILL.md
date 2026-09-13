@@ -135,9 +135,10 @@ artefacto reply --session "$SESSION" --nudge --interrupt \
   "I have stopped: the trait boundary depends on your answer."
 ```
 
-`--title` is the one line the dialog leads with. `--ref` names the element the
-question is about, so the dialog carries it and its button aims the
-conversation there. Both require `--interrupt`, which requires `--nudge`.
+`--title` is the one line the dialog leads with, at most 120 characters.
+`--ref` names the element the question is about, so the dialog carries it and
+its button aims the conversation there; it must be an element the plan has, or
+the reply is refused. Both require `--interrupt`, which requires `--nudge`.
 
 Do not use it to report progress, to ask something you can work around, or
 because the reviewer has been quiet -- `reviewer.idle` already has a nudge, and
