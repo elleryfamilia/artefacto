@@ -611,7 +611,9 @@ pub fn render(plan: &Plan) -> String {
                     // route alike — and carries the plan's identity so it
                     // stays on screen through a long scroll. Brand first,
                     // surface second (same hierarchy as studio's topbar):
-                    // "artefacto" is the product, "Plan viewer" is a room in it.
+                    // "artefacto" is the product, "Plan" is a room in it -- it
+                    // views many kinds of artifact, so the room is named after
+                    // what is on screen rather than after the act of viewing.
                     // Static markup only; the theme toggle is injected by
                     // plan.js, since a control that does nothing without
                     // scripting has no business in the served HTML.
@@ -619,12 +621,16 @@ pub fn render(plan: &Plan) -> String {
                         div.pv-brand {
                             span.pv-brand-mark aria-hidden="true" {}
                             span.pv-brand-name { "artefacto" }
-                            span.pv-brand-surface { "Plan viewer" }
+                            span.pv-brand-surface { "Plan" }
                         }
                         div.pv-topbar-right {
-                            span.pv-topbar-id {
-                                (plan.meta.id)
-                                @if let Some(rev) = plan.meta.revision { " · rev " (rev) }
+                            // The revision and nothing else. The plan's id is
+                            // already the eyebrow under the title, and its
+                            // name is the title: repeating both here made the
+                            // bar a second, worse heading. The revision is the
+                            // one fact in it that changes.
+                            @if let Some(rev) = plan.meta.revision {
+                                span.pv-topbar-id { "rev " (rev) }
                             }
                         }
                     }
@@ -1252,15 +1258,20 @@ mod tests {
         let brand_pos = html.find("<header class=\"pv-topbar\">").expect("topbar");
         assert!(html.contains("pv-brand-mark"), "brand mark");
         assert!(html.contains(">artefacto</span>"), "brand name");
-        assert!(html.contains(">Plan viewer</span>"), "surface label");
+        assert!(html.contains(">Plan</span>"), "surface label");
         // Tag-anchored: the bare class name also appears in the embedded
         // stylesheet's `.pv-theme { … }` rule whether or not it is used.
         assert!(
             !html.contains("<div class=\"pv-theme\""),
             "the theme toggle is script-injected, not served"
         );
-        // The topbar carries the plan's identity through a long scroll.
-        assert!(html.contains("auth-refactor · rev 2"), "plan id in topbar");
+        // The topbar carries the revision and nothing else: the plan's name
+        // is the title and its id is the eyebrow, both a few lines below.
+        assert!(html.contains(">rev 2</span>"), "the revision in the topbar");
+        assert!(
+            !html.contains("auth-refactor · rev"),
+            "the id is not repeated in the topbar"
+        );
         // Eyebrow (byline + created) renders above the h1.
         let meta_pos = html
             .find("<p class=\"pv-eyebrow\">")

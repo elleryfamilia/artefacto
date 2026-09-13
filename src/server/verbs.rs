@@ -108,12 +108,18 @@ pub fn handle_reply(shared: &Arc<Shared>, request: Request, query: &Query) {
     let revision = committer.with_review(|r| r.artifacts.get(&artifact).map_or(0, |a| a.revision));
     // Spec 6.3: an agent's answer inside a thread is `thread.replied`. Without
     // a thread it is page-level chat, which the fold keeps on the artifact.
+    /* Spec 6.1: an agent's event carries the lease name in `data.agent`.
+    The page reads it to say who took a turn, which stays true after that
+    agent has gone and another has taken the lease. */
     let (kind, data) = match &thread {
         Some(thread) => (
             "thread.replied",
-            serde_json::json!({ "thread": thread, "text": text }),
+            serde_json::json!({ "thread": thread, "text": text, "agent": session.name }),
         ),
-        None => ("chat.sent", serde_json::json!({ "text": text })),
+        None => (
+            "chat.sent",
+            serde_json::json!({ "text": text, "agent": session.name }),
+        ),
     };
     let event = match committer.append(&artifact, revision, Actor::Agent, kind, data) {
         Ok(event) => event,
@@ -191,7 +197,9 @@ pub fn handle_resolve(shared: &Arc<Shared>, request: Request, query: &Query) {
         revision,
         Actor::Agent,
         "thread.resolved",
-        serde_json::json!({ "thread": thread, "status": status, "note": note }),
+        serde_json::json!({
+            "thread": thread, "status": status, "note": note, "agent": session.name,
+        }),
     ) {
         Ok(event) => event,
         Err(e) => return refuse(request, &format!("{e:#}")),

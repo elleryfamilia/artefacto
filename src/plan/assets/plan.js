@@ -137,7 +137,14 @@
     applyEvent(state, e) {
       const d = e.data || {};
       const find = function (id) { return state.threads.find(function (t) { return t.id === id; }); };
-      const message = function () { return { actor: e.actor || "reviewer", text: d.text || "", ts: e.ts || "" }; };
+      /* `agent` is the lease name the event carries (spec 6.1), kept on the
+         turn so it stays true after that agent has gone. The server's fold
+         does the same, so a live frame and a reload agree. */
+      const message = function () {
+        const m = { actor: e.actor || "reviewer", text: d.text || "", ts: e.ts || "" };
+        if (e.actor === "agent" && d.agent) m.agent = d.agent;
+        return m;
+      };
       switch (e.type) {
         case "revision.published": {
           state.revision = e.revision > 0 ? e.revision : state.revision + 1;
@@ -178,7 +185,11 @@
           const t = find(d.thread);
           if (!t || (d.status !== "changed" && d.status !== "declined")) return false;
           t.status = d.status;
-          if (d.note) t.messages.push({ actor: "agent", text: d.note, ts: e.ts || "", note: true });
+          if (d.note) {
+            const note = { actor: "agent", text: d.note, ts: e.ts || "", note: true };
+            if (d.agent) note.agent = d.agent;
+            t.messages.push(note);
+          }
           return true;
         }
         case "question.answered": {
@@ -2838,7 +2849,7 @@
     const NOTICE_KINDS = {
       sent: { kicker: "Review sent", mark: "" },
       revision: { kicker: "New revision", mark: "" },
-      nudge: { kicker: "The agent", mark: "" },
+      nudge: { kicker: null, mark: "" },
       noagent: { kicker: "No agent", mark: "off" },
       stopping: { kicker: "Server stopping", mark: "off" },
       gone: { kicker: "Server gone", mark: "off" },
@@ -2854,7 +2865,7 @@
       const text = el("span", { class: "pv-notice-text" });
       text.appendChild(richText(n.text));
       node.appendChild(el("span", { class: "pv-notice-body" },
-        el("span", { class: "pv-notice-kicker", text: spec.kicker }), text));
+        el("span", { class: "pv-notice-kicker", text: spec.kicker || agentTitle() }), text));
       const actions = el("span", { class: "pv-notice-actions" });
       if (n.action) actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet pv-notice-action", text: n.action, onclick: n.onAction }));
       if (n.dismiss) actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet pv-notice-dismiss", text: "Dismiss", "aria-label": "Dismiss", onclick: function () { notice(kind, null); } }));
@@ -2925,9 +2936,11 @@
       if (S.gone) return { mode: "off", text: "server gone" };
       if (!S.connected) return { mode: "off", text: "reconnecting" };
       const p = S.state.presence;
-      if (!p) return { mode: "off", text: "no agent" };
-      if (Object.keys(S.pending).length) return { mode: "working", text: "agent working", agent: p.agent };
-      return { mode: p.mode, text: "agent " + (p.mode === "live" ? "live" : "waiting"), agent: p.agent };
+      if (!p) return { mode: "off", text: S.ui.lastAgent ? S.ui.lastAgent + " left" : "no agent" };
+      if (Object.keys(S.pending).length) {
+        return { mode: "working", text: p.agent + " working", agent: p.agent };
+      }
+      return { mode: p.mode, text: p.agent + (p.mode === "live" ? " live" : " waiting"), agent: p.agent };
     }
 
     /* The mark's state for a presence mode: live is the mark at rest. */
@@ -2943,9 +2956,11 @@
          says so once per change. Nothing is said until the page has its
          first snapshot, or a load would report the agent arriving. */
       const here = !!S.state.presence;
+      if (S.state.presence && S.state.presence.agent) S.ui.lastAgent = S.state.presence.agent;
       if (!S.syncing && S.state.lastSeq > 0) {
         if (S.ui.agentHere !== undefined && S.ui.agentHere !== here) {
-          panelEvent("presence", here ? "the agent is here" : "the agent left");
+          const who = S.ui.lastAgent || "the agent";
+          panelEvent("presence", here ? who + " is here" : who + " left");
         }
         S.ui.agentHere = here;
       }
@@ -2953,6 +2968,11 @@
       pill.setAttribute("data-mode", l.mode);
       setMarkState(pill.querySelector(".ag-mark"), markStateFor(l.mode));
       pill.title = l.agent ? l.agent + " holds the lease" : "";
+      /* An attached agent is the normal case, and a header that announces
+         the normal case is a header a reader learns to stop reading. The
+         pill says something only when nobody is there to hear them: no
+         agent, a dropped connection, a stopped server, a signed-out page. */
+      pill.hidden = l.mode !== "off";
       const hint = document.querySelector(".pv-chat-hint");
       if (hint) hint.textContent = presenceLine("message");
       document.querySelectorAll(".composer-presence").forEach(function (n) {
@@ -2964,8 +2984,9 @@
        the banner promise the agent hears a question now; this is where
        the promise is qualified when no agent holds the lease. */
     function presenceLine(what) {
+      const who = agentName();
       return S.state.presence
-        ? "The agent hears this at once."
+        ? (who ? who + " hears this at once." : "The agent hears this at once.")
         : "No agent is attached. Your " + what + " will wait for one.";
     }
 
@@ -2978,13 +2999,35 @@
 
     /* ---- threads ----------------------------------------------------- */
 
-    function actorLabel(actor) {
-      return actor === "agent" ? "agent" : actor === "server" ? "server" : "you";
+    /* Who the agent is, by name, for anything the page says about it.
+
+       A message carries the name of whoever wrote it, so a turn keeps its
+       author even after that agent has gone. Anything the page says about
+       right now takes whoever holds the lease, and failing that the last
+       one seen, so the name survives a detach. A static export, and a page
+       written before the name was recorded, fall back to "agent" -- which
+       is what the page said everywhere until now. */
+    function agentName(message) {
+      const written = message && message.agent;
+      if (written) return written;
+      if (S.state.presence && S.state.presence.agent) return S.state.presence.agent;
+      return S.ui.lastAgent || "";
+    }
+
+    function agentTitle(message) {
+      return agentName(message) || "agent";
+    }
+
+    function actorLabel(actor, message) {
+      if (actor === "agent") return agentTitle(message);
+      return actor === "server" ? "server" : "you";
     }
 
     /* Circle for the machine, square for the person, same weight. */
-    function avatar(actor) {
-      if (actor === "agent") return el("span", { class: "pv-avatar", title: "agent" }, agentMark(""));
+    function avatar(actor, message) {
+      if (actor === "agent") {
+        return el("span", { class: "pv-avatar", title: agentTitle(message) }, agentMark(""));
+      }
       return el("span", { class: "pv-avatar is-you", title: actorLabel(actor) });
     }
 
@@ -2996,9 +3039,9 @@
 
     function messageNode(m, i) {
       return el("div", { class: "thread-msg", dataset: { actor: m.actor, index: String(i) }, title: m.ts },
-        avatar(m.actor),
+        avatar(m.actor, m),
         el("div", { class: "thread-msg-body" },
-          el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
+          el("span", { class: "thread-actor", text: actorLabel(m.actor, m) }),
           el("p", { class: "thread-text", text: m.text })));
     }
 
@@ -3044,9 +3087,9 @@
       resolution.hidden = noteAt < 0;
       if (noteAt >= 0) {
         resolution.replaceChildren(
-          avatar("agent"),
+          avatar("agent", last),
           el("div", { class: "thread-msg-body" },
-            el("span", { class: "thread-actor" }, document.createTextNode("agent"),
+            el("span", { class: "thread-actor" }, document.createTextNode(agentTitle(last)),
               el("span", { class: "pv-chip pv-chip-" + t.status, text: t.status })),
             el("p", { class: "thread-text", text: last.text })));
       }
@@ -3258,7 +3301,7 @@
       entries.forEach(function (e, i) {
         if (e.event) {
           if (e.kind === "nudge") {
-            const nudge = el("div", { class: "pv-panel-nudge" }, el("span", { class: "pv-notice-kicker", text: "The agent" }));
+            const nudge = el("div", { class: "pv-panel-nudge" }, el("span", { class: "pv-notice-kicker", text: agentTitle() }));
             nudge.appendChild(richText(e.text));
             log.appendChild(nudge);
           } else {
@@ -3266,13 +3309,13 @@
           }
           return;
         }
-        const actorRow = el("span", { class: "thread-actor" }, document.createTextNode(actorLabel(e.actor)));
+        const actorRow = el("span", { class: "thread-actor" }, document.createTextNode(actorLabel(e.actor, e)));
         if (e.ref) actorRow.appendChild(chipFor(e.ref, e.unanchored));
         if (e.note) actorRow.appendChild(el("span", { class: "pv-ctx is-resolution", text: e.status }));
         actorRow.appendChild(el("span", { class: "thread-when", text: whenLabel(e.ts) }));
         const attrs = { class: "pv-panel-msg" + (e.key === "page" ? " pv-chat-msg" : ""), dataset: { actor: e.actor }, title: e.ts };
         if (e.key !== "page") attrs.dataset.thread = e.key;
-        log.appendChild(el("div", attrs, avatar(e.actor),
+        log.appendChild(el("div", attrs, avatar(e.actor, e),
           el("div", { class: "pv-panel-msg-body" }, actorRow, el("p", { class: "thread-text", text: e.text }))));
         /* From the question until the answer: the mark at work, right
            after the last message of that thread. */
@@ -3296,8 +3339,15 @@
       if (dock) dock.classList.toggle("is-hidden", !S.ui.chatOpen);
       const handle = document.querySelector(".pv-panel-handle");
       if (handle) handle.hidden = !!S.ui.chatOpen;
+      /* The count is how many things have been said. A zero beside the word
+         reads as a status rather than a tally, so an empty conversation
+         shows the word alone. */
       const messages = entries.filter(function (e) { return !e.event; }).length;
-      document.querySelectorAll(".pv-panel-count").forEach(function (n) { n.textContent = String(messages); });
+      document.querySelectorAll(".pv-panel-count").forEach(function (n) {
+        n.textContent = messages ? String(messages) : "";
+        n.hidden = !messages;
+        n.title = messages === 1 ? "1 message" : messages + " messages";
+      });
       if (S.ui.panelFollow !== false) log.scrollTop = log.scrollHeight;
       renderPanelComposer();
     }
@@ -3365,7 +3415,7 @@
           row.insertAdjacentElement("afterend", preview);
         }
         preview.setAttribute("data-thread", last.id);
-        preview.replaceChildren(avatar(msg.actor), el("span", { class: "ask-preview-text", text: msg.text }));
+        preview.replaceChildren(avatar(msg.actor, msg), el("span", { class: "ask-preview-text", text: msg.text }));
       });
     }
 
@@ -3417,14 +3467,15 @@
       let at = 0;
       S.state.chat.forEach(function (m, i) {
         at = run(m, at);
-        out.push({ at: at, ts: m.ts, actor: m.actor, text: m.text, key: "page", index: i });
+        out.push({ at: at, ts: m.ts, actor: m.actor, agent: m.agent, text: m.text, key: "page", index: i });
       });
       S.state.threads.forEach(function (t) {
         if (!t.asked) return;
         let tat = 0;
         t.messages.forEach(function (m, i) {
           tat = run(m, tat);
-          out.push({ at: tat, ts: m.ts, actor: m.actor, text: m.text, key: t.id, ref: t.target, index: i,
+          out.push({ at: tat, ts: m.ts, actor: m.actor, agent: m.agent, text: m.text, key: t.id,
+            ref: t.target, index: i,
             note: !!m.note, status: t.status, unanchored: t.status === "unanchored" });
         });
       });
@@ -3652,6 +3703,7 @@
         right.insertBefore(el("button", { type: "button", class: "pv-panel-link",
           onclick: function () { setPanelOpen(true); } },
           "Conversation ", el("span", { class: "pv-panel-count" })), right.firstChild);
+        syncBarHeight(root);
       }
       wireLeaving();
     }
@@ -3668,7 +3720,7 @@
        One at a time, and once per cause: an interrupt the reviewer has
        dismissed does not come back for the same reason. */
     const INTERRUPT = {
-      blocked: { kind: "blocking", kicker: "The agent is blocked", action: "Answer in the conversation" },
+      blocked: { kind: "blocking", kicker: null, action: "Answer in the conversation" },
       revision: { kind: "revision", kicker: "The ground moved", action: "Show me" },
       hanging: { kind: "", kicker: "The review is waiting", action: "Open the conversation" },
     };
@@ -3692,14 +3744,18 @@
       }
       S.ui.interrupt = cause;
       S.ui.interrupted[cause + ":" + (o.key || "")] = true;
+      /* "claude is blocked" rather than "the agent is blocked": the reviewer
+         is talking to a session with a name, and the dialog is the loudest
+         place to say which one. */
+      const kicker = spec.kicker || (agentTitle() + " is blocked");
       const dim = el("div", { class: "ag-dim" });
       const box = el("div", { class: "ag-interrupt", role: "dialog", "aria-modal": "true",
         dataset: { kind: spec.kind, cause: cause }, "aria-labelledby": "ag-interrupt-title" });
       box.appendChild(el("div", { class: "ag-interrupt-head" },
         agentMark(cause === "hanging" ? "waiting" : ""),
-        el("span", { class: "ag-interrupt-kicker", text: spec.kicker }),
+        el("span", { class: "ag-interrupt-kicker", text: kicker }),
         el("span", { class: "ag-interrupt-when", text: whenLabel(nowIso()) })));
-      box.appendChild(el("h2", { class: "ag-interrupt-title", id: "ag-interrupt-title", text: o.title || spec.kicker }));
+      box.appendChild(el("h2", { class: "ag-interrupt-title", id: "ag-interrupt-title", text: o.title || kicker }));
       const body = el("p", { class: "ag-interrupt-body" });
       body.appendChild(richText(o.body || ""));
       box.appendChild(body);

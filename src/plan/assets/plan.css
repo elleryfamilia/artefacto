@@ -775,6 +775,11 @@ code {
    the menu has to say this itself or `menu.hidden = true` paints nothing. */
 .pv-theme-menu[hidden] { display: none; }
 
+/* Same trap: a class with its own `display` outranks the browser's rule for
+   `hidden`, and these two are hidden by the flag. */
+.pv-panel-count[hidden] { display: none; }
+.pv-presence[hidden] { display: none; }
+
 .pv-theme-menu {
   position: absolute;
   top: calc(100% + 0.375rem);

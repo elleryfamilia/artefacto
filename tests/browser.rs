@@ -183,10 +183,17 @@ fn the_page_connects_and_shows_who_holds_the_lease() {
     connected(&mut page);
     // The push that served this page took the lease before the page
     // existed, and presence is announced on change only. The hello frame
-    // is what tells a late page who is here.
+    // is what tells a late page who is here -- and an agent being here is
+    // the normal case, so the header says nothing about it.
+    assert_eq!(
+        page.text("getComputedStyle(document.querySelector('.pv-presence')).display"),
+        "none",
+        "an attached agent is not news"
+    );
     assert_eq!(
         page.text("document.querySelector('.pv-presence').textContent"),
-        "agent waiting"
+        "agent waiting",
+        "the pill still carries the state, for when it is worth showing"
     );
     let d = debug(&mut page);
     assert_eq!(d["revision"], 1);
@@ -196,12 +203,17 @@ fn the_page_connects_and_shows_who_holds_the_lease() {
     s.server()
         .age_lease(artefacto::server::lease::TTL + std::time::Duration::from_secs(1));
     page.wait_until(
-        "document.querySelector('.pv-presence').textContent === 'no agent'",
-        "the pill to say the agent is gone",
+        "document.querySelector('.pv-presence').textContent === 'agent left'",
+        "the pill to say the agent is gone, by name",
     );
     assert_eq!(
         page.text("document.querySelector('.pv-presence').dataset.mode"),
         "off"
+    );
+    assert_eq!(
+        page.eval("getComputedStyle(document.querySelector('.pv-presence')).display !== 'none'"),
+        true,
+        "and to be on screen: this is the case worth a word"
     );
     assert_eq!(
         page.eval("document.querySelector('.pv-presence .ag-mark').classList.contains('is-off')"),
@@ -221,8 +233,8 @@ fn the_page_connects_and_shows_who_holds_the_lease() {
         ])
         .success();
     page.wait_until(
-        "document.querySelector('.pv-presence').textContent === 'agent waiting'",
-        "the pill to say the agent is waiting",
+        "getComputedStyle(document.querySelector('.pv-presence')).display === 'none'",
+        "the pill to step aside once an agent is back",
     );
     assert_eq!(
         page.text("document.querySelector('.pv-presence').dataset.mode"),
@@ -685,9 +697,9 @@ fn a_nudge_and_the_stop_show_as_notices() {
         "have a look at phase one"
     );
     assert_eq!(
-        page.eval("!!document.querySelector('.pv-notice[data-kind=\"nudge\"] .ag-mark') && document.querySelector('.pv-notice[data-kind=\"nudge\"] .pv-notice-kicker').textContent === 'The agent'"),
+        page.eval("!!document.querySelector('.pv-notice[data-kind=\"nudge\"] .ag-mark') && document.querySelector('.pv-notice[data-kind=\"nudge\"] .pv-notice-kicker').textContent === 'agent'"),
         true,
-        "a nudge speaks as the agent: the mark and the kicker"
+        "a nudge speaks in the agent's own name: the mark and the kicker"
     );
     page.click(".pv-notice[data-kind=\"nudge\"] .pv-notice-dismiss");
     assert_eq!(
@@ -3661,6 +3673,91 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
 }
 
 #[test]
+fn a_turn_keeps_the_name_of_whoever_took_it() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+    page.click(".pv-panel-link");
+
+    // The agent that pushed this plan answers first.
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &s.session,
+            "--artifact",
+            "plan:demo",
+            "reading it now",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg').length === 1",
+        "the first answer",
+    );
+
+    // A different session takes the lease and answers second.
+    let out = s
+        .repo
+        .run(&["await", "--timeout", "1s", "--agent", "codex", "--takeover"]);
+    let second: serde_json::Value = serde_json::from_str(&out.stdout).expect("json");
+    let session = second["session"].as_str().expect("a session").to_string();
+    s.repo
+        .run(&[
+            "reply",
+            "--session",
+            &session,
+            "--artifact",
+            "plan:demo",
+            "picking it up from here",
+        ])
+        .success();
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg').length === 2",
+        "the second answer",
+    );
+
+    // Each turn keeps the name that wrote it. Reading the name off whoever
+    // holds the lease now would relabel the first message as codex.
+    assert_eq!(
+        page.eval(
+            "Array.from(document.querySelectorAll('.pv-panel-msg .thread-actor')).map(function (n) { \
+               return n.firstChild.textContent; })"
+        ),
+        serde_json::json!(["agent", "codex"]),
+        "the conversation says who said what"
+    );
+    assert_eq!(
+        page.eval(
+            "Array.from(document.querySelectorAll('.pv-panel-msg .pv-avatar')).map(function (n) { \
+               return n.title; })"
+        ),
+        serde_json::json!(["agent", "codex"]),
+        "and so does the mark beside it"
+    );
+
+    // The page survives a reload with the names intact: they come from the
+    // server's snapshot, not from anything the page remembered.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    page.click(".pv-panel-link");
+    page.wait_until(
+        "document.querySelectorAll('.pv-panel-msg').length === 2",
+        "both answers after a reload",
+    );
+    assert_eq!(
+        page.eval(
+            "Array.from(document.querySelectorAll('.pv-panel-msg .thread-actor')).map(function (n) { \
+               return n.firstChild.textContent; })"
+        ),
+        serde_json::json!(["agent", "codex"])
+    );
+}
+
+#[test]
 fn the_panel_says_when_no_agent_will_hear_it() {
     let Some(browser) = Browser::launch() else {
         return;
@@ -3682,7 +3779,7 @@ fn the_panel_says_when_no_agent_will_hear_it() {
     );
     assert_eq!(
         page.text("document.querySelector('.pv-panel-head .pv-chat-hint').textContent"),
-        "The agent hears this at once."
+        "agent hears this at once."
     );
     assert_eq!(
         page.eval("!!document.querySelector('.pv-notice[data-kind=\"noagent\"]')"),
@@ -3710,8 +3807,8 @@ fn the_panel_says_when_no_agent_will_hear_it() {
         page.text(
             "document.querySelector('.pv-panel-log .pv-panel-event:last-of-type').textContent"
         ),
-        "the agent left",
-        "the agent going is part of the conversation"
+        "agent left",
+        "the agent going is part of the conversation, by name"
     );
     assert_eq!(
         page.eval("document.querySelectorAll('.pv-panel-event').length"),
@@ -3751,8 +3848,8 @@ fn the_panel_says_when_no_agent_will_hear_it() {
         page.text(
             "document.querySelector('.pv-panel-log .pv-panel-event:last-of-type').textContent"
         ),
-        "the agent is here",
-        "and so is the agent coming back"
+        "claude is here",
+        "and so is the agent coming back -- under the name that took the lease"
     );
     page.eval(
         "window.artefactoPlan.injectFrame({ format: 'artefacto.frame/1', seq: 998, events: [] })",
@@ -4270,8 +4367,12 @@ fn the_conversation_panel_starts_closed_docks_and_comes_back() {
         "closed by default, with the handle in reach"
     );
     assert_eq!(
-        page.text("document.querySelector('.pv-panel-handle .pv-panel-count').textContent"),
-        "0"
+        page.eval(
+            "document.querySelector('.pv-panel-handle .pv-panel-count').textContent === '' && \
+               getComputedStyle(document.querySelector('.pv-panel-handle .pv-panel-count')).display === 'none'"
+        ),
+        true,
+        "nothing said yet is a word without a tally beside it"
     );
     assert_eq!(
         page.eval("!document.querySelector('.feedback-bar')"),
@@ -5425,7 +5526,7 @@ fn nobody_is_waiting_when_no_agent_holds_the_lease() {
     s.server()
         .age_lease(artefacto::server::lease::TTL + std::time::Duration::from_secs(1));
     page.wait_until(
-        "document.querySelector('.pv-presence').textContent === 'no agent'",
+        "document.querySelector('.pv-presence').textContent === 'agent left'",
         "the pill to say the agent is gone",
     );
     page.eval(
