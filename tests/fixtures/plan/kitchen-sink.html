@@ -4369,7 +4369,12 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
   function elementQuote(el) {
     let source = el;
     if (!/^h[1-6]$/i.test(el.tagName)) {
-      source = el.querySelector("h1, h2, h3, h4, h5, h6") || el;
+      /* A row's head line first, then a real heading, then the element.
+         A question and a risk have no heading -- the statement is the head
+         line -- and reading the whole row instead picks up its severity
+         chip, the buttons the page injects, and the answer box, which is
+         what a chip and a stored quote must not say. */
+      source = el.querySelector(".pv-row-head .pv-prose, h1, h2, h3, h4, h5, h6") || el;
     }
     const text = (source.textContent || "").trim().replace(/\s+/g, " ");
     return text.slice(0, 80);

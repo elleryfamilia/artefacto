@@ -4918,6 +4918,11 @@ fn a_review_left_hanging_says_so_once() {
         true,
         "it counts itself down rather than standing in the way"
     );
+    assert_eq!(
+        page.text("document.querySelector('.ag-interrupt-ctx .pv-ctx').textContent"),
+        "questionSession TTL?",
+        "the chip quotes the question, not its chip, buttons and answer box"
+    );
     page.screenshot(&screenshot_path("interrupt-hanging"));
     page.click(".ag-interrupt-not");
     page.wait_until("!document.querySelector('.ag-dim')", "the dialog to close");

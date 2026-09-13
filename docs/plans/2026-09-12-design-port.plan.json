@@ -819,7 +819,7 @@
           "id": "t-strip-parts",
           "title": "The parts, sized by the document",
           "summary_md": "`mountMap` reads the rendered sections (summary, open questions, risks, phases, dependencies) and builds `.pv-map` into the top bar: one `.pv-map-part` per section that exists, its flex proportional to the section's height, with an icon, a label, and a bar. Sections the plan does not have are left out; a plan with only phases gets one part.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "files": [
             {
@@ -846,7 +846,7 @@
           "id": "t-strip-read",
           "title": "Where you are, and where you have been",
           "summary_md": "A scroll listener (throttled to a frame) sets `is-active` on the part under the read line, `is-past` on those above it, fills `.pv-map-fill` to the read fraction and places `.pv-map-caret`. The phases part marks its numerals the same way and shows *n of m*. Reduced motion keeps the transitions off.",
-          "status": "planned",
+          "status": "done",
           "risk": "medium",
           "depends_on": [
             "t-strip-parts"
@@ -861,7 +861,7 @@
           "id": "t-strip-jump",
           "title": "Jump, scrub, and the dense treatment",
           "summary_md": "A part or a numeral is a link that scrolls its section into view and flashes it (`pv-aimed`); the bar row is a scrubber that maps a drag to a scroll position. Past six phases the numerals become `.pv-map-ticks`, one tick per phase, the numeral shown for the one you are in or hover, and a flag on any phase with a blocking question.",
-          "status": "planned",
+          "status": "done",
           "risk": "medium",
           "depends_on": [
             "t-strip-read"
@@ -877,7 +877,7 @@
           "id": "t-strip-static",
           "title": "The static export, print, and the record",
           "summary_md": "The strip is chrome: it mounts on the static export too (it needs no server), prints as nothing, and does not fight the page's link colour. Screenshots at both phase counts; spec 4.3 and BUILD-STATUS.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-strip-jump"
@@ -909,7 +909,7 @@
           "id": "t-interrupt-dialog",
           "title": "The dialog",
           "summary_md": "`.ag-dim` and `.ag-interrupt` from the design: the mark, a kicker naming the case, the time, a title, a sentence, an optional context chip, and the actions (the primary one jumps and closes; *Not now* is quiet and pushed right). Kinds colour the top edge: agent teal, alarm when blocking, action for a revision. Focus moves into the dialog and is trapped while it is open, Escape is *Not now*, and the page under it does not scroll.",
-          "status": "planned",
+          "status": "done",
           "risk": "medium",
           "files": [
             {
@@ -936,7 +936,7 @@
           "id": "t-interrupt-page",
           "title": "The two the page sees",
           "summary_md": "**Ground moved**: when a revision leaves a thread the reviewer wrote in unanchored, the dialog says so and its button opens the panel at that conversation (or the recovery panel for a comment). **Review left hanging**: three minutes with no activity, a verdict not sent, and a blocking question unanswered; the button opens the panel at the question. Each fires once per cause, not once per render, and never twice for the same revision.",
-          "status": "planned",
+          "status": "done",
           "risk": "high",
           "depends_on": [
             "t-interrupt-dialog"
@@ -951,7 +951,7 @@
           "id": "t-interrupt-agent",
           "title": "The one the agent says",
           "summary_md": "`artefacto reply --nudge \"…\" --interrupt --title \"…\" [--ref task:t-x]` puts `interrupt: {kind, title, ref}` on the nudge event; the page raises the dialog for it and a plain nudge stays a panel line. A flag rather than a new verb: it is the same event, and an agent that does not know about it keeps working. The skill says when to use it, in the design's words: the agent has stopped and cannot resume without a decision only the reviewer can make.",
-          "status": "planned",
+          "status": "done",
           "risk": "medium",
           "depends_on": [
             "t-interrupt-dialog"
@@ -985,7 +985,7 @@
           "id": "t-interrupt-record",
           "title": "Guidance, screenshots, and the record",
           "summary_md": "Spec 4.3 and BUILD-STATUS carry the three cases and the rule that everything else stays in the panel; screenshots of each kind in light and dark.",
-          "status": "planned",
+          "status": "done",
           "risk": "low",
           "depends_on": [
             "t-interrupt-page",
