@@ -284,6 +284,11 @@ Behaviour added in server mode:
   give, and working out what they decided from a conversation is not the
   page's to guess. Spec 7: an agent must not report a question as answered
   unless `answers` carries it
+- the summary's phase ledger counts a phase's tasks, and marks a phase
+  holding a high-risk task with a tinted `(n)` whose hover and label say
+  "n high risks". Only high, and only the bracket is tinted: a column that
+  says something about every phase says nothing about any of them, and the
+  number of tasks is not alarming
 - open questions rendered as inputs, so answers arrive as data. In v1 an answer
   is free text, because `artefacto.plan/1` questions have no options field
   (`model.rs:134-139`). An optional `options` list is an additive later change.

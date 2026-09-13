@@ -1331,7 +1331,14 @@ code {
   white-space: nowrap;
 }
 
-.pv-ledger-fig.is-hot { color: var(--alarm); }
+/* The count is neutral; only the risk beside it is not. Tinting the whole
+   cell made "5 tasks" read as the alarm, and the number of tasks is not
+   alarming. */
+.pv-ledger-risk {
+  color: var(--alarm);
+  font-weight: 600;
+  cursor: help;
+}
 
 /* Set by plan.js as the reader scrolls: the ledger row for the phase currently
    on screen. A quiet position indicator on a long plan. */

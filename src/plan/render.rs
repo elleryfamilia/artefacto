@@ -423,6 +423,16 @@ fn ledger_has_figures(plan: &Plan) -> bool {
     plan.phases.iter().any(|p| !p.tasks.is_empty())
 }
 
+/// What the bracketed count in the ledger means, for the tooltip and for a
+/// reader who never sees a tooltip.
+fn high_risk_label(n: usize) -> String {
+    if n == 1 {
+        "1 high risk".to_string()
+    } else {
+        format!("{n} high risks")
+    }
+}
+
 /// The rail's phase cell: the head of a `title — subtitle` name, capped for
 /// the narrow column (the full title is one click away on the phase row
 /// itself). Titles without the separator just truncate.
@@ -431,23 +441,18 @@ fn short_phase_title(title: &str) -> String {
     truncate_chars(head, 28)
 }
 
-/// The count of high-risk tasks in a phase, or nothing.
+/// How many high-risk tasks a phase holds.
 ///
 /// Only high. Medium and low were called out here too, which put a risk word
 /// in almost every row: a column that says something about every phase says
 /// nothing about any of them. A reader scanning the ledger is looking for the
 /// phase that could go wrong, and the lower ratings are on each task's rail.
-fn phase_high_risk(phase: &Phase) -> String {
-    let n = phase
+fn phase_high_risk(phase: &Phase) -> usize {
+    phase
         .tasks
         .iter()
         .filter(|t| matches!(t.risk, Some(RiskLevel::High)))
-        .count();
-    if n == 0 {
-        String::new()
-    } else {
-        format!("{n} high")
-    }
+        .count()
 }
 
 /// One task: a body column (heading, markdown summary, files, acceptance
@@ -719,15 +724,22 @@ pub fn render(plan: &Plan) -> String {
                                                         }
                                                         @if figures {
                                                             @let high = phase_high_risk(phase);
-                                                            td class=(
-                                                                if high.is_empty() {
-                                                                    "pv-ledger-fig"
-                                                                } else {
-                                                                    "pv-ledger-fig is-hot"
-                                                                }
-                                                            ) {
+                                                            td.pv-ledger-fig {
                                                                 (phase_task_count(phase))
-                                                                @if !high.is_empty() { " · " (high) }
+                                                                // A count in brackets, tinted, with
+                                                                // the word on hover. Spelling out
+                                                                // "· 1 high" beside the task count
+                                                                // took room from the phase name,
+                                                                // which is what a reader scanning
+                                                                // this column is actually reading.
+                                                                @if high > 0 {
+                                                                    " "
+                                                                    span.pv-ledger-risk
+                                                                        title=(high_risk_label(high))
+                                                                        aria-label=(high_risk_label(high)) {
+                                                                        "(" (high) ")"
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -1159,6 +1171,43 @@ mod tests {
         assert!(seen >= 4, "the kitchen sink should have every part: {seen}");
     }
 
+    /// The bracketed count is the whole of what the cell says about risk, so
+    /// the words behind it have to be right on their own.
+    #[test]
+    fn the_bracketed_risk_says_what_it_counts() {
+        assert_eq!(high_risk_label(1), "1 high risk");
+        assert_eq!(high_risk_label(3), "3 high risks");
+    }
+
+    /// And it is the only tinted thing in the cell: the number of tasks is
+    /// not alarming, so tinting the whole cell made it read as if it were.
+    #[test]
+    fn only_the_risk_in_the_ledger_takes_the_alarm() {
+        let css = stylesheet();
+        let rule = css
+            .split_once(".pv-ledger-risk {")
+            .expect(".pv-ledger-risk")
+            .1
+            .split_once('}')
+            .expect("a closed rule")
+            .0;
+        assert!(
+            rule.contains("var(--alarm)"),
+            "the count is the alarm: {rule}"
+        );
+        let cell = css
+            .split_once(".pv-ledger-fig {")
+            .expect(".pv-ledger-fig")
+            .1
+            .split_once('}')
+            .expect("a closed rule")
+            .0;
+        assert!(
+            !cell.contains("var(--alarm)"),
+            "and the cell around it is not: {cell}"
+        );
+    }
+
     /// The current row in the phase ledger draws an accent bar down its left
     /// edge. Without an inset the phase name sits on that bar, which is what
     /// the cell padding is for -- so it is not a free-floating number.
@@ -1531,26 +1580,26 @@ mod tests {
         // the lower ratings are on each task's own rail.
         assert!(html.contains("<th>Tasks</th>"), "{html}");
         assert!(
-            html.contains("2 tasks</td>") && html.contains("3 tasks · 1 high</td>"),
+            html.contains("2 tasks</td>"),
+            "a phase with no high risk: {html}"
+        );
+        // The risk is a bracketed count beside the tasks, tinted, with the
+        // word itself on hover and for a reader who never sees a hover.
+        assert!(
+            html.contains(
+                "3 tasks <span class=\"pv-ledger-risk\" title=\"1 high risk\" \
+                 aria-label=\"1 high risk\">(1)</span>"
+            ),
             "{html}"
+        );
+        assert_eq!(
+            html.matches("pv-ledger-risk").count(),
+            2,
+            "one span, named twice, on the one phase that has a high risk: {html}"
         );
         assert!(
             !html.contains("medium</td>") && !html.contains("low</td>"),
             "only a high risk is called out here: {html}"
-        );
-        // And the row that holds it is the one marked hot.
-        let hot = html
-            .split_once("pv-ledger-fig is-hot\">")
-            .expect("the phase with a high risk is marked hot")
-            .1;
-        assert!(
-            hot.starts_with("3 tasks · 1 high"),
-            "the hot cell is the one with the high risk: {hot:.40}"
-        );
-        assert_eq!(
-            html.matches("pv-ledger-fig is-hot").count(),
-            1,
-            "and it is the only one: {html}"
         );
 
         // (f2) an open question's text is wrapped as the row's heading line,

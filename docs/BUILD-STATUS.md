@@ -2010,7 +2010,11 @@ nothing in the product connects the two:
 Two layout notes from the same look: the ledger's figure column is a step
 smaller so the phase names have room, and the strip's dense ticks take the
 same left margin the numerals do -- without it the first tick butted against
-the "PHASES" label and read as part of the word.
+the "PHASES" label and read as part of the word. A third followed: the risk
+in that cell reads `(1)` in the alarm colour with "1 high risk" on hover,
+rather than `· 1 high` spelled out, which took the room the phase name
+wanted. The count of tasks beside it stays neutral -- tinting the whole cell
+made "5 tasks" read as the alarm, and the number of tasks is not alarming.
 
 Eleven mutations. Two survived and were the same defect: `refQuestion`
 parsed the id out of the ref with a prefix check and a lookup, and each
