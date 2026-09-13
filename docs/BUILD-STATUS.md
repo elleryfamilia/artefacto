@@ -1625,6 +1625,56 @@ way. Fixed: the two go together, a server test holds it with two
 artifacts that both own a `c-1`, and the skill says to add `--artifact`
 to a thread reply when the id is on more than one artifact.
 
+## The conversation panel
+
+The second design round (the *Auth Refactor Panel* page and section 08 of
+the sheet, its stylesheet saved beside the first as `artefacto-v2.css`)
+moved the conversation with the agent out of the elements and into one
+panel. The owner answered the one question the phase asked: closed by
+default, with something always in reach to pull it up. Four tasks, three
+slices, on top of the port:
+
+1. **The shell** (`731dfbb`). `mountPanel` wraps the sheet in `.pv-shell`
+   and docks `aside.pv-dock > .pv-panel` beside it: sticky from 1400px
+   (the sheet gives it room), a fixed overlay below (the sheet keeps its
+   measure); head with an X, log, composer, foot with the state line, the
+   counts, and the two verdicts, so the served page has no bottom bar. A
+   floating handle, the mark with the message count, and a *Conversation*
+   link in the top bar open it; the choice is kept per browser. The
+   floating page-level chat is gone; its log and composer are the panel's.
+   Found on the way: a `const` declared below its first read is in its
+   dead zone, and the guarded read answered "closed" whatever was stored.
+2. **The log, the composer, the echo** (`0dd182b`). One log in time order:
+   page-level chat, every question thread's messages with a context chip
+   that names the element and scrolls to it (and flashes it), the working
+   row after a pending thread's last turn, a revision line, the nudge as a
+   card, a resolution as a chip on the note. One composer: an element's
+   mark aims it (at the element, or at its existing thread), a comment
+   thread's *Ask the agent* aims it at that thread, Enter sends, the aim
+   and the text live in session storage, focus and caret come back after
+   a swap, one send at a time, an aim whose thread is deleted is dropped
+   with the text kept. Question threads left the elements; the element
+   carries a spine, a count on its mark, and a one-line preview of the
+   last message that opens the panel there. The inline persistent input
+   from the port, and its storage, were removed; the tests that drove it
+   drive the panel now.
+3. **Order** (`f6db311`). The kitchen-sink screenshot showed an answer
+   above the question it answered: the server stamps seconds, the page's
+   own events carry milliseconds, and the sort put the coarser stamp
+   first. The log orders at one-second grain and ties keep each thread's
+   order; a test pins the question before its answer.
+
+Screenshots: `panel-docked-1440.png`, `panel-overlay-1280.png`, and
+`ask-on-kitchen-sink.png` with the panel open beside a page that has a
+question thread, a blocking comment, a changed and a declined thread.
+
+Mutations: five on the shell and thirteen on the rest, seventeen caught.
+The one that survived, dropping the composer's fallback that routes a
+second question on an element to its existing thread, is a redundant
+guard: `aimPanel` already sets the thread when the mark is clicked, and
+the fallback only matters for a composer aimed by a path that does not.
+Kept, as a guard.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart

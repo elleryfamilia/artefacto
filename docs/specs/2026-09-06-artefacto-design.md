@@ -250,10 +250,23 @@ Behaviour added in server mode:
   *Saved. The agent sees your notes when you send them.* Nothing blocks and
   nothing is lost: every comment, answer, and mark is on the server the
   moment it is accepted
-- a question thread is a conversation: one input that stays, Enter sends,
-  the text survives a body swap, and from the question until the answer a
-  working row shows the mark at work (or *waiting for an agent*, or *still
-  waiting* after two minutes)
+- **the conversation panel** (the second design round): one panel docked
+  beside the sheet from 1400px up and floating over the right margin below,
+  closed by default behind a floating handle (the mark with the message
+  count) and a *Conversation* link in the top bar, the choice kept per
+  browser. Its log is everything said to and by the agent in time order:
+  the page-level chat, every question thread's messages with a context chip
+  that names the element and scrolls to it, the working row after a
+  thread's last turn while its answer is awaited (or *waiting for an
+  agent*, or *still waiting* after two minutes), a line when a revision
+  lands, the agent's nudge as a card, and a resolution as a chip on the
+  note. Its composer is the one place to ask: an element's mark opens the
+  panel aimed at that element (or at its existing question thread), Enter
+  sends, the aim and the text survive a swap and a reload, one send is in
+  flight at a time. Question threads are not rendered on their elements;
+  the element carries a spine, a count on its mark, and a one-line preview
+  of the last message. Comment threads stay on their elements, and their
+  *Ask the agent* aims the panel at that thread
 - notices through one component (the mark, a kicker naming who speaks, the
   text, the actions): a nudge, a new revision, a sent review, no agent with
   a question waiting, the server stopping or gone, signed out
@@ -261,7 +274,8 @@ Behaviour added in server mode:
   is free text, because `artefacto.plan/1` questions have no options field
   (`model.rs:134-139`). An optional `options` list is an additive later change.
 - two verdicts replace the clipboard button: **Request changes** and
-  **Approve**, one group in the bar, each sending its own `review.submit`;
+  **Approve**, one group in the conversation panel's foot (the served page
+  has no bottom bar), each sending its own `review.submit`;
   the one that was sent is the only filled control on the page, and the
   verdict rides in the page's snapshot so a reload keeps it. Request changes
   is enabled with nothing written: it is a verdict on the plan, not on the
