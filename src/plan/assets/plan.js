@@ -102,7 +102,8 @@
     emptyState(artifact) {
       return {
         artifact: artifact, revision: 0, planHash: "", plan: null, threads: [],
-        answers: {}, reviewed: [], chat: [], submitted: false, presence: null, lastSeq: 0,
+        answers: {}, reviewed: [], chat: [], submitted: false,
+        verdict: null, presence: null, lastSeq: 0,
       };
     },
     /* What `GET /a/<artifact>/state` returns, as page state. */
@@ -115,7 +116,7 @@
             id: t.id, target: t.target, quote: t.quote || "", blocking: !!t.blocking,
             asked: !!t.asked, status: t.status || "open",
             messages: (t.messages || []).map(function (m) {
-              return { actor: m.actor, text: m.text, ts: m.ts };
+              return { actor: m.actor, text: m.text, ts: m.ts, note: !!m.note };
             }),
           };
         }),
@@ -123,6 +124,7 @@
         reviewed: (s.reviewed || []).slice(),
         chat: (s.chat || []).slice(),
         submitted: !!s.submitted,
+        verdict: s.verdict || null,
         presence: s.presence || null,
         lastSeq: s.last_seq || 0,
       };
@@ -143,6 +145,7 @@
           if (d.plan_hash) state.planHash = d.plan_hash;
           /* A new revision reopens the review. */
           state.submitted = false;
+          state.verdict = null;
           core.reanchor(state.threads, core.planRefs(state.plan));
           return true;
         }
@@ -175,7 +178,7 @@
           const t = find(d.thread);
           if (!t || (d.status !== "changed" && d.status !== "declined")) return false;
           t.status = d.status;
-          if (d.note) t.messages.push({ actor: "agent", text: d.note, ts: e.ts || "" });
+          if (d.note) t.messages.push({ actor: "agent", text: d.note, ts: e.ts || "", note: true });
           return true;
         }
         case "question.answered": {
@@ -213,6 +216,7 @@
         }
         case "review.submitted":
           state.submitted = true;
+          state.verdict = d.verdict || null;
           return true;
         case "agent.attached":
           state.presence = { agent: d.agent || "", mode: d.mode || "waiting" };
@@ -446,12 +450,16 @@
       document.querySelectorAll("details.phase").forEach(function (d, i) { d.open = wasOpen[i]; });
       if (failure) throw new Error(failure);
     });
-    check("theme toggle offers system, light and dark", function () {
+    check("theme toggle offers system, light, dark and vibe", function () {
       const modes = [].map.call(
         document.querySelectorAll("[data-theme-set]"),
         function (b) { return b.getAttribute("data-theme-set"); }
       );
-      if (modes.join("|") !== "|light|dark") throw new Error("modes were " + modes.join("|"));
+      if (modes.join("|") !== "|light|dark|vibe") throw new Error("modes were " + modes.join("|"));
+      applyTheme("vibe", false);
+      if (document.documentElement.getAttribute("data-theme") !== "vibe") {
+        throw new Error("vibe did not apply");
+      }
       /* System must be reachable AGAIN after an override, or "follow the OS"
          is a state a reader can only ever leave. */
       applyTheme("dark", false);
@@ -679,13 +687,30 @@
     ]);
   }
 
-  /* Speech bubble with a question mark: the ask button. */
-  function askIcon() {
-    return svgIcon("ask-btn-icon", [
-      "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
-      "M9.6 9a2.4 2.4 0 1 1 3.4 2.2c-.6.3-1 .9-1 1.6",
-      "M12 15.5h.01",
-    ]);
+  /* The agent's mark: a ring around a point, something looking back. One
+     SVG, four states by class: rest, is-working (a bead orbits the ring),
+     is-waiting, is-off (the point hollows out). It is the agent wherever
+     the agent appears: the presence pill, the avatar, and soon the ask
+     control and the working row. */
+  function agentMark(state) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    setMarkState(svg, state);
+    [["ag-ring", 12, 12, 8.5], ["ag-core", 12, 12, 3.2], ["ag-orbit", 12, 3.5, 2]].forEach(function (c) {
+      const circle = document.createElementNS(SVG_NS, "circle");
+      circle.setAttribute("class", c[0]);
+      circle.setAttribute("cx", String(c[1]));
+      circle.setAttribute("cy", String(c[2]));
+      circle.setAttribute("r", String(c[3]));
+      svg.appendChild(circle);
+    });
+    return svg;
+  }
+
+  function setMarkState(svg, state) {
+    svg.setAttribute("class", "ag-mark" + (state ? " is-" + state : ""));
   }
 
   /* Warning-triangle icon for the "Blocks approval" checkbox: triangle
@@ -726,7 +751,7 @@
   function storedTheme() {
     try {
       const v = window.localStorage.getItem(THEME_KEY);
-      return v === "light" || v === "dark" ? v : "";
+      return v === "light" || v === "dark" || v === "vibe" ? v : "";
     } catch (e) { return ""; }
   }
 
@@ -782,7 +807,7 @@
     group.className = "pv-theme";
     group.setAttribute("role", "group");
     group.setAttribute("aria-label", "Colour theme");
-    [["", "System"], ["light", "Light"], ["dark", "Dark"]].forEach(function (pair) {
+    [["", "System"], ["light", "Light"], ["dark", "Dark"], ["vibe", "Vibe"]].forEach(function (pair) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.setAttribute("data-theme-set", pair[0]);
@@ -1258,7 +1283,7 @@
 
     const copyBtn = document.createElement("button");
     copyBtn.type = "button";
-    copyBtn.className = "feedback-bar-copy";
+    copyBtn.className = "pv-btn is-lg is-primary feedback-bar-copy";
     copyBtn.textContent = "Copy feedback";
     bar.appendChild(copyBtn);
 
@@ -1343,17 +1368,24 @@
 
       const addBtn = document.createElement("button");
       addBtn.type = "button";
+      addBtn.className = "pv-btn is-primary composer-send";
       addBtn.textContent = "Add";
 
       const cancelBtn = document.createElement("button");
       cancelBtn.type = "button";
+      cancelBtn.className = "pv-btn is-quiet composer-cancel";
       cancelBtn.textContent = "Cancel";
 
       actions.appendChild(addBtn);
       actions.appendChild(cancelBtn);
+      /* The same foot row as the served composer: the toggle on the left,
+         the actions on the right. */
+      const foot = document.createElement("div");
+      foot.className = "comment-box-foot";
       box.appendChild(textarea);
-      box.appendChild(blockingRow);
-      box.appendChild(actions);
+      foot.appendChild(blockingRow);
+      foot.appendChild(actions);
+      box.appendChild(foot);
 
       btn.addEventListener("click", function (e) {
         /* The same guard the reviewed toggle carries below, for the same
@@ -1591,6 +1623,9 @@
      fetch that has not answered in ten seconds is treated as failed. */
   core.settings = {
     pingEveryMs: 30000,
+      /* How long a question may go unanswered before the working row says
+         "still waiting" and the bead stops. */
+      stillWaitingMs: 120000,
     backoffMs: [500, 1000, 2000, 4000, 8000, 8000, 8000, 8000],
     fetchTimeoutMs: 10000,
     /* How long a socket must stay open before the retry budget resets. */
@@ -1633,8 +1668,17 @@
       gone: false,
       lost: false,
       stopping: false,
-      approve: false,
+      /* Writes the server has not answered yet; the bar says Saving. */
+      inflight: 0,
       submitting: false,
+      /* Questions the agent has not answered yet: thread id (or "page") ->
+         { since }. Page-side, so a body swap keeps the working row. */
+      pending: {},
+      /* What is typed into a question thread's persistent input, by
+         thread id, so a swap re-creates the input with its text. Mirrored
+         to session storage so a reload keeps it too. */
+      threadDrafts: {},
+
       lastPing: 0,
       previousTitle: null,
       own: {},
@@ -1684,6 +1728,26 @@
     }
     function saveDraft(d) { const m = loadDraftMap(); m[d.id] = d; saveDraftMap(m); }
     function dropDraft(id) { const m = loadDraftMap(); delete m[id]; saveDraftMap(m); }
+    /* Declared here, above its first read: a const declared further down
+       would be in its dead zone when the session starts, and the guarded
+       read would quietly answer "closed". */
+    const PANEL_KEY = "artefacto.panel";
+    S.ui.chatOpen = panelStored();
+    /* The panel's composer: its text and what it is aimed at (an element,
+       or a thread), kept across a swap and a reload. */
+    const PANEL_DRAFT_KEY = "artefacto:panel:" + artifact;
+    function loadPanelDraft() {
+      try {
+        const raw = window.sessionStorage.getItem(PANEL_DRAFT_KEY);
+        const d = raw ? JSON.parse(raw) : null;
+        return d && typeof d === "object" ? d : {};
+      } catch (e) { return {}; }
+    }
+    function savePanelDraft() {
+      try { window.sessionStorage.setItem(PANEL_DRAFT_KEY, JSON.stringify(S.ui.panel)); } catch (e) { /* best effort */ }
+    }
+    S.ui.panel = Object.assign({ text: "", ref: null, thread: null, quote: null }, loadPanelDraft());
+    S.ui.panelEvents = [];
 
     /* ---- transport ------------------------------------------------- */
 
@@ -1724,7 +1788,10 @@
     function send(cmd) {
       if (!cmd.client_id) cmd.client_id = newId("cid");
       S.own[cmd.client_id] = true;
-      return post(cmd).then(function (reply) {
+      S.inflight++;
+      renderBar();
+      const settle = function () { S.inflight = Math.max(0, S.inflight - 1); renderBar(); };
+      return post(cmd).then(function (reply) { settle(); return reply; }, function (e) { settle(); throw e; }).then(function (reply) {
         if (!reply || !reply.ok) throw new Error((reply && reply.error) || "refused");
         if (reply.seq === 0) {
           resync();
@@ -1781,7 +1848,68 @@
       const seq = events.length ? events[events.length - 1].seq : 0;
       const applied = core.applyFrame(S.state, { seq: seq, events: kept }, cursor);
       S.applied += applied.length;
+      trackPending(applied);
       return applied;
+    }
+
+    /* A question is pending from the moment the server accepted it until
+       the agent writes into the same thread (or the page-level panel),
+       whichever tab asked. */
+    function trackPending(events) {
+      events.forEach(function (e) {
+        const d = e.data || {};
+        if (e.type === "chat.sent" && e.actor === "reviewer") {
+          pendingSet(d.thread || "page");
+        } else if ((e.type === "chat.sent" || e.type === "thread.replied") && e.actor === "agent") {
+          delete S.pending[d.thread || "page"];
+        } else if (e.type === "thread.deleted") {
+          delete S.pending[d.thread];
+        }
+      });
+    }
+
+    function pendingSet(key, since) {
+      if (S.pending[key]) return;
+      S.pending[key] = { since: since || Date.now() };
+      const left = Math.max(0, core.settings.stillWaitingMs - (Date.now() - S.pending[key].since));
+      window.setTimeout(function () { if (S.pending[key]) renderAll(); }, left + 50);
+    }
+
+    /* The event stream says when a question was asked; the state says
+       whether it has been answered. Reconciled before every render, so a
+       snapshot that carried the answer, a reload, a second tab, and a
+       resolution all end (or start) the working state the same way. A
+       question thread's last turn by the reviewer is a question waiting;
+       an ask inside a comment thread is only known from the event, and is
+       cleared the same way once the agent has written after it. */
+    function reconcilePending() {
+      const seen = {};
+      S.state.threads.forEach(function (t) {
+        const open = t.status === "open" || t.status === "unanchored";
+        const last = t.messages[t.messages.length - 1];
+        const waiting = !!last && last.actor === "reviewer" && open;
+        if (t.asked && waiting) {
+          pendingSet(t.id, Date.parse(last.ts) || Date.now());
+        } else if (!waiting) {
+          delete S.pending[t.id];
+        }
+        seen[t.id] = true;
+      });
+      Object.keys(S.pending).forEach(function (key) {
+        if (key !== "page" && !seen[key]) delete S.pending[key];
+      });
+      const chat = S.state.chat[S.state.chat.length - 1];
+      if (chat && chat.actor === "reviewer") pendingSet("page", Date.parse(chat.ts) || Date.now());
+      else delete S.pending.page;
+    }
+
+    /* What the working row says: the mark's state and a line. */
+    function pendingLabel(key) {
+      const p = S.pending[key];
+      if (!p) return null;
+      if (!S.state.presence) return { state: "off", text: "waiting for an agent\u2026" };
+      if (Date.now() - p.since > core.settings.stillWaitingMs) return { state: "waiting", text: "still waiting\u2026" };
+      return { state: "working", text: "thinking\u2026" };
     }
 
     function ping() {
@@ -2026,6 +2154,7 @@
             break;
           case "nudge":
             notice("nudge", (e.data && e.data.text) || "The agent asked for your attention.", { dismiss: true });
+            panelEvent("nudge", (e.data && e.data.text) || "The agent asked for your attention.");
             break;
           case "server.stopping":
             S.stopping = true;
@@ -2056,6 +2185,8 @@
         const composer = active.closest("[data-composer]");
         if (composer) {
           focus = { composer: composer.getAttribute("data-composer"), start: active.selectionStart, end: active.selectionEnd };
+        } else if (active.closest(".pv-panel-composer")) {
+          focus = { panel: true, start: active.selectionStart, end: active.selectionEnd };
         }
       }
       const anchors = [];
@@ -2083,13 +2214,20 @@
         placed = true;
       }
       if (!placed) window.scrollTo({ top: view.scrollY, left: 0, behavior: "instant" });
-      if (view.focus) {
-        const box = document.querySelector('[data-composer="' + view.focus.composer + '"] textarea');
-        if (box) {
-          box.focus({ preventScroll: true });
-          try { box.setSelectionRange(view.focus.start, view.focus.end); } catch (e) { /* ignore */ }
-        }
-      }
+      /* A thread's input is created by the render that follows the mount,
+         which may wait on a snapshot; if the box is not here yet the focus
+         is kept and applied by the next render. */
+      if (view.focus && !applyFocus(view.focus)) S.ui.pendingFocus = view.focus;
+    }
+
+    function applyFocus(f) {
+      const box = f.panel
+        ? document.querySelector(".pv-panel-composer textarea")
+        : document.querySelector('[data-composer="' + f.composer + '"] textarea');
+      if (!box) return false;
+      box.focus({ preventScroll: true });
+      try { box.setSelectionRange(f.start, f.end); } catch (e) { /* ignore */ }
+      return true;
     }
 
     function swapBody(html, revision) {
@@ -2136,19 +2274,49 @@
       renderNotices();
     }
 
+    /* One component for everything the page says on its own. Each kind has
+       a kicker (who is speaking) and a state for the mark. */
+    const NOTICE_KINDS = {
+      sent: { kicker: "Review sent", mark: "" },
+      revision: { kicker: "New revision", mark: "" },
+      nudge: { kicker: "The agent", mark: "" },
+      noagent: { kicker: "No agent", mark: "off" },
+      stopping: { kicker: "Server stopping", mark: "off" },
+      gone: { kicker: "Server gone", mark: "off" },
+      lost: { kicker: "Signed out", mark: "off" },
+    };
+
+    function noticeNode(kind, n) {
+      const spec = NOTICE_KINDS[kind];
+      const node = el("div", { class: "pv-notice", dataset: { kind: kind }, title: n.title });
+      node.appendChild(agentMark(spec.mark));
+      /* The kicker sits beside the text, not inside it, so the text is
+         only ever what was said. */
+      const text = el("span", { class: "pv-notice-text" });
+      text.appendChild(richText(n.text));
+      node.appendChild(el("span", { class: "pv-notice-body" },
+        el("span", { class: "pv-notice-kicker", text: spec.kicker }), text));
+      const actions = el("span", { class: "pv-notice-actions" });
+      if (n.action) actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet pv-notice-action", text: n.action, onclick: n.onAction }));
+      if (n.dismiss) actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet pv-notice-dismiss", text: "Dismiss", "aria-label": "Dismiss", onclick: function () { notice(kind, null); } }));
+      if (actions.childNodes.length) node.appendChild(actions);
+      return node;
+    }
+
     function renderNotices() {
       const host = noticeHost();
       host.replaceChildren();
-      ["sent", "revision", "nudge", "stopping", "gone", "lost"].forEach(function (kind) {
-        const n = S.ui["notice:" + kind];
+      ["sent", "revision", "nudge", "noagent", "stopping", "gone", "lost"].forEach(function (kind) {
+        let n = S.ui["notice:" + kind];
+        /* Derived, not stored: a question is waiting and nobody holds the
+           lease. It goes the moment an agent attaches. */
+        if (kind === "noagent") {
+          n = S.connected && !S.state.presence && Object.keys(S.pending).length
+            ? { text: "No agent is attached. Your question waits for one." }
+            : null;
+        }
         if (!n) return;
-        const node = el("div", { class: "pv-notice", dataset: { kind: kind }, title: n.title });
-        const text = el("span", { class: "pv-notice-text" });
-        text.appendChild(richText(n.text));
-        node.appendChild(text);
-        if (n.action) node.appendChild(el("button", { type: "button", class: "pv-textbtn pv-notice-action", text: n.action, onclick: n.onAction }));
-        if (n.dismiss) node.appendChild(el("button", { type: "button", class: "pv-textbtn pv-notice-dismiss", text: "Dismiss", "aria-label": "Dismiss", onclick: function () { notice(kind, null); } }));
-        host.appendChild(node);
+        host.appendChild(noticeNode(kind, n));
       });
     }
 
@@ -2166,7 +2334,7 @@
       S.state.reviewed.forEach(function (r) { if (r.indexOf("task:") === 0) k++; });
       parts.push(k + " of " + tasks + " tasks reviewed");
       notice("sent",
-        (S.approve ? "Approval sent" : "Review sent") + " for revision " + S.state.revision + ": "
+        (S.state.verdict === "approve" ? "Approval sent" : "Review sent") + " for revision " + S.state.revision + ": "
           + parts.join(", ") + ". The agent has it."
           + (S.state.presence ? "" : " No agent is attached; it will be delivered when one is."),
         { dismiss: true });
@@ -2187,6 +2355,7 @@
       const orphaned = core.unanchored(S.state).length;
       if (orphaned) text += " " + orphaned + (orphaned === 1 ? " thread lost its element." : " threads lost their elements.");
       notice("revision", text, { dismiss: true, title: S.previousTitle ? "Previously: " + S.previousTitle : null });
+      panelEvent("revision", "revision " + S.state.revision + " pushed");
     }
 
     /* ---- presence ----------------------------------------------------- */
@@ -2196,16 +2365,23 @@
       if (S.gone) return { mode: "off", text: "server gone" };
       if (!S.connected) return { mode: "off", text: "reconnecting" };
       const p = S.state.presence;
-      if (!p) return { mode: "none", text: "no agent" };
+      if (!p) return { mode: "off", text: "no agent" };
+      if (Object.keys(S.pending).length) return { mode: "working", text: "agent working", agent: p.agent };
       return { mode: p.mode, text: "agent " + (p.mode === "live" ? "live" : "waiting"), agent: p.agent };
+    }
+
+    /* The mark's state for a presence mode: live is the mark at rest. */
+    function markStateFor(mode) {
+      return mode === "live" ? "" : mode === "working" ? "working" : mode === "waiting" ? "waiting" : "off";
     }
 
     function renderPresence() {
       const pill = document.querySelector(".pv-presence");
       if (!pill) return;
       const l = presenceLabel();
-      pill.textContent = l.text;
+      pill.querySelector(".pv-presence-text").textContent = l.text;
       pill.setAttribute("data-mode", l.mode);
+      setMarkState(pill.querySelector(".ag-mark"), markStateFor(l.mode));
       pill.title = l.agent ? l.agent + " holds the lease" : "";
       const hint = document.querySelector(".pv-chat-hint");
       if (hint) hint.textContent = presenceLine("message");
@@ -2226,7 +2402,8 @@
     function mountPresence(root) {
       const host = root.querySelector(".pv-topbar-right");
       if (!host || host.querySelector(".pv-presence")) return;
-      host.insertBefore(el("span", { class: "pv-presence", dataset: { mode: "none" }, text: "no agent" }), host.firstChild);
+      host.insertBefore(el("span", { class: "pv-presence", dataset: { mode: "off" } },
+        agentMark("off"), el("span", { class: "pv-presence-text", text: "no agent" })), host.firstChild);
     }
 
     /* ---- threads ----------------------------------------------------- */
@@ -2235,9 +2412,31 @@
       return actor === "agent" ? "agent" : actor === "server" ? "server" : "you";
     }
 
+    /* Circle for the machine, square for the person, same weight. */
+    function avatar(actor) {
+      if (actor === "agent") return el("span", { class: "pv-avatar", title: "agent" }, agentMark(""));
+      return el("span", { class: "pv-avatar is-you", title: actorLabel(actor) });
+    }
+
+    function whenLabel(ts) {
+      const d = ts ? new Date(ts) : null;
+      if (!d || isNaN(d.getTime())) return "";
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function messageNode(m, i) {
+      return el("div", { class: "thread-msg", dataset: { actor: m.actor, index: String(i) }, title: m.ts },
+        avatar(m.actor),
+        el("div", { class: "thread-msg-body" },
+          el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
+          el("p", { class: "thread-text", text: m.text })));
+    }
+
     function renderThread(node, t) {
       node.setAttribute("data-status", t.status);
+      node.setAttribute("data-kind", t.asked ? "question" : "comment");
       node.classList.toggle("is-asked", !!t.asked);
+      node.classList.toggle("is-blocking", !!t.blocking);
       node.querySelector(".thread-label").textContent = t.asked ? "Question" : "Comment";
       node.querySelector(".thread-status").textContent = t.status;
       node.querySelector(".thread-status").className = "thread-status pv-chip pv-chip-" + t.status;
@@ -2245,44 +2444,80 @@
       const target = node.querySelector(".thread-target");
       target.hidden = t.status !== "unanchored";
       target.textContent = "was on " + t.target;
+      const first = t.messages[0];
+      const when = node.querySelector(".thread-when");
+      when.textContent = first ? whenLabel(first.ts) : "";
+      when.title = first ? first.ts : "";
+      /* A resolved thread's closing note is marked by the server as a
+         note, not a turn: it is shown as the resolution with the verdict
+         chip, wherever it sits, and a reply after it stays a reply. */
+      const resolved = t.status === "changed" || t.status === "declined";
+      let noteAt = -1;
+      t.messages.forEach(function (m, i) { if (m.note && resolved) noteAt = i; });
+      const last = t.messages[noteAt];
       const msgs = node.querySelector(".thread-msgs");
       msgs.replaceChildren();
       t.messages.forEach(function (m, i) {
-        msgs.appendChild(el("div", { class: "thread-msg", dataset: { actor: m.actor, index: String(i) }, title: m.ts },
-          el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
-          el("p", { class: "thread-text", text: m.text })));
+        if (i !== noteAt) msgs.appendChild(messageNode(m, i));
       });
+      /* From the question until the answer: the mark at work, or what it
+         is waiting for. Not a message, so counts of messages stay true. */
+      const pending = pendingLabel(t.id);
+      if (pending) {
+        msgs.appendChild(el("div", { class: "thread-working", dataset: { actor: "agent" } },
+          el("span", { class: "pv-avatar" }, agentMark(pending.state)),
+          el("div", { class: "thread-msg-body" },
+            el("span", { class: "thread-actor", text: "agent" }),
+            el("p", { class: "thread-text", text: pending.text }))));
+      }
+      const resolution = node.querySelector(".thread-resolution");
+      resolution.hidden = noteAt < 0;
+      if (noteAt >= 0) {
+        resolution.replaceChildren(
+          avatar("agent"),
+          el("div", { class: "thread-msg-body" },
+            el("span", { class: "thread-actor" }, document.createTextNode("agent"),
+              el("span", { class: "pv-chip pv-chip-" + t.status, text: t.status })),
+            el("p", { class: "thread-text", text: last.text })));
+      }
       const open = t.status === "open" || t.status === "unanchored";
       node.querySelector(".thread-edit").hidden = !open;
       node.querySelector(".thread-delete").hidden = !open;
       /* On a question thread every follow-up is for the agent, and a Reply
          there would wait for the sent review: the trap this thread kind
-         exists to remove. Ask the agent is the one way to write in it. */
+         exists to remove. The persistent input is the one way to write in
+         it, so the Ask button goes too. */
       node.querySelector(".thread-reply").hidden = !!t.asked;
+      node.querySelector(".thread-ask").hidden = !!t.asked;
+      /* A question thread is not rendered here at all: it lives in the
+         conversation panel. */
     }
 
     function threadNode(t) {
       const node = el("div", { class: "thread", dataset: { thread: t.id } });
+      /* No id in the head: `c-3` is the agent's handle for the thread, kept
+         on the node as data-thread and shown to nobody. */
       node.appendChild(el("div", { class: "thread-head" },
         el("span", { class: "thread-label", text: "Comment" }),
-        el("span", { class: "thread-id", text: t.id }),
         el("span", { class: "thread-status pv-chip", text: t.status }),
         el("span", { class: "thread-blocking", text: "blocks approval" }),
-        el("span", { class: "thread-target", hidden: true })));
+        el("span", { class: "thread-target", hidden: true }),
+        el("span", { class: "thread-when" })));
       node.appendChild(el("div", { class: "thread-msgs" }));
+      node.appendChild(el("div", { class: "thread-resolution", hidden: true }));
       const actions = el("div", { class: "thread-actions" });
-      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-reply", text: "Reply", onclick: function () {
+      actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet thread-reply", text: "Reply", onclick: function () {
         openComposer({ kind: "reply", thread: t.id, ref: t.target });
       } }));
-      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-ask", text: "Ask the agent", onclick: function () {
-        openComposer({ kind: "ask", thread: t.id, ref: t.target });
+      actions.appendChild(el("button", { type: "button", class: "pv-btn is-agent thread-ask", text: "Ask the agent", onclick: function () {
+        aimPanel(t.target, t.quote, t.id);
       } }));
-      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-edit", text: "Edit", onclick: function () {
+      actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet thread-edit", text: "Edit", onclick: function () {
         const current = S.state.threads.find(function (x) { return x.id === t.id; });
         openComposer({ kind: "edit", thread: t.id, ref: t.target, text: current && current.messages[0] ? current.messages[0].text : "" });
       } }));
       let armed = null;
-      actions.appendChild(el("button", { type: "button", class: "pv-textbtn thread-delete", text: "Delete", onclick: function (ev) {
+      actions.appendChild(el("button", { type: "button", class: "pv-btn is-quiet thread-delete", text: "Delete", onclick: function (ev) {
         const btn = ev.currentTarget;
         if (armed) {
           clearTimeout(armed);
@@ -2319,7 +2554,7 @@
       if (!root) return;
       root.querySelectorAll(".pv-threads[data-threads-for]").forEach(function (host) {
         const ref = host.getAttribute("data-threads-for");
-        if (ref) renderThreadsIn(host, core.threadsOn(S.state, ref));
+        if (ref) renderThreadsIn(host, core.threadsOn(S.state, ref).filter(function (t) { return !t.asked; }));
       });
     }
 
@@ -2355,45 +2590,145 @@
 
     /* ---- the bar and the chat ---------------------------------------- */
 
+    function clock(d) {
+      return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    }
+
+    /* Whether closing the page now would leave something the agent has not
+       been sent: threads, answers, or marks on an unsent review. */
+    function unsentWork() {
+      if (S.state.submitted) return false;
+      return S.state.threads.some(function (t) { return t.status !== "unanchored"; })
+        || Object.keys(S.state.answers).some(function (q) { return S.state.answers[q]; })
+        || S.state.reviewed.length > 0;
+    }
+
     function renderBar() {
-      const bar = document.querySelector(".feedback-bar");
+      const bar = document.querySelector(".pv-panel-foot");
       if (!bar) return;
       const threads = S.state.threads.filter(function (t) { return t.status !== "unanchored"; });
       const open = threads.filter(function (t) { return t.status === "open"; });
       const blocking = open.filter(function (t) { return t.blocking; }).length;
-      bar.querySelector(".feedback-bar-banner").textContent = "live review · rev " + S.state.revision;
-      bar.querySelector(".feedback-bar-blocking").textContent = blocking ? blocking + " blocking" : "";
-      bar.querySelector(".feedback-bar-count").textContent = threads.length + (threads.length === 1 ? " thread" : " threads");
       const taskEls = S.root ? S.root.querySelectorAll('.task[data-plan-ref^="task:"]') : [];
       let k = 0;
       taskEls.forEach(function (t) { if (S.state.reviewed.indexOf(t.getAttribute("data-plan-ref")) >= 0) k++; });
+      bar.querySelector(".feedback-bar-count").textContent = threads.length + (threads.length === 1 ? " thread" : " threads");
       bar.querySelector(".feedback-bar-reviewed").textContent = k + "/" + taskEls.length + " reviewed";
-      bar.querySelector(".feedback-bar-approve input").checked = S.approve;
-      const when = S.ui.sentAt
-        ? " · " + String(S.ui.sentAt.getHours()).padStart(2, "0") + ":" + String(S.ui.sentAt.getMinutes()).padStart(2, "0")
-        : "";
-      bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent · rev " + S.state.revision + when : "";
-      const send = bar.querySelector(".feedback-bar-send");
-      send.disabled = S.lost || S.submitting;
-      if (!send.classList.contains("is-sent")) {
-        send.textContent = S.submitting ? "Sending…"
-          : S.state.submitted ? (S.approve ? "Send approval again" : "Send again")
-            : S.approve ? "Send approval" : "Send review";
-      }
+      bar.querySelector(".feedback-bar-blocking").textContent = blocking ? blocking + " blocking" : "";
+      /* The state line: everything written is on the server the moment it
+         is accepted, and the line says so. Leaving is not losing. */
+      const state = bar.querySelector(".feedback-bar-state");
+      const leaving = S.ui.leftAt && Date.now() - S.ui.leftAt < 4000;
+      state.classList.toggle("is-saving", S.inflight > 0);
+      state.querySelector(".feedback-bar-state-text").textContent = S.inflight > 0
+        ? "Saving\u2026"
+        : leaving
+          ? "Saved. The agent sees your notes when you send them."
+          : "Saved \u00b7 rev " + S.state.revision;
+      const when = S.ui.sentAt ? " \u00b7 " + clock(S.ui.sentAt) : "";
+      bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent \u00b7 rev " + S.state.revision + when : "";
+      bar.classList.toggle("is-sent", !!S.state.submitted);
+      /* Two verdicts, one group; the one that was sent is the filled control. */
+      const request = bar.querySelector(".feedback-bar-send");
+      const approve = bar.querySelector(".feedback-bar-approve");
+      request.disabled = S.lost || S.submitting;
+      approve.disabled = S.lost || S.submitting;
+      request.classList.toggle("is-filled", !!S.state.submitted && S.state.verdict !== "approve");
+      approve.classList.toggle("is-filled", !!S.state.submitted && S.state.verdict === "approve");
+    }
+
+    function submitReview(verdict) {
+      if (S.submitting) return;
+      S.submitting = true;
+      renderBar();
+      const button = function () {
+        return document.querySelector(verdict === "approve" ? ".feedback-bar-approve" : ".feedback-bar-send");
+      };
+      send({ cmd: "review.submit", verdict: verdict, base_revision: S.state.revision })
+        .then(function () {
+          S.submitting = false;
+          S.ui.sentAt = new Date();
+          sentNotice();
+          renderBar();
+          const btn = button();
+          if (btn) {
+            cleared(btn);
+            /* One short pulse on the button the reviewer is looking at. */
+            btn.classList.add("is-sent");
+            setTimeout(function () { btn.classList.remove("is-sent"); }, 2000);
+          }
+        })
+        .catch(function (e) {
+          S.submitting = false;
+          renderBar();
+          failed(button(), e);
+        });
+    }
+
+    /* Leaving with unsent work: say once that nothing is lost. No dialog,
+       nothing blocks; the line in the bar changes for a few seconds. */
+    function wireLeaving() {
+      if (S.ui.leaveWired) return;
+      S.ui.leaveWired = true;
+      const note = function () {
+        if (!unsentWork()) return;
+        S.ui.leftAt = Date.now();
+        renderBar();
+        window.setTimeout(renderBar, 4200);
+      };
+      document.addEventListener("visibilitychange", function () { if (document.visibilityState === "hidden") note(); });
+      window.addEventListener("pagehide", note);
     }
 
     function renderChat() {
       const log = document.querySelector(".pv-chat-log");
       if (!log) return;
       log.replaceChildren();
-      S.state.chat.forEach(function (m) {
-        log.appendChild(el("div", { class: "pv-chat-msg", dataset: { actor: m.actor }, title: m.ts },
-          el("span", { class: "thread-actor", text: actorLabel(m.actor) }),
-          el("p", { class: "thread-text", text: m.text })));
+      const entries = conversationEntries();
+      const lastOf = {};
+      entries.forEach(function (e, i) { if (!e.event) lastOf[e.key] = i; });
+      entries.forEach(function (e, i) {
+        if (e.event) {
+          if (e.kind === "nudge") {
+            const nudge = el("div", { class: "pv-panel-nudge" }, el("span", { class: "pv-notice-kicker", text: "The agent" }));
+            nudge.appendChild(richText(e.text));
+            log.appendChild(nudge);
+          } else {
+            log.appendChild(el("div", { class: "pv-panel-event is-revision", text: e.text }));
+          }
+          return;
+        }
+        const actorRow = el("span", { class: "thread-actor" }, document.createTextNode(actorLabel(e.actor)));
+        if (e.ref) actorRow.appendChild(chipFor(e.ref));
+        if (e.note) actorRow.appendChild(el("span", { class: "pv-ctx is-resolution", text: e.status }));
+        actorRow.appendChild(el("span", { class: "thread-when", text: whenLabel(e.ts) }));
+        const attrs = { class: "pv-panel-msg" + (e.key === "page" ? " pv-chat-msg" : ""), dataset: { actor: e.actor }, title: e.ts };
+        if (e.key !== "page") attrs.dataset.thread = e.key;
+        log.appendChild(el("div", attrs, avatar(e.actor),
+          el("div", { class: "pv-panel-msg-body" }, actorRow, el("p", { class: "thread-text", text: e.text }))));
+        /* From the question until the answer: the mark at work, right
+           after the last message of that thread. */
+        if (lastOf[e.key] === i) {
+          const pending = pendingLabel(e.key);
+          if (pending) {
+            const wattrs = { class: "pv-panel-msg thread-working" + (e.key === "page" ? " pv-chat-working" : ""), dataset: { actor: "agent" } };
+            if (e.key !== "page") wattrs.dataset.thread = e.key;
+            log.appendChild(el("div", wattrs,
+              el("span", { class: "pv-avatar" }, agentMark(pending.state)),
+              el("div", { class: "pv-panel-msg-body" },
+                el("span", { class: "thread-actor", text: "agent" }),
+                el("p", { class: "thread-text", text: pending.text }))));
+          }
+        }
       });
-      log.hidden = S.state.chat.length === 0;
-      const panel = document.querySelector(".pv-chat");
-      if (panel) panel.hidden = !S.ui.chatOpen;
+      log.hidden = entries.length === 0;
+      if (S.ui.panelFollow !== false) log.scrollTop = log.scrollHeight;
+      renderPanelComposer();
+      const dock = document.querySelector(".pv-dock");
+      if (dock) dock.classList.toggle("is-hidden", !S.ui.chatOpen);
+      const handle = document.querySelector(".pv-panel-handle");
+      if (handle) handle.hidden = !!S.ui.chatOpen;
+      document.querySelectorAll(".pv-panel-count").forEach(function (n) { n.textContent = String(conversationCount()); });
     }
 
     /* An open panel always has somewhere to write. A body swap rebuilds
@@ -2401,96 +2736,336 @@
        has typed into has no draft, so it is opened again here — after the
        drafts, so a stored one is not joined by an empty twin. */
     function ensureChatComposer() {
-      const panel = document.querySelector(".pv-chat");
-      if (S.ui.chatOpen && panel && !panel.querySelector(".composer")) {
-        /* Under a stable id, so a swap re-creates it as the same composer
-           and focus finds its way back (spec 4.3), draft or no draft. */
-        if (!S.ui.chatComposerId) S.ui.chatComposerId = newId("composer");
-        openComposer({ kind: "chat", silent: true, lazy: true, id: S.ui.chatComposerId });
-      }
+      /* The panel's composer is built with the panel; nothing to open. */
     }
 
     /* One line, until the reviewer says they have read it: the difference
        between a comment and a question is the one thing the page cannot
        show by layout alone. Stored only on dismissal, so a page nobody
        dismissed writes nothing. */
+    /* The ask control carries its label until the reviewer has asked once
+       on this browser; after that the mark alone is the control, with the
+       label in its tooltip and in the bar. Stored on the first ask. */
+    const ASKED_KEY = "artefacto.asked";
+    function askedOnce() {
+      try { return window.localStorage.getItem(ASKED_KEY) === "1"; } catch (e) { return false; }
+    }
+    function markAsked() {
+      try { window.localStorage.setItem(ASKED_KEY, "1"); } catch (e) { /* an opaque origin; the label stays */ }
+      document.querySelectorAll("[data-plan-ref] .ask-btn.is-labelled").forEach(function (b) { b.classList.remove("is-labelled"); });
+    }
+
+    /* The ask control on an element that already has a question is tinted,
+       and a click there goes to that thread's input rather than opening a
+       second question. */
+    function askedThreadOn(ref) {
+      return S.state.threads.find(function (t) {
+        return t.asked && t.target === ref && (t.status === "open" || t.status === "unanchored");
+      });
+    }
+    function renderAskMarks() {
+      if (!S.root) return;
+      S.root.querySelectorAll(".ask-btn[data-ask-for]").forEach(function (b) {
+        const ref = b.getAttribute("data-ask-for");
+        const threads = S.state.threads.filter(function (t) { return t.asked && t.target === ref; });
+        const count = threads.reduce(function (n, t) { return n + t.messages.length; }, 0);
+        b.classList.toggle("has-thread", !!askedThreadOn(ref));
+        let badge = b.querySelector(".ask-count");
+        if (count && !badge) { badge = el("span", { class: "ask-count" }); b.appendChild(badge); }
+        if (badge) { if (count) badge.textContent = String(count); else badge.remove(); }
+        /* The element with a discussion: a spine, and a one-line preview of
+           the last message after the controls (not on criterion rows, which
+           have no room). */
+        const element = b.closest("[data-plan-ref]");
+        if (element) element.classList.toggle("is-discussed", count > 0);
+        const row = b.closest(".el-actions");
+        if (!row || row.closest(".acceptance")) return;
+        let preview = row.parentNode.querySelector(":scope > .ask-preview");
+        const last = threads.length ? threads[threads.length - 1] : null;
+        const msg = last && last.messages.length ? last.messages[last.messages.length - 1] : null;
+        if (!msg) { if (preview) preview.remove(); return; }
+        if (!preview) {
+          preview = el("button", { type: "button", class: "ask-preview", title: "Open the conversation" });
+          preview.addEventListener("click", function () {
+            if (!S.ui.chatOpen) setPanelOpen(true);
+            const target = document.querySelector('.pv-panel-msg[data-thread="' + last.id + '"]');
+            if (target) target.scrollIntoView({ block: "nearest" });
+          });
+          row.insertAdjacentElement("afterend", preview);
+        }
+        preview.replaceChildren(avatar(msg.actor), el("span", { class: "ask-preview-text", text: msg.text }));
+      });
+    }
+
     const HINT_KEY = "artefacto.hint.ask";
     function hintDismissed() {
       try { return window.localStorage.getItem(HINT_KEY) === "1"; } catch (e) { return false; }
     }
 
-    function mountBar(root) {
-      if (root.querySelector(".feedback-bar")) return;
-      const bar = el("div", { class: "feedback-bar is-served" });
+    /* The conversation panel: one place for everything said to and by the
+       agent, docked beside the sheet. Closed by default; a floating handle
+       (the mark with the message count) and a top-bar link open it, the X
+       in its head hides it, and the choice is kept per browser. Its foot
+       holds the state line and the two verdicts, so the served page has no
+       bottom bar. */
+    function panelStored() {
+      try { return window.localStorage.getItem(PANEL_KEY) === "open"; } catch (e) { return false; }
+    }
+
+    function setPanelOpen(open) {
+      S.ui.chatOpen = open;
+      /* The reviewer has seen the panel; a draft in it no longer opens it
+         on their behalf. */
+      S.ui.chatDraftShown = true;
+      try { window.localStorage.setItem(PANEL_KEY, open ? "open" : "closed"); } catch (e) { /* best effort */ }
+      renderChat();
+      if (open) {
+        const ta = document.querySelector(".pv-panel-composer textarea");
+        if (ta) ta.focus({ preventScroll: true });
+      }
+    }
+
+    /* Everything said to and by the agent, in time order: the page-level
+       chat, every question thread's messages, and the panel's own events
+       (a revision, a nudge). Comment threads stay on their elements. */
+    function conversationEntries() {
+      const out = [];
+      S.state.chat.forEach(function (m, i) {
+        out.push({ ts: m.ts, actor: m.actor, text: m.text, key: "page", index: i });
+      });
+      S.state.threads.forEach(function (t) {
+        if (!t.asked) return;
+        t.messages.forEach(function (m, i) {
+          out.push({ ts: m.ts, actor: m.actor, text: m.text, key: t.id, ref: t.target, index: i,
+            note: !!m.note, status: t.status, unanchored: t.status === "unanchored" });
+        });
+      });
+      S.ui.panelEvents.forEach(function (ev) { out.push({ event: true, kind: ev.kind, text: ev.text, ts: ev.ts }); });
+      /* Ordered by time at one-second grain: the server stamps seconds,
+         the page's own events carry milliseconds, and an answer must not
+         sort ahead of its question because its stamp is coarser. Ties keep
+         insertion order, which is each thread's own order. */
+      out.sort(function (a, b) {
+        return Math.floor((Date.parse(a.ts) || 0) / 1000) - Math.floor((Date.parse(b.ts) || 0) / 1000);
+      });
+      return out;
+    }
+
+    /* What the handle and the top-bar link count: every message in the
+       conversation. */
+    function conversationCount() {
+      return conversationEntries().filter(function (e) { return !e.event; }).length;
+    }
+
+    function panelEvent(kind, text) {
+      S.ui.panelEvents.push({ kind: kind, text: text, ts: nowIso() });
+      renderChat();
+    }
+
+    /* The context chip: which element a message is about. A link into the
+       page: it scrolls the element into view and flashes it. */
+    function chipFor(ref) {
+      const target = ref ? findRef(S.root, ref) : null;
+      const title = target ? elementQuote(target) : ref || "";
+      const chip = el("button", { type: "button", class: "pv-ctx", title: ref || "" },
+        el("span", { class: "pv-ctx-kind", text: ref ? refKind(ref) : "plan" }),
+        el("span", { class: "pv-ctx-title", text: title.slice(0, 48) }));
+      chip.addEventListener("click", function () { jumpTo(ref); });
+      return chip;
+    }
+
+    function jumpTo(ref) {
+      const target = findRef(S.root, ref);
+      if (!target) return;
+      const details = target.closest("details.phase");
+      if (details && details !== target && phaseIsShut(details)) setPhaseOpen(details, true, false);
+      if (target.tagName === "DETAILS" && phaseIsShut(target)) setPhaseOpen(target, true, false);
+      target.scrollIntoView({ block: "center" });
+      target.classList.remove("is-jumped");
+      void target.offsetWidth;
+      target.classList.add("is-jumped");
+    }
+
+    /* Aim the panel's composer at an element (or at a thread on it), open
+       the panel, and put the cursor in the input. */
+    function aimPanel(ref, quote, thread) {
+      const existing = ref && !thread ? askedThreadOn(ref) : null;
+      S.ui.panel.ref = ref || null;
+      S.ui.panel.quote = quote || null;
+      S.ui.panel.thread = thread || (existing ? existing.id : null);
+      savePanelDraft();
+      if (!S.ui.chatOpen) setPanelOpen(true);
+      renderPanelComposer();
+      const ta = document.querySelector(".pv-panel-composer textarea");
+      if (ta) ta.focus({ preventScroll: true });
+    }
+
+    function panelComposer() {
+      const composer = el("div", { class: "pv-panel-composer" });
+      const targetLine = el("div", { class: "pv-panel-target", hidden: true },
+        el("span", { class: "pv-panel-target-label", text: "asking about" }),
+        el("span", { class: "pv-panel-target-chip" }),
+        el("button", { type: "button", class: "pv-btn is-quiet pv-panel-target-clear", text: "the whole plan instead",
+          onclick: function () {
+            S.ui.panel.ref = null; S.ui.panel.thread = null; S.ui.panel.quote = null;
+            savePanelDraft();
+            renderPanelComposer();
+          } }));
+      const box = el("div", { class: "thread-composer" });
+      const ta = el("textarea", { rows: "1", placeholder: "Ask the agent\u2026", "aria-label": "Ask the agent" });
+      const hint = el("span", { class: "thread-composer-hint" });
+      const sendBtn = el("button", { type: "button", class: "pv-btn is-agent thread-composer-send composer-send", text: "Send" });
+      box.appendChild(agentMark(""));
+      box.appendChild(ta);
+      box.appendChild(hint);
+      box.appendChild(sendBtn);
+      ta.value = S.ui.panel.text || "";
+      const grow = function () { ta.rows = Math.min(6, ta.value.split("\n").length); };
+      grow();
+      ta.addEventListener("input", function () { S.ui.panel.text = ta.value; savePanelDraft(); grow(); });
+      ta.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); sendPanel(); }
+      });
+      sendBtn.addEventListener("click", sendPanel);
+      composer.appendChild(targetLine);
+      composer.appendChild(box);
+      return composer;
+    }
+
+    function renderPanelComposer() {
+      const composer = document.querySelector(".pv-panel-composer");
+      if (!composer) return;
+      const p = S.ui.panel;
+      /* A target thread that is gone (deleted, or a snapshot without it)
+         is dropped; the text stays, aimed at the plan as a whole. */
+      if (p.thread && !S.syncing && S.state.lastSeq > 0 && !S.state.threads.some(function (t) { return t.id === p.thread; })) {
+        p.thread = null;
+        p.ref = null;
+        p.quote = null;
+        savePanelDraft();
+      }
+      const line = composer.querySelector(".pv-panel-target");
+      const aimed = !!(p.ref || p.thread);
+      line.hidden = !aimed;
+      if (aimed) {
+        const thread = p.thread ? S.state.threads.find(function (t) { return t.id === p.thread; }) : null;
+        const ref = p.ref || (thread ? thread.target : null);
+        const chipHost = line.querySelector(".pv-panel-target-chip");
+        chipHost.replaceChildren(chipFor(ref));
+      }
+      composer.querySelector(".thread-composer-hint").textContent = S.state.presence ? "Enter to send" : "waits for an agent";
+      setMarkState(composer.querySelector(".thread-composer .ag-mark"), S.state.presence ? "" : "off");
+      composer.querySelector(".thread-composer-send").disabled = !!S.ui.panelSending;
+    }
+
+    /* One send at a time, keyed by the panel, not by its node: a body swap
+       while the send is in flight rebuilds the panel, and the reply must
+       clear and re-enable the live input. */
+    function sendPanel() {
+      const ta = document.querySelector(".pv-panel-composer textarea");
+      const text = ta ? ta.value.trim() : "";
+      if (!text || S.ui.panelSending) return;
+      const p = S.ui.panel;
+      const cmd = { cmd: "chat.send", text: text, opened_revision: S.state.revision };
+      const existing = p.ref && !p.thread ? askedThreadOn(p.ref) : null;
+      if (p.thread) {
+        cmd.thread = p.thread;
+      } else if (existing) {
+        cmd.thread = existing.id;
+      } else if (p.ref) {
+        const target = findRef(S.root, p.ref);
+        cmd.ref = p.ref;
+        cmd.quote = p.quote || (target ? elementQuote(target) : "");
+      }
+      S.ui.panelSending = true;
+      renderPanelComposer();
+      send(cmd)
+        .then(function () {
+          S.ui.panelSending = false;
+          S.ui.panel = { text: "", ref: null, thread: null, quote: null };
+          savePanelDraft();
+          markAsked();
+          renderPanelComposer();
+          const box = document.querySelector(".pv-panel-composer textarea");
+          if (box) { box.value = ""; box.rows = 1; box.focus({ preventScroll: true }); }
+          const btn = document.querySelector(".pv-panel-composer .thread-composer-send");
+          if (btn) cleared(btn);
+        })
+        .catch(function (e) {
+          S.ui.panelSending = false;
+          renderPanelComposer();
+          const btn = document.querySelector(".pv-panel-composer .thread-composer-send");
+          if (btn) failed(btn, e);
+        });
+    }
+
+    function mountPanel(root) {
+      if (root.querySelector(".pv-dock")) return;
+      const sheet = root.querySelector(".pv-sheet");
+      if (!sheet) return;
+      const shell = el("div", { class: "pv-shell" });
+      sheet.parentNode.insertBefore(shell, sheet);
+      shell.appendChild(sheet);
+
+      const panel = el("div", { class: "pv-panel pv-chat" });
+      panel.appendChild(el("div", { class: "pv-panel-head" },
+        el("span", { class: "pv-panel-title", text: "Conversation" }),
+        el("span", { class: "pv-chat-hint" }),
+        el("button", { type: "button", class: "pv-btn is-quiet pv-panel-hide", "aria-label": "Hide conversation",
+          title: "Hide conversation", text: "\u00d7", onclick: function () { setPanelOpen(false); } })));
       if (!hintDismissed()) {
         const hint = el("div", { class: "feedback-bar-hint" },
-          el("span", { class: "feedback-bar-hint-text", text: "Comments wait for your review; \u201cAsk the agent\u201d reaches the agent now." }),
-          el("button", { type: "button", class: "pv-textbtn feedback-bar-hint-dismiss", text: "Got it", onclick: function () {
+          agentMark(""),
+          el("span", { class: "feedback-bar-hint-text", text: "Comments wait for your review; a question here reaches the agent now." }),
+          el("button", { type: "button", class: "pv-btn is-quiet feedback-bar-hint-dismiss", text: "Got it", onclick: function () {
             try { window.localStorage.setItem(HINT_KEY, "1"); } catch (e) { /* an opaque origin; the hint returns next time */ }
             hint.remove();
           } }));
-        bar.appendChild(hint);
+        panel.appendChild(hint);
       }
-      bar.appendChild(el("span", { class: "feedback-bar-banner" }));
-      bar.appendChild(el("span", { class: "feedback-bar-blocking" }));
-      bar.appendChild(el("span", { class: "feedback-bar-count" }));
-      bar.appendChild(el("span", { class: "feedback-bar-reviewed" }));
-      bar.appendChild(el("span", { class: "feedback-bar-sent" }));
-      bar.appendChild(el("button", { type: "button", class: "pv-textbtn feedback-bar-chat", text: "Ask the agent", onclick: function () {
-        S.ui.chatOpen = !S.ui.chatOpen;
-        /* The reviewer has seen the panel; a draft in it no longer opens
-           it on their behalf. */
-        S.ui.chatDraftShown = true;
-        if (S.ui.chatOpen) {
-          renderChat();
-          openComposer({ kind: "chat" });
-        } else {
-          /* Closing with nothing written is not a draft worth keeping. */
-          document.querySelectorAll(".pv-chat .composer").forEach(function (c) {
-            const ta = c.querySelector("textarea");
-            if (ta && !ta.value.trim()) { dropDraft(c.getAttribute("data-composer")); c.remove(); }
-          });
-          renderChat();
-        }
-      } }));
-      const approve = el("input", { type: "checkbox" });
-      approve.addEventListener("change", function () { S.approve = approve.checked; renderBar(); });
-      bar.appendChild(el("label", { class: "feedback-bar-approve" }, approve, el("span", { text: "Approve" })));
-      const sendBtn = el("button", { type: "button", class: "feedback-bar-send", text: "Send review", onclick: function () {
-        if (S.submitting) return;
-        S.submitting = true;
-        renderBar();
-        send({ cmd: "review.submit", verdict: S.approve ? "approve" : "comment", base_revision: S.state.revision })
-          .then(function () {
-            S.submitting = false;
-            S.ui.sentAt = new Date();
-            sentNotice();
-            renderBar();
-            const btn = document.querySelector(".feedback-bar-send");
-            cleared(btn);
-            /* One short pulse on the button the reviewer is looking at. */
-            if (btn) {
-              btn.classList.add("is-sent");
-              btn.textContent = "Sent ✓";
-              setTimeout(function () { btn.classList.remove("is-sent"); renderBar(); }, 2000);
-            }
-          })
-          .catch(function (e) {
-            S.submitting = false;
-            renderBar();
-            failed(document.querySelector(".feedback-bar-send") || sendBtn, e);
-          });
-      } });
-      bar.appendChild(sendBtn);
-      root.appendChild(bar);
+      const log = el("div", { class: "pv-panel-log pv-chat-log" });
+      /* Follow the newest message unless the reviewer has scrolled up. */
+      log.addEventListener("scroll", function () {
+        S.ui.panelFollow = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+      });
+      panel.appendChild(log);
+      panel.appendChild(panelComposer());
+      const foot = el("div", { class: "pv-panel-foot" });
+      foot.appendChild(el("span", { class: "feedback-bar-state" },
+        el("span", { class: "pv-dot" }), el("span", { class: "feedback-bar-state-text" })));
+      foot.appendChild(el("span", { class: "feedback-bar-counts" },
+        el("span", { class: "feedback-bar-count" }),
+        el("span", { class: "feedback-bar-reviewed" }),
+        el("span", { class: "feedback-bar-blocking is-alarm" })));
+      foot.appendChild(el("span", { class: "feedback-bar-sent" }));
+      /* Two verdicts on the plan, one group. Request changes is enabled with
+         nothing written: it is a verdict on the plan, not on the comments. */
+      const verdict = el("div", { class: "feedback-bar-verdict", role: "group", "aria-label": "Your verdict" });
+      verdict.appendChild(el("button", { type: "button", class: "pv-btn is-alarm feedback-bar-send", text: "Request changes",
+        onclick: function () { submitReview("request_changes"); } }));
+      verdict.appendChild(el("button", { type: "button", class: "pv-btn feedback-bar-approve", text: "Approve",
+        onclick: function () { submitReview("approve"); } }));
+      foot.appendChild(verdict);
+      panel.appendChild(foot);
 
-      const chat = el("div", { class: "pv-chat", hidden: !S.ui.chatOpen });
-      chat.appendChild(el("div", { class: "pv-chat-head" },
-        el("span", { class: "pv-chat-title", text: "Ask the agent about the plan" }),
-        el("span", { class: "pv-chat-hint" })));
-      chat.appendChild(el("div", { class: "pv-chat-log" }));
-      chat.appendChild(el("div", { class: "pv-chat-composers" }));
-      root.appendChild(chat);
+      const dock = el("aside", { class: "pv-dock", "aria-label": "Conversation with the agent" });
+      dock.appendChild(panel);
+      shell.appendChild(dock);
+
+      /* The handle: always in reach, the mark with the count. It keeps the
+         old bar button's class so a page that opened the chat that way
+         still does. */
+      root.appendChild(el("button", { type: "button", class: "pv-panel-handle feedback-bar-chat",
+        "aria-label": "Open the conversation with the agent", title: "Conversation",
+        onclick: function () { setPanelOpen(!S.ui.chatOpen); } },
+        agentMark(""), el("span", { class: "pv-panel-count" })));
+      const right = root.querySelector(".pv-topbar-right");
+      if (right && !right.querySelector(".pv-panel-link")) {
+        right.insertBefore(el("button", { type: "button", class: "pv-panel-link",
+          onclick: function () { setPanelOpen(true); } },
+          "Conversation ", el("span", { class: "pv-panel-count" })), right.firstChild);
+      }
+      wireLeaving();
     }
 
     /* ---- the recovery panel -------------------------------------------
@@ -2501,7 +3076,7 @@
        thread survives the next render. */
     function renderRecovery() {
       let panel = document.querySelector(".pv-recovery");
-      const orphans = core.unanchored(S.state);
+      const orphans = core.unanchored(S.state).filter(function (t) { return !t.asked; });
       const drafts = orphanedDrafts();
       if (!orphans.length && !drafts.length) { if (panel) panel.remove(); return; }
       if (!panel) {
@@ -2526,9 +3101,9 @@
       list.replaceChildren();
       drafts.forEach(function (d) {
         const row = el("div", { class: "pv-orphan-draft", dataset: { composer: d.id } });
-        row.appendChild(el("span", { class: "pv-orphan-draft-what", text: draftLabel(d) + " — its element is gone" }));
+        row.appendChild(el("span", { class: "pv-orphan-draft-what", text: draftLabel(d) + (d.kind === "followup" ? " \u2014 its thread is gone" : " \u2014 its element is gone") }));
         row.appendChild(el("p", { class: "thread-text", text: d.text }));
-        row.appendChild(el("button", { type: "button", class: "pv-textbtn", text: "Discard", onclick: function () {
+        row.appendChild(el("button", { type: "button", class: "pv-btn is-quiet", text: "Discard", onclick: function () {
           dropDraft(d.id);
           renderRecovery();
         } }));
@@ -2542,6 +3117,7 @@
         case "answer": return "Answer to " + d.ref;
         case "reply": return "Reply on " + d.thread;
         case "ask": return "Question on " + (d.thread || d.ref);
+        case "followup": return "Follow-up on a question";
         case "edit": return "Edit of " + d.thread;
         default: return "Message to the agent";
       }
@@ -2649,20 +3225,24 @@
       ta.value = d.text;
       ta.addEventListener("input", function () { d.text = ta.value; saveDraft(d); });
       box.appendChild(ta);
-      if (d.kind === "ask") box.appendChild(el("span", { class: "composer-presence", text: presenceLine("question") }));
+      /* One foot row: what the composer says about itself on the left (the
+         blocking toggle, or who hears a question), the actions on the right. */
+      const foot = el("div", { class: "comment-box-foot" });
+      if (d.kind === "ask") foot.appendChild(el("span", { class: "composer-presence", text: presenceLine("question") }));
       let blockingBox = null;
       if (d.kind === "comment") {
         blockingBox = el("input", { type: "checkbox" });
         blockingBox.checked = d.blocking;
         blockingBox.addEventListener("change", function () { d.blocking = blockingBox.checked; saveDraft(d); });
-        box.appendChild(el("label", { class: "comment-box-blocking" }, blockingBox, warningIcon(), "Blocks approval"));
+        foot.appendChild(el("label", { class: "comment-box-blocking" }, blockingBox, warningIcon(), "Blocks approval"));
       }
       const actions = el("div", { class: "comment-box-actions" });
-      const sendBtn = el("button", { type: "button", class: "composer-send", text: d.kind === "comment" ? "Add" : "Send" });
-      const cancelBtn = el("button", { type: "button", class: "composer-cancel", text: "Cancel" });
+      const sendBtn = el("button", { type: "button", class: "pv-btn " + (d.kind === "ask" ? "is-agent" : "is-primary") + " composer-send", text: d.kind === "comment" ? "Add" : "Send" });
+      const cancelBtn = el("button", { type: "button", class: "pv-btn is-quiet composer-cancel", text: "Cancel" });
       actions.appendChild(sendBtn);
       actions.appendChild(cancelBtn);
-      box.appendChild(actions);
+      foot.appendChild(actions);
+      box.appendChild(foot);
       /* Closed by id, not by this node: a body swap while the send is in
          flight re-creates the composer from its draft, and the reply must
          close that one. */
@@ -2676,17 +3256,14 @@
          write the next one. */
       const afterSend = function () {
         close();
+        if (d.kind === "ask" || d.kind === "chat") markAsked();
         if (d.kind === "chat") ensureChatComposer();
       };
       cancelBtn.addEventListener("click", function () {
         close();
         /* An open panel always gets a composer back, so cancelling the
            chat's is closing the chat. */
-        if (d.kind === "chat") {
-          S.ui.chatOpen = false;
-          S.ui.chatDraftShown = true;
-          renderChat();
-        }
+        if (d.kind === "chat") setPanelOpen(false);
       });
       sendBtn.addEventListener("click", function () {
         const text = ta.value.trim();
@@ -2746,10 +3323,6 @@
         /* A message half-written is not hidden behind a closed panel:
            the first time the page finds it, the panel opens. Once. A
            reviewer who then closes the panel has chosen. */
-        if (d.kind === "chat" && d.text && !S.ui.chatDraftShown) {
-          S.ui.chatDraftShown = true;
-          if (!S.ui.chatOpen) { S.ui.chatOpen = true; renderChat(); }
-        }
         openComposer({ id: d.id, clientId: d.clientId, kind: d.kind, ref: d.ref, thread: d.thread,
           revision: d.revision, text: d.text, blocking: d.blocking, quote: d.quote, silent: true });
       }
@@ -2783,14 +3356,13 @@
         /* Asking is offered wherever commenting is, and looks different:
            a comment waits for the sent review, a question reaches the
            agent now. The two share one row. */
-        const ask = el("button", { type: "button", class: "ask-btn", title: "Ask the agent",
-          "aria-label": "Ask the agent about this" });
-        ask.appendChild(askIcon());
+        const ask = el("button", { type: "button", class: "ask-btn" + (askedOnce() ? "" : " is-labelled"),
+          "aria-label": "Ask the agent about this", dataset: { label: "Ask the agent", askFor: ref } });
+        ask.appendChild(agentMark(""));
         ask.appendChild(el("span", { class: "ask-btn-label", text: "Ask the agent" }));
         ask.addEventListener("click", function (e) {
           e.stopPropagation();
-          if (target.tagName === "DETAILS" && phaseIsShut(target)) setPhaseOpen(target, true, true);
-          openComposer({ kind: "ask", ref: ref, quote: quote });
+          aimPanel(ref, quote, null);
         });
         (slots.btn || target).appendChild(el("span", { class: "el-actions" }, btn, ask));
         if (!first) return;
@@ -2801,10 +3373,10 @@
           const answer = el("div", { class: "pv-answer", dataset: { answerFor: q }, hidden: true },
             el("div", { class: "pv-answer-head" },
               el("span", { class: "pv-answer-label", text: "Your answer" }),
-              el("button", { type: "button", class: "pv-textbtn pv-answer-edit", text: "Edit", onclick: function () {
+              el("button", { type: "button", class: "pv-btn is-quiet pv-answer-edit", text: "Edit", onclick: function () {
                 openComposer({ kind: "answer", ref: ref, text: S.state.answers[q] || "" });
               } }),
-              el("button", { type: "button", class: "pv-textbtn pv-answer-remove", text: "Remove", onclick: function (ev) {
+              el("button", { type: "button", class: "pv-btn is-quiet pv-answer-remove", text: "Remove", onclick: function (ev) {
                 const btn = ev.currentTarget;
                 send({ cmd: "question.answer", question: q, text: "", opened_revision: S.state.revision })
                   .catch(function (e) { failed(btn, e); });
@@ -2872,8 +3444,10 @@
     }
 
     function renderAll() {
+      reconcilePending();
       renderPresence();
       renderThreads();
+      renderAskMarks();
       renderAnswers();
       renderReviewed();
       renderBar();
@@ -2883,6 +3457,7 @@
       restoreDrafts();
       ensureChatComposer();
       renderRecovery();
+      if (S.ui.pendingFocus && applyFocus(S.ui.pendingFocus)) S.ui.pendingFocus = null;
     }
 
     /* The render's orientation banner describes the static flow, which
@@ -2902,7 +3477,7 @@
         steps.replaceChildren(
           el("b", { text: "01" }), document.createTextNode(" skim  "),
           el("b", { text: "02" }), document.createTextNode(" comment  "),
-          el("b", { text: "03" }), document.createTextNode(" send review"));
+          el("b", { text: "03" }), document.createTextNode(" send, or come back later"));
       }
     }
 
@@ -2912,7 +3487,7 @@
       mountBanner(root);
       mountPresence(root);
       mountElements(root);
-      mountBar(root);
+      mountPanel(root);
       noticeHost();
       renderAll();
       if (!S.socket && !S.lost) connect();
@@ -3017,17 +3592,17 @@
       });
     });
     const ctl = root.querySelector("#phases-actions") || document.createElement("div");
-    if (ctl.querySelector(".pv-textbtn")) return;
+    if (ctl.querySelector(".pv-btn")) return;
     const expandBtn = document.createElement("button");
     expandBtn.type = "button";
-    expandBtn.className = "pv-textbtn";
+    expandBtn.className = "pv-btn is-quiet";
     expandBtn.textContent = "expand all";
     expandBtn.addEventListener("click", function () {
       collapsibles().forEach(function (d) { setPhaseOpen(d, true, true); });
     });
     const collapseBtn = document.createElement("button");
     collapseBtn.type = "button";
-    collapseBtn.className = "pv-textbtn";
+    collapseBtn.className = "pv-btn is-quiet";
     collapseBtn.textContent = "collapse all";
     collapseBtn.addEventListener("click", function () {
       collapsibles().forEach(function (d) { setPhaseOpen(d, false, true); });

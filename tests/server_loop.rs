@@ -894,3 +894,87 @@ fn a_question_names_a_thread_or_an_element_that_exists_not_both() {
     );
     assert_eq!(l.server.count_events("chat.sent"), 0, "nothing was logged");
 }
+
+#[test]
+fn a_thread_reply_names_its_artifact_when_the_id_exists_on_two() {
+    let l = start();
+    let cookie = l.cookie();
+    // A second artifact on the same server, with its own c-1.
+    let second = l.repo.path().join("plan2.json");
+    std::fs::write(
+        &second,
+        r#"{"format":"artefacto.plan/1","meta":{"id":"demo2","title":"Second"},"phases":[{"id":"p-x","title":"X","tasks":[{"id":"t-x","title":"Task X"}]}]}"#,
+    )
+    .unwrap();
+    l.repo
+        .run(&[
+            "plan",
+            "push",
+            second.to_str().unwrap(),
+            "--json",
+            "--no-open",
+            "--session",
+            &l.session,
+        ])
+        .success();
+    let cookie2 = l.server.session_cookie("plan:demo2");
+    for (art, ck) in [("plan:demo", &cookie), ("plan:demo2", &cookie2)] {
+        let ref_ = if art == "plan:demo" {
+            "task:t-a"
+        } else {
+            "task:t-x"
+        };
+        let opened = l.server.post_cmd(
+            ck,
+            art,
+            serde_json::json!({
+                "cmd": "thread.open", "client_id": format!("cid-{art}"), "ref": ref_,
+                "text": "why?", "blocking": false, "opened_revision": 1,
+            }),
+        );
+        assert_eq!(opened["assigned"], "c-1", "{art} numbers its own threads");
+    }
+
+    // Ambiguous without the artifact: refused, and the CLI lets both flags
+    // be given together so it can be resolved.
+    let bare = l.repo.run(&[
+        "reply",
+        "--session",
+        &l.session,
+        "--thread",
+        "c-1",
+        "because",
+    ]);
+    assert_ne!(bare.code, 0);
+    assert!(
+        bare.stderr.contains("name one with --artifact"),
+        "{}",
+        bare.stderr
+    );
+    l.repo
+        .run(&[
+            "reply",
+            "--session",
+            &l.session,
+            "--artifact",
+            "plan:demo2",
+            "--thread",
+            "c-1",
+            "because",
+        ])
+        .success();
+    let status = l.repo.json(&["status", "--json"]);
+    let arts = status["artifacts"].as_array().unwrap();
+    let demo = arts.iter().find(|a| a["id"] == "plan:demo").unwrap();
+    let demo2 = arts.iter().find(|a| a["id"] == "plan:demo2").unwrap();
+    assert_eq!(
+        demo2["threads"][0]["messages"].as_array().unwrap().len(),
+        2,
+        "the reply landed on demo2's c-1"
+    );
+    assert_eq!(
+        demo["threads"][0]["messages"].as_array().unwrap().len(),
+        1,
+        "and not on demo's"
+    );
+}

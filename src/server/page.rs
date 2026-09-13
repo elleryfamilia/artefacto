@@ -395,6 +395,7 @@ pub fn state_json(shared: &Arc<Shared>, artifact: &str) -> Result<Option<serde_j
         "reviewed": art.reviewed,
         "chat": art.chat,
         "submitted": art.submitted,
+        "verdict": art.verdict,
         "presence": presence,
         "last_seq": last_seq,
     })))

@@ -978,6 +978,161 @@ mod tests {
         assert_eq!(v["meta"]["id"], "auth-refactor");
     }
 
+    /// Relative luminance and contrast ratio as WCAG 2 defines them.
+    fn luminance(hex: &str) -> f64 {
+        let v = |i: usize| {
+            let c = u8::from_str_radix(&hex[i..i + 2], 16).unwrap() as f64 / 255.0;
+            if c <= 0.03928 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * v(1) + 0.7152 * v(3) + 0.0722 * v(5)
+    }
+
+    fn contrast(a: &str, b: &str) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// Every token block in the stylesheet (`:root {`, the dark media copy,
+    /// and each explicit theme), as (selector line, hex tokens by name).
+    fn token_blocks() -> Vec<(String, std::collections::HashMap<String, String>)> {
+        let mut blocks = Vec::new();
+        let mut current: Option<(String, std::collections::HashMap<String, String>)> = None;
+        // The print palette re-declares the light tokens; it is a copy by
+        // construction, not a theme of its own.
+        let css = stylesheet();
+        let css = &css[..css.find("@media print").unwrap_or(css.len())];
+        for line in css.lines() {
+            let t = line.trim();
+            if current.is_none() && t.starts_with(":root") && t.ends_with('{') {
+                current = Some((t.to_string(), Default::default()));
+                continue;
+            }
+            if let Some((sel, map)) = current.as_mut() {
+                if t == "}" {
+                    let done = (sel.clone(), std::mem::take(map));
+                    current = None;
+                    if done.1.contains_key("page") {
+                        blocks.push(done);
+                    }
+                    continue;
+                }
+                if let Some((name, value)) = t.strip_prefix("--").and_then(|l| l.split_once(':')) {
+                    let value = value.trim().trim_end_matches(';');
+                    if value.starts_with('#') {
+                        map.insert(name.trim().to_string(), value.to_string());
+                    }
+                }
+            }
+        }
+        blocks
+    }
+
+    /// The colour roles read at 4.5:1 in both themes: every ink on the page,
+    /// every role colour as text on the page, and every role's -ink on its
+    /// own fill. A palette change that breaks this is a readability bug, not
+    /// a taste.
+    #[test]
+    fn tokens_meet_contrast_in_every_theme() {
+        let blocks = token_blocks();
+        assert_eq!(
+            blocks.len(),
+            5,
+            "the light root, the dark media copy, and three explicit themes: {:?}",
+            blocks.iter().map(|b| b.0.clone()).collect::<Vec<_>>()
+        );
+        for (block, t) in &blocks {
+            // On the page, and on the surface a thread card or a note sits on.
+            for ground in ["page", "surface"] {
+                for fg in [
+                    "ink", "ink-2", "ink-3", "muted", "alarm", "warn", "ok", "action", "agent",
+                ] {
+                    let ratio = contrast(&t[fg], &t[ground]);
+                    assert!(
+                        ratio >= 4.5,
+                        "{block}: --{fg} on --{ground} is {ratio:.2}:1"
+                    );
+                }
+            }
+            for role in ["alarm", "action", "agent"] {
+                let ratio = contrast(&t[&format!("{role}-ink")], &t[role]);
+                assert!(
+                    ratio >= 4.5,
+                    "{block}: --{role}-ink on --{role} is {ratio:.2}:1"
+                );
+            }
+            assert!(
+                !t.contains_key("focus"),
+                "{block}: --focus is an alias of a role, not a colour of its own"
+            );
+        }
+    }
+
+    /// The type tokens name the embedded families, in the default root and
+    /// in the vibe theme. The first token rewrite dropped the two families
+    /// and no test noticed: the browser fell back to a serif and a mono of
+    /// its own and the screenshots looked plausible.
+    #[test]
+    fn type_tokens_name_the_embedded_families() {
+        let css = stylesheet();
+        let root = &css[css.find(":root {").unwrap()..];
+        let root = &root[..root.find("\n}\n").unwrap()];
+        assert!(
+            root.contains("--font-serif: Newsreader,"),
+            "the prose voice"
+        );
+        assert!(
+            root.contains("--font-mono: \"JetBrains Mono\","),
+            "the metadata voice"
+        );
+        assert!(
+            root.contains("--font-display: var(--font-serif);"),
+            "the display voice"
+        );
+        let vibe = &css[css.find(":root[data-theme=\"vibe\"] {").unwrap()..];
+        let vibe = &vibe[..vibe.find("\n}\n").unwrap()];
+        assert!(vibe.contains("--font-serif: \"Bricolage Grotesque\","));
+        assert!(vibe.contains("--font-mono: \"Space Mono\","));
+        assert!(vibe.contains("--font-display: \"Bungee\","));
+        for family in [
+            "Newsreader",
+            "JetBrains Mono",
+            "Bricolage Grotesque",
+            "Space Mono",
+            "Bungee",
+        ] {
+            assert!(
+                css.contains(&format!("font-family: \"{family}\"")),
+                "{family} is embedded"
+            );
+        }
+    }
+
+    /// One button family. The old text-button class is gone from the
+    /// stylesheet and from the page's script, which the render embeds.
+    #[test]
+    fn no_text_button_class_remains() {
+        let plan = plan_from("kitchen-sink.json");
+        assert!(
+            !render(&plan).contains("pv-textbtn"),
+            "a pv-textbtn survives"
+        );
+    }
+
+    /// Every colour on the page belongs to a family (neutral, status, action,
+    /// agent); the old one-accent-for-everything token is gone for good.
+    #[test]
+    fn no_rule_uses_the_old_accent_token() {
+        assert!(
+            !stylesheet().contains("--accent"),
+            "a rule still names --accent; point it at a role instead"
+        );
+    }
+
     #[test]
     fn document_structure() {
         let plan = plan_from("kitchen-sink.json");
@@ -1015,13 +1170,24 @@ mod tests {
             );
         }
         assert!(!CSS.contains("url(http"), "no external url() in plan.css");
-        // And the fonts did actually land: three faces across two families
-        // (Newsreader upright + italic, JetBrains Mono upright). Regenerate
-        // them with tools/build-plan-fonts.py, never by hand.
-        assert_eq!(CSS.matches("@font-face").count(), 3);
-        assert_eq!(CSS.matches("url(\"data:font/woff2;base64,").count(), 3);
-        assert!(CSS.contains("font-family: \"Newsreader\""));
-        assert!(CSS.contains("font-family: \"JetBrains Mono\""));
+        // And the fonts did actually land: seven faces across five families
+        // (Newsreader upright + italic, JetBrains Mono upright, and the vibe
+        // theme's Bricolage Grotesque, Space Mono regular + bold, Bungee).
+        // Regenerate them with tools/build-plan-fonts.py, never by hand.
+        assert_eq!(CSS.matches("@font-face").count(), 7);
+        assert_eq!(CSS.matches("url(\"data:font/woff2;base64,").count(), 7);
+        for family in [
+            "Newsreader",
+            "JetBrains Mono",
+            "Bricolage Grotesque",
+            "Space Mono",
+            "Bungee",
+        ] {
+            assert!(
+                CSS.contains(&format!("font-family: \"{family}\"")),
+                "{family} is embedded"
+            );
+        }
     }
 
     #[test]

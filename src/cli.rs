@@ -90,11 +90,13 @@ pub struct ReplyArgs {
     /// The session token. Spec 4.2: every agent mutation carries it.
     #[arg(long)]
     pub session: String,
-    /// Reply inside this thread.
-    #[arg(long, conflicts_with = "artifact")]
+    /// Reply inside this thread. Thread ids are per artifact, so on a
+    /// server with several artifacts add --artifact to say which `c-1`.
+    #[arg(long)]
     pub thread: Option<String>,
-    /// Reply at page level on this artifact. May be omitted when the server
-    /// has exactly one.
+    /// The artifact: the page to reply on, or the one the thread is on. May
+    /// be omitted when the server has exactly one, or when the thread id
+    /// exists on exactly one.
     #[arg(long)]
     pub artifact: Option<String>,
     /// Post a banner rather than a message. Spec 6.3 requires a `nudge` event;

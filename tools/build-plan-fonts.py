@@ -89,6 +89,42 @@ FACES = [
     # No JetBrains Mono italic: nothing on the page sets monospace emphasis
     # (markdown can't nest `<em>` inside a code span), so it would be ~16 KB
     # of payload no reader ever sees.
+    #
+    # The vibe theme swaps all three voices. Bricolage Grotesque reads the
+    # prose (its optical size pinned like Newsreader's, its width pinned to
+    # normal), Space Mono says what the page says about it, Bungee sets the
+    # display moments: the title, the numerals, the stats. All SIL OFL 1.1.
+    # Re-resolve with:
+    #   curl -A 'Mozilla/5.0 (Macintosh) Chrome/130' 'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,200..800&family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Bungee&display=swap'
+    {
+        "family": "Bricolage Grotesque",
+        "style": "normal",
+        "axes": {"opsz": 16, "wdth": 100, "wght": (400, 700)},
+        "weight": "400 700",
+        "url": "https://fonts.gstatic.com/s/bricolagegrotesque/v9/3y996as8bTXq_nANBjzKo3IeZx8z6up5L-iNGfyOPPs.woff2",
+    },
+    {
+        "family": "Space Mono",
+        "style": "normal",
+        # A static family: two instances, no axes to pin.
+        "axes": {},
+        "weight": "400",
+        "url": "https://fonts.gstatic.com/s/spacemono/v17/i7dPIFZifjKcF5UAWdDRYEF8RXi4EwQ.woff2",
+    },
+    {
+        "family": "Space Mono",
+        "style": "normal",
+        "axes": {},
+        "weight": "700",
+        "url": "https://fonts.gstatic.com/s/spacemono/v17/i7dMIFZifjKcF5UAWdDRaPpZUFWaHi6WZ3Q.woff2",
+    },
+    {
+        "family": "Bungee",
+        "style": "normal",
+        "axes": {},
+        "weight": "400",
+        "url": "https://fonts.gstatic.com/s/bungee/v17/N0bU2SZBIuF2PU_0DXR1C9zfmQ.woff2",
+    },
 ]
 
 
@@ -98,7 +134,8 @@ def build_face(face: dict) -> str:
         raw = resp.read()
 
     font = TTFont(io.BytesIO(raw))
-    instancer.instantiateVariableFont(font, face["axes"], inplace=True, updateFontNames=False)
+    if face["axes"]:
+        instancer.instantiateVariableFont(font, face["axes"], inplace=True, updateFontNames=False)
     out = io.BytesIO()
     font.flavor = "woff2"
     font.save(out)

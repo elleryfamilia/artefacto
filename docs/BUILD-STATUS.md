@@ -1466,6 +1466,215 @@ Mutations on the fixes: Reply left on a question thread, the composer line
 not updated on a presence change, never added, and ignoring presence; all
 four caught. Gate: 514 tests, fmt and clippy clean.
 
+## The design port
+
+After the first real review, the owner ran a design pass in claude.ai/design
+from the brief in `docs/design/2026-09-12-design-pass-brief.md`. Its
+stylesheet (`artefacto.css`, kept beside the brief's inputs in the session
+scratchpad; the tool exposes no export) was the contract. The plan for the
+port (`docs/plans/2026-09-12-design-port.plan.json`) was itself reviewed on
+the artefacto page and approved at revision 2 with three decisions: vibe
+ships with its fonts embedded, *Request changes* stays enabled with nothing
+written, thread ids leave the page. Nine slices, each built, tested,
+screenshotted in light and dark, committed, and mutated before the next.
+
+### What was built
+
+1. **Colour roles** (`1fefa6f`). Four families that never mix: neutral,
+   status, action, agent; `--brand` for the square only. Every former
+   `--accent` use re-pointed by role (the index page's borrowed uses too).
+   Two render tests: no rule names `--accent`, and every ink and role reads
+   at 4.5:1 on the page in every theme, with each role's ink on its fill.
+2. **The mark, avatars, the card** (`ea1bf28`). One SVG for the agent in
+   four states; the presence pill is the mark plus a word (`none` became
+   `off`); avatars on every message; the thread id gone from the page; the
+   card's edge by kind and status; a resolved thread's note rendered as the
+   resolution line with its chip, not as one more turn.
+3. **Ask and answer** (`aa82e5f`). The ask control is the mark, labelled
+   until the first ask on this browser; tinted on an element with a
+   question, where a click goes to that thread's input; the working row
+   from accept to answer, timeboxed; the persistent input that sends on
+   Enter and keeps its draft across a swap; the hint line under a first
+   question saying who hears it.
+4. **One button family** (`89c8d4d`). `pv-btn` and its variants; the old
+   text-button class gone and kept gone by a render test; the composer's
+   foot row; the comment button tints rather than fills; a browser test
+   holds the count of filled controls at zero before a send.
+5. **The bar** (`35d634d`). Two rows; the state line (Saving, Saved · rev
+   N, and the leaving line); two verdicts in one group, the sent one
+   filled, the verdict carried by the snapshot so a reload keeps it; the
+   Approve checkbox and the green Send button gone.
+6. **Notices** (`a522eb3`). One component with the mark and a kicker; a
+   derived `noagent` kind while a question waits with nobody attached.
+7. **The static export** (`7562344`). The static editor's foot, the
+   clipboard button in the family, a print block that hides the agent.
+8. **Vibe** (`d3ebe12`). The third theme, its three families embedded (the
+   font tool now leaves a static family's instances alone), a fourth
+   toggle position that survives a reload, radii and the structural rule
+   weight as tokens.
+9. **Screenshots** (`110bd5e`). The kitchen-sink page with a question
+   thread, a blocking comment, a changed and a declined thread, in light,
+   dark, and vibe; the static export; all under `target/screenshots/`.
+
+### What the screenshots found
+
+The first cut stacked *Comment* above the mark in prose columns, and the
+second filled every ask control with the accent so a page read as a dozen
+warnings; both were fixed before the slice was committed. The dark
+screenshot was first taken mid-crossfade and showed a blend of both
+palettes; the test now waits for the theme animation class to clear.
+
+### What the tests found, and what they did not
+
+The page's snapshot mapping dropped `asked` (caught on the first run); the
+index page grew past tiny_http's chunked threshold (fixed by de-chunking in
+the test support); the `Served` helper's page URL assumed the demo fixture
+(found when the vibe reload check ran on the kitchen-sink plan); a
+`connected()` wait that evaluated `window.artefactoPlan.debug()` before the
+script had run.
+
+**Not found for eight commits: the first token rewrite dropped `--font-serif`
+and `--font-mono`.** Every rule kept referring to them, the browser fell back
+to its own serif and mono, and the screenshots looked plausible, because a
+Times-like serif and a Courier-like mono are what a reader expects to see.
+The render tests asserted that the fonts were embedded, never that the tokens
+named them. It surfaced only when the vibe slice went to add a display token
+next to two that were not there. A render test now pins that every type
+token names an embedded family, in the root and in vibe. Lesson for the
+record: a screenshot proves layout and colour; it does not prove a typeface
+unless someone looks for that typeface.
+
+### Mutations
+
+Thirty-one across the nine slices, all caught in the end. Six survived on
+the first try and each led to a stronger test: the count of ask controls
+included the bar's (counted in rows now); the alignment check compared
+tops of buttons of different heights (centres now); the no-id check read
+`innerText`, which is empty inside the page's content-visibility region
+(leaf `textContent` now); the no-filled-control check ran before any thread
+existed (after the threads now); "both verdicts fill" passed because the
+test never checked the other button after Approve; and a mutation aimed at
+`chat()` hit the first of three identical lines in `fold.rs` (the memory
+note from the ask slice, applied again).
+
+### Review round nineteen: the port, reviewed fresh
+
+A fresh session reviewed the twelve commits in a detached worktree, ran
+the lib, clippy, and the full browser suite in headless Chrome, wrote five
+probing browser tests, and confirmed four real defects with them. Twelve
+findings; fixed in `ea5c0a8` unless noted:
+
+1. **The working state never cleared when the answer arrived in a
+   snapshot** (an offline page, a resync), and **a reload or a second tab
+   showed no working state at all**, because the state lived in the page's
+   memory and was only moved by events. It is now reconciled from the
+   server's state before every render: a question thread whose last turn
+   is the reviewer's is waiting; anything else is not. The event stream
+   only says when a question was asked.
+2. **Resolving a question thread did not end its working state**, and the
+   derived no-agent notice then reported a waiting question for a resolved
+   thread. Same fix: a resolved thread is not open, so nothing waits.
+3. **A reviewer reply on a resolved thread erased the resolution line**,
+   because the line was the last agent message by guess. The server now
+   marks the closing note (`Message.note`) in the fold, the snapshot,
+   `status --json`, and the feedback document's replies, and the page
+   renders that message as the resolution wherever it sits.
+4. **A body swap during an in-flight follow-up kept the sent text and
+   Enter sent it again.** The send is keyed by thread now; the live input
+   is the one cleared and re-enabled when the reply lands.
+5. **Focus and caret in the persistent input were lost on a swap, and its
+   draft on a reload.** The view capture knows the input by its thread, the
+   render that creates the input applies a kept focus when the mount waits
+   on a snapshot, and drafts live in session storage.
+6. **A follow-up half-written when its thread was resolved vanished**, and
+   one whose thread was deleted was listed nowhere. The input stays while
+   it holds text, and an orphaned follow-up sits in the recovery panel.
+7. Three colour-family mixes: the page-level chat's agent label in `--ok`,
+   the static clipboard button filled `--ok`, a literal shadow on the
+   stuck topbar. Fixed. The mark's amber *waiting* state keeps borrowing
+   the status family on purpose and says so in the stylesheet.
+8. The contrast test read three of the five token blocks and only against
+   the page. It now finds every block by scanning and checks the surface
+   too; the print palette is excluded as a copy by construction.
+9. Print under dark or vibe put light ink on white paper. The print block
+   re-declares the light palette for every theme.
+10. Two dead rules for the working row, the ask label hidden on criterion
+    rows (kept: a one-line row has no room for a tooltip), and the poster's
+    kind chip borrowing the alarm ink for a brand fill. Fixed except the
+    criterion rows.
+11. Docs: the reference's verdict row listed `comment` as a page verdict.
+    Fixed; the served page sends `approve` or `request_changes`, the static
+    export `approve` or `comment`.
+
+Three new browser tests hold the fixes (`the_working_state_follows_the_servers_state`,
+`a_resolution_stays_the_resolution_after_a_reply`,
+`a_follow_up_sends_once_and_keeps_its_place`); ten mutations on them, all
+caught. One more thing the tests found on the way: a closed phase cannot
+hold focus, so a test that types into a thread's input opens the phases
+first, as a reviewer would have to. Gate: 522 tests, green.
+
+### Found live, after the port
+
+The reviewer asked a question on the design-port plan while three
+artifacts sat on the server, each with its own `c-1`. The skill's thread
+reply, `reply --thread c-1`, was refused with "c-1 exists on three
+artifacts; name one with --artifact", and the CLI then refused
+`--artifact` next to `--thread`, which it had declared as conflicting.
+The server already resolved the pair; only the flag rule stood in the
+way. Fixed: the two go together, a server test holds it with two
+artifacts that both own a `c-1`, and the skill says to add `--artifact`
+to a thread reply when the id is on more than one artifact.
+
+## The conversation panel
+
+The second design round (the *Auth Refactor Panel* page and section 08 of
+the sheet, its stylesheet saved beside the first as `artefacto-v2.css`)
+moved the conversation with the agent out of the elements and into one
+panel. The owner answered the one question the phase asked: closed by
+default, with something always in reach to pull it up. Four tasks, three
+slices, on top of the port:
+
+1. **The shell** (`731dfbb`). `mountPanel` wraps the sheet in `.pv-shell`
+   and docks `aside.pv-dock > .pv-panel` beside it: sticky from 1400px
+   (the sheet gives it room), a fixed overlay below (the sheet keeps its
+   measure); head with an X, log, composer, foot with the state line, the
+   counts, and the two verdicts, so the served page has no bottom bar. A
+   floating handle, the mark with the message count, and a *Conversation*
+   link in the top bar open it; the choice is kept per browser. The
+   floating page-level chat is gone; its log and composer are the panel's.
+   Found on the way: a `const` declared below its first read is in its
+   dead zone, and the guarded read answered "closed" whatever was stored.
+2. **The log, the composer, the echo** (`0dd182b`). One log in time order:
+   page-level chat, every question thread's messages with a context chip
+   that names the element and scrolls to it (and flashes it), the working
+   row after a pending thread's last turn, a revision line, the nudge as a
+   card, a resolution as a chip on the note. One composer: an element's
+   mark aims it (at the element, or at its existing thread), a comment
+   thread's *Ask the agent* aims it at that thread, Enter sends, the aim
+   and the text live in session storage, focus and caret come back after
+   a swap, one send at a time, an aim whose thread is deleted is dropped
+   with the text kept. Question threads left the elements; the element
+   carries a spine, a count on its mark, and a one-line preview of the
+   last message that opens the panel there. The inline persistent input
+   from the port, and its storage, were removed; the tests that drove it
+   drive the panel now.
+3. **Order** (`f6db311`). The kitchen-sink screenshot showed an answer
+   above the question it answered: the server stamps seconds, the page's
+   own events carry milliseconds, and the sort put the coarser stamp
+   first. The log orders at one-second grain and ties keep each thread's
+   order; a test pins the question before its answer.
+
+Screenshots: `panel-docked-1440.png`, `panel-overlay-1280.png`, and
+`ask-on-kitchen-sink.png` with the panel open beside a page that has a
+question thread, a blocking comment, a changed and a declined thread.
+
+Mutations: five on the shell and thirteen on the rest, seventeen caught.
+The one that survived, dropping the composer's fallback that routes a
+second question on an element to its existing thread, is a redundant
+guard: `aimPanel` already sets the thread when the mark is clicked, and
+the fallback only matters for a composer aimed by a path that does not.
+Kept, as a guard.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart

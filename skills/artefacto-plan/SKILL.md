@@ -140,10 +140,12 @@ addressed twice and a second revision pushed for nothing.
 ### Answer a chat message
 
 `chat.sent` carries `data.text`, and `data.thread` when it was asked inside a
-comment thread. The page offers *Ask the agent* beside every *Comment*
-button; a question asked that way on an element with no thread yet opens
-one in the same event, so `data.thread` names the new thread and `data.ref`
-the element. Answer it in that thread. Such a thread is `asked: true` in
+thread. The reviewer asks from the page's conversation panel: the agent's
+mark beside every *Comment* button aims the panel at that element, and a
+question asked that way on an element with no thread yet opens one in the
+same event, so `data.thread` names the new thread and `data.ref` the
+element. Answer it in that thread; the reviewer sees the answer in the
+panel, next to the element it is about. Such a thread is `asked: true` in
 `status --json` and in the feedback document.
 
 1. **Check first**: the frame may be a redelivery after a crash, and a
@@ -163,7 +165,9 @@ artefacto reply --session "$SESSION" "Yes. I will add a rollback step to phase t
 ```
 
    The second form is page-level chat; add `--artifact plan:<id>` when the
-   server has more than one artifact. For long text, `--stdin`.
+   server has more than one artifact. Thread ids are per artifact, so add
+   it to the first form too when the same id exists on more than one (the
+   frame's events name the artifact). For long text, `--stdin`.
 3. If the answer changes the plan, push a new revision as well (the push in
    the next section, without `--resolutions`).
 4. Acknowledge.

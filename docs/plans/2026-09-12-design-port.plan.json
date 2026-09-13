@@ -1,0 +1,878 @@
+{
+  "format": "artefacto.plan/1",
+  "meta": {
+    "id": "design-port",
+    "title": "Design port: one role set, the agent's mark, and a conversation on every element",
+    "goal_md": "Port the design pass (claude.ai/design, *Agent mark and token setup*) into the real page: `plan.css` and `plan.js`, served and static, light and dark, with the same tests and screenshots the page has today.",
+    "summary_md": "The design pass answered the eight problems from the first real review with one system: four colour families that never mix (neutral, status, action, agent), a mark for the agent that is the ask control, its presence, its avatar, and its working state, a thread card that is a conversation once a question is asked, and a bottom bar with two verdict buttons and an autosave line.\n\nThe stylesheet it produced (`artefacto.css`, 36 KB) keeps the page's class names where they exist and adds the rest, so the port goes slice by slice: tokens first, because every later slice uses the roles; then the mark; then the ask flow; then controls, the bar, and notices; then parity for the static export and the test suite.\n\nEvery slice ends with the browser tests updated, a screenshot in light and dark, and the golden regenerated.",
+    "key_points": [
+      "**Roles, not colours** (`p-tokens`): status keeps rust, amber, green and is never clickable; action is a blue for everything the reviewer clicks; agent is teal for the mark, its replies, its presence. Rust on a control is a bug from now on.",
+      "**The mark is the ask control** (`p-mark`, `p-ask`): a ring around a point. Rest, working (the orbit), waiting, off. It sits beside Comment on every element, labels itself on hover, and becomes the avatar on the agent's messages.",
+      "**A question thread is a conversation** (`p-ask`): a persistent one-line input that sends on Enter, the working state from send to answer, and a line that says who will hear it.",
+      "**Two verdicts, autosave said out loud** (`p-bar`): *Request changes* and *Approve* as one group, the chosen one filled, and a *Saved · rev N* line so leaving is not losing.",
+      "**Vibe is a question, not a task** (`q-vibe`): the third theme swaps three font families the page would have to embed.",
+      "**The conversation moves into a panel** (`p-panel`, added at revision 10 from the second design round): one docked conversation with the agent, every message anchored to its element by a chip, the bottom bar folded into the panel's foot, and the inline question thread replaced by a spine, a count on the mark, and a one-line preview."
+    ],
+    "out_of_scope": [
+      "Comments delivered live (that is `--passive live` in the re-plan; the bar copy has a batched and a live variant ready)",
+      "The index page and the posters (same tokens later, not in this plan)",
+      "Any change to the event protocol or the skill beyond presence modes"
+    ],
+    "agent": "claude",
+    "created": "2026-09-12",
+    "revision": 13
+  },
+  "phases": [
+    {
+      "id": "p-tokens",
+      "title": "Colour roles and themes",
+      "summary_md": "Replace the page's tokens with the role set from `artefacto.css` and re-point every use of the old accent to the role it belongs to. Nothing below names a literal colour.",
+      "tasks": [
+        {
+          "id": "t-roles",
+          "title": "The role set in light and dark",
+          "summary_md": "`:root`, the `prefers-color-scheme` block, and `[data-theme=\"dark\"]` take the design's tokens: neutral (`--canvas --page --surface --ink --ink-2 --ink-3 --muted --rule --rule-soft --numeral`), status (`--alarm --warn --ok` with inks and washes), action (`--action` with ink, wash, rule), agent (`--agent` with the same), `--brand` for the square only, `--focus` on action, radii and rule width as tokens. Every `var(--accent)` in `plan.css` is then re-pointed by role: chips and risk figures to status, buttons and links and focus to action, the ask control and the agent's text to agent. A unit test parses the token blocks and checks the contrast of ink on page, action on page, agent on page, and each `*-ink` on its fill, at 4.5:1 for light and dark.",
+          "status": "done",
+          "risk": "medium",
+          "files": [
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify",
+              "note": "token blocks and every --accent use"
+            },
+            {
+              "path": "src/plan/render.rs",
+              "action": "test",
+              "note": "contrast test over the token blocks"
+            },
+            {
+              "path": "tests/fixtures/plan/kitchen-sink.html",
+              "action": "modify",
+              "note": "golden"
+            }
+          ],
+          "acceptance": [
+            "`rg -- '--accent' src/plan/assets/plan.css` finds nothing",
+            "the contrast test passes for light and dark",
+            "screenshots of the kitchen-sink page in light and dark show no rust on any control"
+          ],
+          "validation": [
+            "cargo test --lib contrast",
+            "cargo test --test browser -- screenshot"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-chips",
+          "title": "Chips and dots from status only",
+          "summary_md": "`.pv-chip-*` and `.pv-dot-*` per status: high, blocked, blocking filled alarm; medium and in-progress warn; low, done, changed ok; open ink; planned muted; cut and declined muted with a strike; unanchored warn, dashed. The thread status chip uses the same classes. The stat figures go hot (alarm) only for risks and blocking questions.",
+          "status": "done",
+          "risk": "low",
+          "depends_on": [
+            "t-roles"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "src/plan/render.rs",
+              "action": "modify",
+              "note": "chip classes on statuses"
+            }
+          ],
+          "acceptance": [
+            "every chip on the kitchen-sink page carries a status class and no chip is clickable"
+          ],
+          "estimate": "s"
+        },
+        {
+          "id": "t-vibe",
+          "title": "The vibe theme",
+          "summary_md": "`[data-theme=\"vibe\"]`: the violet ground, pastel spray roles, 2px rules, zero radius, sticker shadows, and the three families Bricolage Grotesque, Space Mono, Bungee. The theme toggle gains a third position. Decided (`q-vibe`: yes): the three families are embedded like Newsreader and JetBrains Mono. The alternatives were embedded like Newsreader and JetBrains Mono (about 400 KB more per page), or system fallbacks (the theme keeps its colours, loses its type), or not shipped in v1.",
+          "status": "done",
+          "risk": "medium",
+          "depends_on": [
+            "t-roles"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "three-way theme toggle"
+            },
+            {
+              "path": "tools/build-plan-fonts.py",
+              "action": "modify",
+              "note": "embed the three families if q-vibe says so"
+            }
+          ],
+          "acceptance": [
+            "the toggle cycles light, dark, vibe and the choice survives a reload",
+            "a screenshot in vibe"
+          ],
+          "estimate": "m"
+        }
+      ]
+    },
+    {
+      "id": "p-mark",
+      "title": "The agent's mark",
+      "summary_md": "One SVG, four states, three sizes. It is the ask control, the presence pill's glyph, the avatar on the agent's messages, and the working indicator. This phase puts it on the page where the agent is; the next makes it the way to ask.",
+      "tasks": [
+        {
+          "id": "t-mark",
+          "title": "The mark and the presence pill",
+          "summary_md": "`ag-mark` (ring, core, orbit) with `is-working`, `is-waiting`, `is-off`, and `ag-mark-lg`; the orbit animates only when working and not under reduced motion. The presence pill becomes the mark plus a word: live, working, waiting, off. *Working* is a page-side state: an agent is attached and a question of this page's is unanswered. The pill's `data-mode` and title keep the tests' contract, with `none` renamed to `off`.",
+          "status": "done",
+          "risk": "low",
+          "depends_on": [
+            "t-roles"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "askIcon → agentMark(state); presenceLabel modes"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test",
+              "note": "presence modes incl. working"
+            }
+          ],
+          "acceptance": [
+            "the pill shows the mark in each of the four states",
+            "the orbit is still under prefers-reduced-motion"
+          ],
+          "validation": [
+            "cargo test --test browser -- presence"
+          ],
+          "estimate": "s"
+        },
+        {
+          "id": "t-avatars",
+          "title": "Avatars, actors, and no ids",
+          "summary_md": "Each thread message gets `pv-avatar`: the mark on its wash for the agent, a small ink square for the reviewer. The actor label stays for screen readers and as the small mono caption. Decided (`q-ids`: remove it): the thread id (`c-3`) leaves the page entirely; it stays as `data-thread` on the node for the agent's commands and nothing else. The head shows the kind label, the status chip, blocking, and a *when* on the right.",
+          "status": "done",
+          "risk": "low",
+          "depends_on": [
+            "t-mark"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "threadNode / renderThread"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "no visible text on the page matches `c-[0-9]+`",
+            "an agent message and a reviewer message carry different avatars"
+          ],
+          "estimate": "s"
+        },
+        {
+          "id": "t-thread-card",
+          "title": "The thread card by kind and status",
+          "summary_md": "`.thread[data-kind=comment|question]` and `[data-status]` drive the left border: agent for a question, alarm when blocking, ok when changed, rule when declined, warn dashed when unanchored. The agent's resolution note becomes `thread-resolution` with the chip inline, instead of one more message. The unanchored target line links to nothing but says where it was.",
+          "status": "done",
+          "risk": "low",
+          "depends_on": [
+            "t-avatars"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "a resolved thread shows one resolution line with the chip, not an extra message",
+            "each status and kind is visible in a screenshot of the kitchen-sink page with seeded threads"
+          ],
+          "estimate": "s"
+        }
+      ]
+    },
+    {
+      "id": "p-ask",
+      "title": "Ask and answer as a conversation",
+      "summary_md": "The mark beside every Comment button, the working state from send to answer, and a persistent input once a conversation exists. This is the phase the reviewer asked for.",
+      "tasks": [
+        {
+          "id": "t-ask-mark",
+          "title": "The ask control is the mark",
+          "summary_md": "`ask-btn` becomes a 1.75rem square holding the mark in the agent colour, with the label *Ask the agent* rising on hover and focus (`::after`), filled on hover. `is-labelled` keeps the text for the bar and for the first sighting on a page (the label shows until the reviewer has asked once, per browser, stored on first ask). `has-thread` tints the control on an element that already has a question. Acceptance rows use it icon-only as now.",
+          "status": "done",
+          "risk": "low",
+          "depends_on": [
+            "t-mark"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "mountElements"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "every element with Comment has the mark beside it",
+            "the label is visible on hover and by keyboard focus",
+            "after the first question on this browser the label is gone from the element rows and stays in the bar"
+          ],
+          "estimate": "s"
+        },
+        {
+          "id": "t-working",
+          "title": "The working state",
+          "summary_md": "From the moment a question is accepted by the server until an agent message lands in that thread (or the page-level panel), the thread shows a working row (`thread-msg.is-working`: the mark orbiting, *thinking…* in italics) and the pill says working. If no agent holds the lease the row says *waiting for an agent* with the mark off. After two minutes without an answer the row says *still waiting* and stops orbiting. State is page-side and survives a body swap.",
+          "status": "done",
+          "risk": "medium",
+          "depends_on": [
+            "t-ask-mark"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "pending questions per thread; renderThread; presence"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test",
+              "note": "ask → working row → reply lands → row gone; no agent → waiting"
+            }
+          ],
+          "acceptance": [
+            "a question shows the working row within one frame of the server's accept",
+            "the agent's reply removes it",
+            "with no agent attached the row says waiting and the pill is off"
+          ],
+          "validation": [
+            "cargo test --test browser -- working"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-thread-composer",
+          "title": "The persistent input",
+          "summary_md": "A question thread carries `thread-composer` always: the mark, a one-line input that grows, *Enter* sends, *Shift+Enter* breaks a line, a quiet Send button in the agent colour. No Ask button, no two clicks. A comment thread keeps Reply as a quiet button plus the mark to ask; asking there switches the composer into the agent colour. Drafts in the input survive a body swap the way composers do today (same draft store, kind `ask`, thread set).",
+          "status": "done",
+          "risk": "medium",
+          "depends_on": [
+            "t-working"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "openComposer / draftTarget / commandFor for the persistent kind"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "a follow-up typed into a question thread and sent with Enter wakes the agent (`chat.sent` with the thread)",
+            "the input keeps its draft across a push",
+            "a comment thread still sends a passive Reply and an active Ask"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-noagent",
+          "title": "Who will hear it",
+          "summary_md": "`composer-presence` under a first question and `thread-noagent` in a thread say, with the mark's state, whether an agent hears it now or the question waits. The bar's hint and the banner read the same presence, so *reaches the agent now* is never said when nobody holds the lease.",
+          "status": "done",
+          "risk": "low",
+          "depends_on": [
+            "t-thread-composer"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test",
+              "note": "extend a_question_composer_says_when_no_agent_will_hear_it"
+            }
+          ],
+          "acceptance": [
+            "with the lease expired, every place that promised *now* says *will wait*"
+          ],
+          "estimate": "s"
+        }
+      ]
+    },
+    {
+      "id": "p-controls",
+      "title": "Buttons and controls",
+      "summary_md": "One button family in the action colour, outlined; the only filled control on the page is the verdict the reviewer chose.",
+      "tasks": [
+        {
+          "id": "t-buttons",
+          "title": "The pv-btn family",
+          "summary_md": "`pv-btn` with `is-primary`, `is-filled`, `is-quiet`, `is-lg`, `is-agent`, `is-alarm`; the comment button, the reviewed toggle (action when checked), the composer's Add and Cancel, the thread actions, the expand and collapse links, and the theme toggle all become instances. `pv-textbtn` goes.",
+          "status": "done",
+          "risk": "low",
+          "depends_on": [
+            "t-roles"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "src/plan/render.rs",
+              "action": "modify",
+              "note": "static controls"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test",
+              "note": "selectors"
+            }
+          ],
+          "acceptance": [
+            "`rg pv-textbtn src` finds nothing",
+            "exactly one `is-filled` control is on the served page at a time"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-acceptance",
+          "title": "Criterion rows",
+          "summary_md": "The actions row on an acceptance criterion: icon-only, shown on hover, focus, or when the row has a thread (`has-thread`), with room for both controls.\n\nBuilt without `has-thread` on a criterion row: threads hang on the task, not the criterion, so a row cannot know it has one. The row keeps its controls on hover and focus.",
+          "status": "done",
+          "risk": "low",
+          "depends_on": [
+            "t-buttons",
+            "t-ask-mark"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "has-thread on rows with threads"
+            }
+          ],
+          "acceptance": [
+            "a criterion with a thread keeps its controls visible without hover"
+          ],
+          "estimate": "s"
+        },
+        {
+          "id": "t-comment-box",
+          "title": "The comment composer's foot",
+          "summary_md": "`comment-box` with a foot row: the blocking toggle (alarm when checked) on the left, Add and Cancel on the right as `pv-btn`s. The answer composer is the same box without the toggle.",
+          "status": "done",
+          "risk": "low",
+          "depends_on": [
+            "t-buttons"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            }
+          ],
+          "acceptance": [
+            "the blocking toggle turns alarm when checked and the composer's border stays action"
+          ],
+          "estimate": "s"
+        }
+      ]
+    },
+    {
+      "id": "p-bar",
+      "title": "The bottom bar and the end of a review",
+      "summary_md": "Two verdict buttons instead of a checkbox and a button, an autosave line, and counts that go alarm only for blocking. The Approve checkbox and the green Send button go.",
+      "tasks": [
+        {
+          "id": "t-bar",
+          "title": "The bar's layout",
+          "summary_md": "`feedback-bar` in two rows: `feedback-bar-hint` (the mark, one sentence, Got it) and `feedback-bar-main` with `feedback-bar-state` (*Saved · rev 4* with a dot; `is-saving` while a command is in flight), `feedback-bar-counts` (threads, reviewed, blocking in alarm), and `feedback-bar-actions` (the labelled ask, the verdict group). The bar wraps instead of clipping at narrow widths.",
+          "status": "done",
+          "risk": "low",
+          "depends_on": [
+            "t-buttons",
+            "t-ask-mark"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "mountBar / renderBar"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test",
+              "note": "feedback-bar-* selectors"
+            }
+          ],
+          "acceptance": [
+            "the state line shows *Saving* during a command and *Saved · rev N* after",
+            "a blocking count is the only alarm text in the bar"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-verdict",
+          "title": "Request changes and Approve",
+          "summary_md": "`feedback-bar-verdict`: two `pv-btn`s in one bordered group. *Request changes* sends `review.submit` with `request_changes`; *Approve* with `approve`. The chosen one is filled after the send; the sent notice and the *Sent* dot follow. The server's `settle_verdict` keeps its rule that a blocking comment forces `request_changes`, and the static export's clipboard button gains the same two choices. Decided (`q-empty-request`): *Request changes* stays enabled with nothing written; it is a verdict on the plan, not on the comments.",
+          "status": "done",
+          "risk": "medium",
+          "depends_on": [
+            "t-bar"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify"
+            },
+            {
+              "path": "src/server/feedback.rs",
+              "action": "test",
+              "note": "settle_verdict with the two explicit verdicts"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test",
+              "note": "the_reviewer_approves_and_the_agent_receives_the_document and the sent notice"
+            }
+          ],
+          "acceptance": [
+            "Approve delivers `verdict: approve`; Request changes delivers `request_changes`",
+            "after a send the chosen button is filled and the bar says Sent",
+            "no Approve checkbox exists"
+          ],
+          "validation": [
+            "cargo test --test browser -- approves sent",
+            "cargo test --test server_loop"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-autosave",
+          "title": "Leaving is not losing",
+          "summary_md": "The first time a page has unsent work and the tab is about to be hidden or closed, the state line reads *Saved. The agent sees your notes when you send them.* for a moment; no confirm dialog, nothing blocks. The banner's three steps end with *send, or come back later*.",
+          "status": "done",
+          "risk": "low",
+          "depends_on": [
+            "t-bar"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify"
+            }
+          ],
+          "acceptance": [
+            "hiding the tab with unsent work updates the state line; a reload shows the same threads and answers"
+          ],
+          "estimate": "s"
+        }
+      ]
+    },
+    {
+      "id": "p-notices",
+      "title": "Notices",
+      "summary_md": "One component for everything the page says on its own: the agent's nudge, the agent stopped, no agent attached, a new revision arrived, the review was sent.",
+      "tasks": [
+        {
+          "id": "t-notice",
+          "title": "pv-notice by kind",
+          "summary_md": "`pv-notice[data-kind=nudge|stopped|noagent|revision|sent]` with the mark, a kicker, text, and optional actions (*Show what changed* on a revision, *Dismiss*). The nudge banner, the sent notice, the stop notice, and the reconnect notice all render through it. The revision notice is new: it names the revision and how many threads it resolved.",
+          "status": "done",
+          "risk": "low",
+          "depends_on": [
+            "t-mark",
+            "t-buttons"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "notices() replaces sentNotice / nudge / stop rendering"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test",
+              "note": "a_nudge_and_the_stop_show_as_notices, revision notice"
+            }
+          ],
+          "acceptance": [
+            "each kind renders once with its border colour",
+            "a push shows a revision notice that names the resolved threads"
+          ],
+          "estimate": "m"
+        }
+      ]
+    },
+    {
+      "id": "p-finish",
+      "title": "Parity and proof",
+      "summary_md": "The static export, the print stylesheet, the test suite, the screenshots, and the record.",
+      "tasks": [
+        {
+          "id": "t-static",
+          "title": "The static export in the same system",
+          "summary_md": "The static page mounts the same buttons, chips, bar, and comment box, minus the mark (no agent): the clipboard button becomes the verdict group's static twin. The print stylesheet hides the bar, the marks, and the composers.",
+          "status": "done",
+          "risk": "low",
+          "depends_on": [
+            "t-verdict",
+            "t-comment-box"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "mountStatic"
+            },
+            {
+              "path": "src/plan/render.rs",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test",
+              "note": "the_static_export_selftest_passes_in_a_real_browser"
+            }
+          ],
+          "acceptance": [
+            "the static self-test passes and a static screenshot matches the served one minus the mark"
+          ],
+          "estimate": "s"
+        },
+        {
+          "id": "t-tests",
+          "title": "The suite and the screenshots",
+          "summary_md": "Every browser test that named a class or a text the port changed is updated with the slice that changed it, never after. This task is the final pass: the full gate, three screenshots of the kitchen-sink page (light, dark, and vibe if shipped) with seeded threads of every kind and status, and a static one.",
+          "status": "in_progress",
+          "risk": "low",
+          "depends_on": [
+            "t-static",
+            "t-notice",
+            "t-noagent",
+            "t-acceptance"
+          ],
+          "acceptance": [
+            "`cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test --all` green",
+            "the screenshots are in `target/screenshots/` and linked from the record"
+          ],
+          "validation": [
+            "cargo test --all"
+          ],
+          "estimate": "s"
+        },
+        {
+          "id": "t-record",
+          "title": "The record",
+          "summary_md": "`docs/BUILD-STATUS.md` gets the port's section: what changed per slice, what the screenshots found, the mutations, the review round. Spec 4.3 names the presence modes and the two verdict buttons; the skill's reference lists the `working` mode.",
+          "status": "planned",
+          "risk": "low",
+          "depends_on": [
+            "t-tests"
+          ],
+          "files": [
+            {
+              "path": "docs/BUILD-STATUS.md",
+              "action": "modify"
+            },
+            {
+              "path": "docs/specs/2026-09-06-artefacto-design.md",
+              "action": "modify"
+            },
+            {
+              "path": "skills/artefacto-plan/reference.md",
+              "action": "modify"
+            }
+          ],
+          "acceptance": [
+            "a reader of the record can find every screenshot and every decision from `q-*`"
+          ],
+          "estimate": "s"
+        }
+      ]
+    },
+    {
+      "id": "p-panel",
+      "title": "The conversation panel",
+      "summary_md": "The second design round (the *Auth Refactor Panel* page and section 08 of the sheet) moves the conversation with the agent out of the elements and into one panel docked beside the sheet. A question is still asked from an element's mark, but the composer lives in the panel and aims at that element; every message carries a context chip that scrolls to what it is about; the agent's presence, working state, nudges, revisions, and resolutions all render in the log; the panel's foot holds the state line and the two verdicts, so the bottom bar goes. Elements keep their comments inline; an element with discussion gets a teal spine, a count on its mark, and a one-line preview of the last message. Above 1400px the panel docks and the sheet narrows to 800px; below, it floats over the right margin and a counted *Conversation* button in the top bar reopens it. The port's stylesheet is `artefacto-v2.css` (section 8, additive).",
+      "tasks": [
+        {
+          "id": "t-panel-shell",
+          "title": "The shell, the dock, and the hidden state",
+          "summary_md": "`pv-shell` wraps the sheet and an `aside.pv-dock` holding `pv-panel`: a head (title, presence, an X that hides the panel), the log, the composer, the foot. Docked and sticky at 100dvh from 1400px up, fixed over the right margin below; Decided (`q-panel-default`: closed): the panel starts closed. What stays on screen is a floating handle, the agent's mark with the message count, fixed at the bottom right of the sheet and always in reach, that opens the panel with one click; the top bar keeps a plain *Conversation (N)* link as well. Hiding the panel returns to the handle. The served bottom bar goes: its state line and verdict group move to the panel foot, its hint to the panel head's first run. Static export unchanged.",
+          "status": "done",
+          "risk": "medium",
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "mountPanel replaces mountBar on served pages"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify",
+              "note": "section 8 from artefacto-v2.css"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "at 1440px the panel is docked and the sheet is 800px wide; at 1280px it floats and the sheet keeps its measure",
+            "the page opens with the panel closed and the floating handle showing the count; the handle and the top-bar link both open it, hiding returns to the handle, and the choice survives a reload",
+            "no `.feedback-bar` on a served page; the state line and both verdicts are in the panel foot"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-panel-log",
+          "title": "One log for the whole conversation",
+          "summary_md": "The log renders, in time order: page-level chat, every question thread's messages and the asks inside comment threads, each message with the avatar, the actor, the time, and a context chip (`pv-ctx`) naming the element (kind and title) that scrolls to it on click; the working row while a question waits; `pv-panel-event` lines for a revision (*revision 3 pushed*) and for the agent attaching or leaving; the agent's nudge as `pv-panel-nudge`; a resolution as a `pv-ctx.is-resolution` chip. The log follows the newest message unless the reviewer has scrolled up.",
+          "status": "done",
+          "risk": "medium",
+          "depends_on": [
+            "t-panel-shell"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "renderPanel from S.state; a merged, ordered view of chat + asked threads"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "a question asked on a task, its answer, a page-level question, and a resolution all appear in one log in order, each with the right chip",
+            "clicking a chip scrolls its element into view and flashes it",
+            "a nudge and a revision appear as log entries, not as page notices"
+          ],
+          "estimate": "m"
+        },
+        {
+          "id": "t-panel-composer",
+          "title": "The composer aims at an element",
+          "summary_md": "One composer in the panel: the persistent input from the thread, with a target line above it (*asking about Lock contention*, with a clear button). Clicking an element's mark opens the panel and aims the composer at that element; with a target, Enter sends `chat.send` with `ref` (or with `thread` when the element already has a question thread); without one, page-level. The draft and the target survive a swap and a reload; focus comes back after a swap. The inline question thread and its persistent input go; the comment thread's *Ask the agent* aims the panel at that thread instead of opening a composer inline.",
+          "status": "done",
+          "risk": "high",
+          "depends_on": [
+            "t-panel-log"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test",
+              "note": "the ask tests move from the inline thread to the panel"
+            }
+          ],
+          "acceptance": [
+            "a mark click aims the composer and focuses it; Enter opens the thread and the answer lands in the log",
+            "a second question on the same element goes to the same thread",
+            "the target and the text survive a push and a reload"
+          ],
+          "estimate": "l"
+        },
+        {
+          "id": "t-element-echo",
+          "title": "What the element shows",
+          "summary_md": "An element with a question thread carries `is-discussed` (the teal spine), its mark carries `ask-count` (messages in its thread), and `ask-preview` (avatar and the last message, one line) sits after the controls and opens the panel scrolled to that thread. Comments stay inline as today.",
+          "status": "done",
+          "risk": "low",
+          "depends_on": [
+            "t-panel-composer"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            },
+            {
+              "path": "tests/browser.rs",
+              "action": "test"
+            }
+          ],
+          "acceptance": [
+            "after a question and an answer the task shows the spine, a 2 on its mark, and the answer's first line",
+            "an element with only a comment shows none of the three"
+          ],
+          "estimate": "s"
+        },
+        {
+          "id": "t-panel-record",
+          "title": "Tests, screenshots, and the record",
+          "summary_md": "Screenshots at 1440 (docked) and 1280 (overlay) in light and dark with the panel open and hidden; the browser tests that named the inline question thread rewritten for the panel; spec 4.3 and the skill's page description updated; BUILD-STATUS.",
+          "status": "in_progress",
+          "risk": "low",
+          "depends_on": [
+            "t-element-echo"
+          ],
+          "files": [
+            {
+              "path": "docs/specs/2026-09-06-artefacto-design.md",
+              "action": "modify"
+            },
+            {
+              "path": "docs/BUILD-STATUS.md",
+              "action": "modify"
+            },
+            {
+              "path": "skills/artefacto-plan/SKILL.md",
+              "action": "modify"
+            }
+          ],
+          "acceptance": [
+            "the gate is green and every screenshot is linked from the record"
+          ],
+          "estimate": "s"
+        }
+      ]
+    }
+  ],
+  "risks": [
+    {
+      "id": "r-suite",
+      "title": "The browser suite encodes the old page",
+      "severity": "high",
+      "mitigation_md": "65 tests name classes and texts (`.feedback-bar-chat`, *Send review*, *Mark reviewed*, `.thread-reply`, pill text). Each slice updates the tests it breaks before it is called done; a slice that leaves the suite red is not committed."
+    },
+    {
+      "id": "r-verdict",
+      "title": "Two buttons over three verdicts",
+      "severity": "medium",
+      "mitigation_md": "The server keeps `approve | comment | request_changes` and its settle rule; the page sends the two explicit verdicts, and `comment` stays for the static flow and old pages. A server test pins the mapping."
+    },
+    {
+      "id": "r-fonts",
+      "title": "Vibe's fonts weigh about 400 KB per page",
+      "severity": "medium",
+      "mitigation_md": "`q-vibe`. Embedding is the honest way to ship it; system fallbacks keep the colours only."
+    },
+    {
+      "id": "r-static",
+      "title": "Static export drifts from served",
+      "severity": "low",
+      "mitigation_md": "`t-static` mounts the same components; the static self-test and a screenshot pin it."
+    },
+    {
+      "id": "r-working",
+      "title": "A working state that never ends",
+      "severity": "low",
+      "mitigation_md": "Timeboxed to two minutes, then *still waiting*; cleared by any agent message in the thread and by a lease going off."
+    },
+    {
+      "id": "r-panel-rewrite",
+      "title": "The panel replaces work that just landed",
+      "severity": "medium",
+      "mitigation_md": "The inline question thread, its persistent input, and the bottom bar were built this afternoon and are tested; the panel removes them. The tests are rewritten with the slice, not deleted, so every behaviour keeps a test: working state, single send, drafts, focus, resolution, verdicts."
+    }
+  ],
+  "open_questions": [
+    {
+      "id": "q-vibe",
+      "question_md": "Ship the vibe theme in this port? With the three families embedded (about 400 KB more per page), with system fallbacks (colours only), or leave it for later?",
+      "blocking": false
+    },
+    {
+      "id": "q-empty-request",
+      "question_md": "Should *Request changes* be enabled when nothing is written? The design leaves it enabled; disabling it until there is a comment or an answer would make the two buttons mean what they say.",
+      "blocking": false
+    },
+    {
+      "id": "q-ids",
+      "question_md": "Thread ids like `c-3`: gone from the page entirely (kept in the DOM for the agent), or shown in the head's tooltip?",
+      "blocking": false
+    },
+    {
+      "id": "q-live",
+      "question_md": "The bar's copy has a batched and a live variant. Batched stays the default until `--passive live` exists; confirm, or make live the goal of the next plan.",
+      "blocking": false
+    },
+    {
+      "id": "q-panel-default",
+      "question_md": "Should the panel be open by default on a served page (the design's first-run state), or closed with the counted button until the reviewer asks something?",
+      "blocking": false
+    }
+  ]
+}
