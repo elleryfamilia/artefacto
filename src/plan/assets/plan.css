@@ -360,7 +360,6 @@
 }
 .pv-map-tick.is-active .pv-map-tick-num, .pv-map-tick:hover .pv-map-tick-num { opacity: 1; }
 .pv-map-tick:hover .pv-map-tick-num { color: var(--action); }
-.pv-map-ph-read { flex: none; margin-left: 0.75rem; font-family: var(--font-mono); font-size: 0.75rem; color: var(--ink-3); }
 .pv-map-tick:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .pv-map-flag { width: 5px; height: 5px; flex: none; align-self: center; background: var(--alarm); }
 .pv-map-bar { height: 2px; background: var(--rule); transition: background var(--t-fast) linear; }
@@ -370,7 +369,8 @@
 .pv-map-part.is-active .pv-map-icon { color: var(--ink); }
 .pv-map-part.is-active .pv-map-label { letter-spacing: 0.13em; }
 .pv-map-track .pv-map-part:hover, .pv-map-track .pv-map-part:focus-visible, .pv-map-track .pv-map-link:hover { color: var(--action); }
-.pv-map-part:hover .pv-map-icon { color: var(--action); }
+/* The strip's glyphs are navigation furniture. They take the neutral the
+   rest of the segment takes and no colour of their own, in any state. */
 .pv-map-part:hover .pv-map-bar { background: var(--action-rule); }
 .pv-map-part:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .pv-map-fill { position: absolute; left: 0; bottom: 0.5rem; height: 2px; background: var(--action); pointer-events: none; }
@@ -705,50 +705,120 @@ code {
 }
 
 /* The way back to the artifact index, present only on a served page (the
-   server adds it; a static export has no index). Same voice as the id
-   beside it: mono, muted, uppercase. */
+   server adds it; a static export has no index). This is the one control in
+   the bar that LEAVES the document, so it does not share the voice of the
+   labels around it: sentence case rather than another run of mono capitals,
+   the action colour, a rule under it, and a grid mark that says "the list of
+   everything". A divider sets it apart from the plan's own identity. */
 .pv-topbar-link {
-  font-family: var(--font-mono);
-  font-size: 0.719rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--action);
   text-decoration: none;
   white-space: nowrap;
+  border-bottom: 1px solid var(--action-rule);
+  padding-bottom: 1px;
+  transition: border-color var(--t-fast) var(--ease);
 }
 
-.pv-topbar-link:hover { color: var(--action); }
+.pv-topbar-link:hover,
+.pv-topbar-link:focus-visible { border-bottom-color: var(--action); }
 
-/* Theme toggle -- injected by plan.js, because a control that does nothing
-   without scripting should not be in the served markup. */
-.pv-theme {
-  display: flex;
-  align-items: center;
-  border: 1px solid var(--rule);
-  border-radius: 999px;
-  overflow: hidden;
+.pv-topbar-link-icon {
+  width: 13px;
+  height: 13px;
   flex: none;
+  fill: currentColor;
 }
 
-.pv-theme button {
+.pv-topbar-sep {
+  width: 1px;
+  height: 16px;
+  flex: none;
+  background: var(--rule);
+}
+
+/* Theme control -- injected by plan.js, because a control that does nothing
+   without scripting should not be in the served markup.
+
+   A preference, not part of the review: one small glyph at the end of the
+   bar, with the four choices behind it. Four buttons standing open beside
+   the plan's identity made the loudest thing in the header the one thing
+   that has nothing to do with the plan. */
+.pv-theme { position: relative; flex: none; }
+
+.pv-theme-open {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--numeral);
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+
+.pv-theme-open:hover { color: var(--ink); background: var(--surface); }
+.pv-theme-open[aria-expanded="true"] { color: var(--ink); background: var(--surface); }
+.pv-theme-icon { width: 15px; height: 15px; }
+
+/* `display: flex` on a class outranks the browser's own `[hidden]` rule, so
+   the menu has to say this itself or `menu.hidden = true` paints nothing. */
+.pv-theme-menu[hidden] { display: none; }
+
+.pv-theme-menu {
+  position: absolute;
+  top: calc(100% + 0.375rem);
+  right: 0;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  min-width: 7.5rem;
+  padding: 0.25rem;
+  background: var(--page);
+  border: var(--rule-w) solid var(--rule);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 28px rgba(28, 26, 21, 0.14);
+}
+
+.pv-theme-menu button {
   appearance: none;
   border: 0;
   margin: 0;
-  padding: 0.375rem 0.6875rem;
+  padding: 0.375rem 0.5rem;
+  border-radius: var(--radius);
   background: transparent;
-  color: var(--muted);
+  color: var(--ink-2);
   font-family: var(--font-mono);
-  font-size: 0.656rem;
-  font-weight: 500;
-  letter-spacing: 0.1em;
+  font-size: 0.688rem;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
+  text-align: left;
   cursor: pointer;
   transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 
-.pv-theme button[aria-pressed="true"] {
-  background: var(--ink);
-  color: var(--page);
+.pv-theme-menu button:hover { background: var(--surface); color: var(--ink); }
+
+.pv-theme-menu button[aria-checked="true"] { color: var(--ink); font-weight: 600; }
+
+/* A tick in the gutter rather than a fill: the menu is a list of four
+   choices, and filling one of them makes it read as a button. */
+.pv-theme-menu button[aria-checked="true"]::before {
+  content: "\2713\00a0";
+}
+
+.pv-theme-menu button[aria-checked="false"]::before {
+  content: "\00a0\00a0\00a0";
 }
 
 /* Colour changes are instant on load and animated only while the toggle is

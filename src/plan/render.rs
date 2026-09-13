@@ -1154,6 +1154,27 @@ mod tests {
         assert!(seen >= 5, "the kitchen sink should have every part: {seen}");
     }
 
+    /// The strip's glyphs are navigation furniture. They take the neutral
+    /// the rest of the segment takes and no colour of their own, in any
+    /// state -- a colour there reads as a status the segment does not have.
+    #[test]
+    fn the_strips_glyphs_never_take_a_colour() {
+        for line in stylesheet().lines() {
+            if !line.contains(".pv-map-icon") {
+                continue;
+            }
+            for token in [
+                "--action", "--agent", "--alarm", "--warn", "--ok", "--brand",
+            ] {
+                assert!(
+                    !line.contains(token),
+                    "a strip glyph takes {token}: {}",
+                    line.trim()
+                );
+            }
+        }
+    }
+
     /// Every colour on the page belongs to a family (neutral, status, action,
     /// agent); the old one-accent-for-everything token is gone for good.
     #[test]

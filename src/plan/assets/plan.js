@@ -470,8 +470,8 @@
       if (document.documentElement.getAttribute("data-theme")) {
         throw new Error("system did not clear the override");
       }
-      if (document.querySelector('[data-theme-set=""]').getAttribute("aria-pressed") !== "true") {
-        throw new Error("system not marked pressed");
+      if (document.querySelector('[data-theme-set=""]').getAttribute("aria-checked") !== "true") {
+        throw new Error("system not marked as the chosen one");
       }
     });
     check("phases open and shut with motion", function () {
@@ -687,6 +687,29 @@
     dependencies: ["M5 7h7a3 3 0 0 1 3 3v4", "M12 11l3 3 3-3"],
   };
 
+  /* A circle with one half filled: the picture every interface uses for
+     "light or dark", and the only thing small enough to sit at the end of
+     the bar without becoming a fifth piece of text. */
+  function themeIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "pv-theme-icon");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    ring.setAttribute("cx", "12");
+    ring.setAttribute("cy", "12");
+    ring.setAttribute("r", "8");
+    ring.setAttribute("fill", "none");
+    ring.setAttribute("stroke", "currentColor");
+    ring.setAttribute("stroke-width", "1.6");
+    svg.appendChild(ring);
+    const half = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    half.setAttribute("d", "M12 4a8 8 0 0 1 0 16z");
+    half.setAttribute("fill", "currentColor");
+    svg.appendChild(half);
+    return svg;
+  }
+
   function mapIcon(part) {
     return svgIcon("pv-map-icon", MAP_ICONS[part] || MAP_ICONS.summary);
   }
@@ -791,16 +814,25 @@
     syncToggle();
   }
 
-  /* Highlight the button for the selected MODE (System included), and tell
-     the System button which way it currently resolves -- that is the one
-     thing a reader cannot otherwise read off the control. */
+  /* Mark the chosen MODE (System included) in the menu, and say on the
+     opener which theme is actually showing -- with the menu closed that is
+     the one thing a reader cannot otherwise tell. */
   function syncToggle() {
     const mode = document.documentElement.getAttribute("data-theme") || "";
+    let label = "System";
     document.querySelectorAll("[data-theme-set]").forEach(function (b) {
-      b.setAttribute("aria-pressed", String(b.getAttribute("data-theme-set") === mode));
+      const on = b.getAttribute("data-theme-set") === mode;
+      b.setAttribute("aria-checked", String(on));
+      if (on) label = b.textContent;
     });
     const sys = document.querySelector('[data-theme-set=""]');
     if (sys) sys.setAttribute("title", "Follow the system setting (currently " + current() + ")");
+    const opener = document.querySelector(".pv-theme-open");
+    if (opener) {
+      const said = mode ? label : "System (" + current() + ")";
+      opener.title = "Colour theme: " + said;
+      opener.setAttribute("aria-label", "Colour theme: " + said);
+    }
   }
 
   /* What the page is actually showing right now -- the explicit override if
@@ -931,9 +963,6 @@
         link.appendChild(label);
         head.appendChild(link);
         head.appendChild(phases.length > MAP_DENSE_PHASES ? mapTicks(phases) : mapNumerals(phases));
-        const read = document.createElement("span");
-        read.className = "pv-map-ph-read";
-        head.appendChild(read);
       } else {
         head.appendChild(mapIcon(p.part));
         head.appendChild(label);
@@ -1186,8 +1215,6 @@
       node.classList.toggle("is-past", i < current);
       setCurrent(node, i === current);
     });
-    const read = track.querySelector(".pv-map-ph-read");
-    if (read) read.textContent = current >= 0 ? (current + 1) + " of " + mapState.phases.length : "";
   }
 
   function scheduleMap() {
@@ -1237,21 +1264,64 @@
     });
   }
 
+  /* The theme is a preference, not a part of the review: one small control at
+     the end of the bar that opens the four choices, rather than four buttons
+     standing beside the plan's own identity. */
   function mountThemeToggle(root) {
     const host = root.querySelector(".pv-topbar-right");
     if (!host || host.querySelector(".pv-theme")) return;
     const group = document.createElement("div");
     group.className = "pv-theme";
-    group.setAttribute("role", "group");
-    group.setAttribute("aria-label", "Colour theme");
+
+    const opener = document.createElement("button");
+    opener.type = "button";
+    opener.className = "pv-theme-open";
+    opener.setAttribute("aria-haspopup", "true");
+    opener.setAttribute("aria-expanded", "false");
+    opener.setAttribute("aria-label", "Colour theme");
+    opener.title = "Colour theme";
+    opener.appendChild(themeIcon());
+    group.appendChild(opener);
+
+    const menu = document.createElement("div");
+    menu.className = "pv-theme-menu";
+    menu.setAttribute("role", "menu");
+    menu.hidden = true;
     [["", "System"], ["light", "Light"], ["dark", "Dark"], ["vibe", "Vibe"]].forEach(function (pair) {
       const btn = document.createElement("button");
       btn.type = "button";
+      btn.setAttribute("role", "menuitemradio");
       btn.setAttribute("data-theme-set", pair[0]);
       btn.textContent = pair[1];
-      btn.addEventListener("click", function () { applyTheme(pair[0], true); });
-      group.appendChild(btn);
+      btn.addEventListener("click", function () { applyTheme(pair[0], true); close(true); });
+      menu.appendChild(btn);
     });
+    group.appendChild(menu);
+
+    const close = function (focusOpener) {
+      if (menu.hidden) return;
+      menu.hidden = true;
+      opener.setAttribute("aria-expanded", "false");
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("mousedown", onOutside, true);
+      if (focusOpener) opener.focus();
+    };
+    const onKey = function (e) {
+      if (e.key === "Escape") { e.preventDefault(); close(true); }
+    };
+    const onOutside = function (e) {
+      if (!group.contains(e.target)) close(false);
+    };
+    opener.addEventListener("click", function () {
+      if (!menu.hidden) return close(true);
+      menu.hidden = false;
+      opener.setAttribute("aria-expanded", "true");
+      document.addEventListener("keydown", onKey, true);
+      document.addEventListener("mousedown", onOutside, true);
+      const checked = menu.querySelector('[aria-checked="true"]') || menu.firstChild;
+      if (checked && checked.focus) checked.focus();
+    });
+
     host.appendChild(group);
     applyTheme(storedTheme(), false);
 

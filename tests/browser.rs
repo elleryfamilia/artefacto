@@ -355,11 +355,21 @@ fn release_path(page: &mut support::browser::Page, path: &str) {
 
 /// Make the page's `fetch` answer `path` with `status` and an empty body,
 /// `times` times, then pass requests through; counts calls in `window.__calls`.
+/// Make the next `times` writes to `path` answer with `status`, and count
+/// them in `window.__calls`.
+///
+/// A ping is neither intercepted nor counted. The page sends one every thirty
+/// seconds to say the reviewer is here, it goes to the same `/cmd` route as a
+/// write, and counting it made "no further calls happened" true only until the
+/// next ping landed -- which is a test that fails once in a while for a reason
+/// that has nothing to do with what it is checking.
 fn answer_with(page: &mut support::browser::Page, path: &str, status: u16, times: u64) {
     page.eval(&format!(
         "(function(){{ const prev = window.fetch; let left = {times}; window.__calls = 0; \
           window.fetch = function (u, o) {{ \
             if (!String(u).endsWith({path})) return prev(u, o); \
+            const body = o && typeof o.body === 'string' ? o.body : ''; \
+            if (body.indexOf('\"ping\"') >= 0) return prev(u, o); \
             window.__calls++; \
             if (left <= 0) return prev(u, o); left--; \
             return Promise.resolve(new Response('{{}}', {{ status: {status} }})); \
@@ -3576,15 +3586,42 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
     page.click(".pv-panel-link");
     page.eval("document.querySelector('.thread[data-thread=\"c-2\"]').scrollIntoView({ block: 'center' })");
     page.screenshot(&screenshot_path("ask-on-kitchen-sink"));
-    // The same page in the dark theme, from the toggle, so both palettes are
-    // looked at whenever the page changes.
+    // The same page in the dark theme, from the control, so both palettes are
+    // looked at whenever the page changes. The theme is a preference rather
+    // than part of the review, so it sits behind one glyph at the end of the
+    // bar and the four choices are not standing open beside the plan's name.
+    assert_eq!(
+        page.text("getComputedStyle(document.querySelector('.pv-theme-menu')).display"),
+        "none",
+        "the choices are put away until they are asked for"
+    );
+    page.click(".pv-theme-open");
+    assert_eq!(
+        page.eval(
+            "getComputedStyle(document.querySelector('.pv-theme-menu')).display !== 'none' && \
+               document.querySelector('.pv-theme-open').getAttribute('aria-expanded') === 'true'"
+        ),
+        true,
+        "the glyph opens them"
+    );
     page.click("[data-theme-set=\"dark\"]");
+    assert_eq!(
+        page.text("getComputedStyle(document.querySelector('.pv-theme-menu')).display"),
+        "none",
+        "and choosing puts them away again"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.pv-theme-open').title"),
+        "Colour theme: Dark",
+        "the glyph says which theme is showing"
+    );
     page.wait_until(
         "document.documentElement.getAttribute('data-theme') === 'dark' && !document.documentElement.classList.contains('theme-anim')",
         "the dark theme to apply and its crossfade to end",
     );
     page.screenshot(&screenshot_path("ask-on-kitchen-sink-dark"));
     // And the third theme, which also has to survive a reload.
+    page.click(".pv-theme-open");
     page.click("[data-theme-set=\"vibe\"]");
     page.wait_until(
         "document.documentElement.getAttribute('data-theme') === 'vibe' && !document.documentElement.classList.contains('theme-anim')",
@@ -3598,6 +3635,28 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
         "vibe",
         "the choice survives a reload"
     );
+    // Escape closes the menu without changing anything, and so does a click
+    // anywhere else: it is a preference, not a decision to be trapped in.
+    page.click(".pv-theme-open");
+    page.eval(
+        "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))",
+    );
+    assert_eq!(
+        page.eval(
+            "getComputedStyle(document.querySelector('.pv-theme-menu')).display === 'none' && \
+               document.documentElement.getAttribute('data-theme') === 'vibe'"
+        ),
+        true,
+        "Escape closes it and leaves the theme alone"
+    );
+    page.click(".pv-theme-open");
+    page.eval("document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))");
+    assert_eq!(
+        page.text("getComputedStyle(document.querySelector('.pv-theme-menu')).display"),
+        "none",
+        "so does a click outside it"
+    );
+    page.click(".pv-theme-open");
     page.click("[data-theme-set=\"\"]");
 }
 
@@ -4581,14 +4640,29 @@ fn the_plan_strip_says_where_you_are_and_takes_you_there() {
         true,
         "and the summary to be behind you"
     );
+    // The numeral itself says which phase you are in; the strip does not
+    // also spell out "1 of 2" beside it.
     page.wait_until(
-        "document.querySelector('.pv-map-ph-read').textContent === '1 of 2'",
-        "the phases part to count the phase the read line is in",
+        "document.querySelector('.pv-map-ph.is-active') && \
+           document.querySelector('.pv-map-ph.is-active').textContent === '01'",
+        "the numeral for the phase the read line is in",
     );
     page.eval("window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' })");
     page.wait_until(
-        "document.querySelector('.pv-map-ph-read').textContent === '2 of 2'",
-        "the count to follow the reader to the last phase",
+        "document.querySelector('.pv-map-ph.is-active').textContent === '02'",
+        "the numeral to follow the reader to the last phase",
+    );
+    assert_eq!(
+        page.eval("document.querySelectorAll('.pv-map-ph.is-past').length"),
+        1,
+        "and the one behind it is past"
+    );
+    assert_eq!(
+        page.eval(
+            "/\\bof\\b/i.test(document.querySelector('[data-map-part=\"phases\"]').textContent)"
+        ),
+        false,
+        "the numerals say it; the strip does not also spell out N of M"
     );
     let fill = page.eval(
         "(function(){ const f = document.querySelector('.pv-map-fill'), t = document.querySelector('.pv-map-track'); \

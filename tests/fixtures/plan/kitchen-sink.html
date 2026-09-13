@@ -361,7 +361,6 @@
 }
 .pv-map-tick.is-active .pv-map-tick-num, .pv-map-tick:hover .pv-map-tick-num { opacity: 1; }
 .pv-map-tick:hover .pv-map-tick-num { color: var(--action); }
-.pv-map-ph-read { flex: none; margin-left: 0.75rem; font-family: var(--font-mono); font-size: 0.75rem; color: var(--ink-3); }
 .pv-map-tick:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .pv-map-flag { width: 5px; height: 5px; flex: none; align-self: center; background: var(--alarm); }
 .pv-map-bar { height: 2px; background: var(--rule); transition: background var(--t-fast) linear; }
@@ -371,7 +370,8 @@
 .pv-map-part.is-active .pv-map-icon { color: var(--ink); }
 .pv-map-part.is-active .pv-map-label { letter-spacing: 0.13em; }
 .pv-map-track .pv-map-part:hover, .pv-map-track .pv-map-part:focus-visible, .pv-map-track .pv-map-link:hover { color: var(--action); }
-.pv-map-part:hover .pv-map-icon { color: var(--action); }
+/* The strip's glyphs are navigation furniture. They take the neutral the
+   rest of the segment takes and no colour of their own, in any state. */
 .pv-map-part:hover .pv-map-bar { background: var(--action-rule); }
 .pv-map-part:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .pv-map-fill { position: absolute; left: 0; bottom: 0.5rem; height: 2px; background: var(--action); pointer-events: none; }
@@ -706,50 +706,120 @@ code {
 }
 
 /* The way back to the artifact index, present only on a served page (the
-   server adds it; a static export has no index). Same voice as the id
-   beside it: mono, muted, uppercase. */
+   server adds it; a static export has no index). This is the one control in
+   the bar that LEAVES the document, so it does not share the voice of the
+   labels around it: sentence case rather than another run of mono capitals,
+   the action colour, a rule under it, and a grid mark that says "the list of
+   everything". A divider sets it apart from the plan's own identity. */
 .pv-topbar-link {
-  font-family: var(--font-mono);
-  font-size: 0.719rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--action);
   text-decoration: none;
   white-space: nowrap;
+  border-bottom: 1px solid var(--action-rule);
+  padding-bottom: 1px;
+  transition: border-color var(--t-fast) var(--ease);
 }
 
-.pv-topbar-link:hover { color: var(--action); }
+.pv-topbar-link:hover,
+.pv-topbar-link:focus-visible { border-bottom-color: var(--action); }
 
-/* Theme toggle -- injected by plan.js, because a control that does nothing
-   without scripting should not be in the served markup. */
-.pv-theme {
-  display: flex;
-  align-items: center;
-  border: 1px solid var(--rule);
-  border-radius: 999px;
-  overflow: hidden;
+.pv-topbar-link-icon {
+  width: 13px;
+  height: 13px;
   flex: none;
+  fill: currentColor;
 }
 
-.pv-theme button {
+.pv-topbar-sep {
+  width: 1px;
+  height: 16px;
+  flex: none;
+  background: var(--rule);
+}
+
+/* Theme control -- injected by plan.js, because a control that does nothing
+   without scripting should not be in the served markup.
+
+   A preference, not part of the review: one small glyph at the end of the
+   bar, with the four choices behind it. Four buttons standing open beside
+   the plan's identity made the loudest thing in the header the one thing
+   that has nothing to do with the plan. */
+.pv-theme { position: relative; flex: none; }
+
+.pv-theme-open {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--numeral);
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+
+.pv-theme-open:hover { color: var(--ink); background: var(--surface); }
+.pv-theme-open[aria-expanded="true"] { color: var(--ink); background: var(--surface); }
+.pv-theme-icon { width: 15px; height: 15px; }
+
+/* `display: flex` on a class outranks the browser's own `[hidden]` rule, so
+   the menu has to say this itself or `menu.hidden = true` paints nothing. */
+.pv-theme-menu[hidden] { display: none; }
+
+.pv-theme-menu {
+  position: absolute;
+  top: calc(100% + 0.375rem);
+  right: 0;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  min-width: 7.5rem;
+  padding: 0.25rem;
+  background: var(--page);
+  border: var(--rule-w) solid var(--rule);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 28px rgba(28, 26, 21, 0.14);
+}
+
+.pv-theme-menu button {
   appearance: none;
   border: 0;
   margin: 0;
-  padding: 0.375rem 0.6875rem;
+  padding: 0.375rem 0.5rem;
+  border-radius: var(--radius);
   background: transparent;
-  color: var(--muted);
+  color: var(--ink-2);
   font-family: var(--font-mono);
-  font-size: 0.656rem;
-  font-weight: 500;
-  letter-spacing: 0.1em;
+  font-size: 0.688rem;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
+  text-align: left;
   cursor: pointer;
   transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 
-.pv-theme button[aria-pressed="true"] {
-  background: var(--ink);
-  color: var(--page);
+.pv-theme-menu button:hover { background: var(--surface); color: var(--ink); }
+
+.pv-theme-menu button[aria-checked="true"] { color: var(--ink); font-weight: 600; }
+
+/* A tick in the gutter rather than a fill: the menu is a list of four
+   choices, and filling one of them makes it read as a button. */
+.pv-theme-menu button[aria-checked="true"]::before {
+  content: "\2713\00a0";
+}
+
+.pv-theme-menu button[aria-checked="false"]::before {
+  content: "\00a0\00a0\00a0";
 }
 
 /* Colour changes are instant on load and animated only while the toggle is
@@ -3412,8 +3482,8 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       if (document.documentElement.getAttribute("data-theme")) {
         throw new Error("system did not clear the override");
       }
-      if (document.querySelector('[data-theme-set=""]').getAttribute("aria-pressed") !== "true") {
-        throw new Error("system not marked pressed");
+      if (document.querySelector('[data-theme-set=""]').getAttribute("aria-checked") !== "true") {
+        throw new Error("system not marked as the chosen one");
       }
     });
     check("phases open and shut with motion", function () {
@@ -3629,6 +3699,29 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
     dependencies: ["M5 7h7a3 3 0 0 1 3 3v4", "M12 11l3 3 3-3"],
   };
 
+  /* A circle with one half filled: the picture every interface uses for
+     "light or dark", and the only thing small enough to sit at the end of
+     the bar without becoming a fifth piece of text. */
+  function themeIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "pv-theme-icon");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    ring.setAttribute("cx", "12");
+    ring.setAttribute("cy", "12");
+    ring.setAttribute("r", "8");
+    ring.setAttribute("fill", "none");
+    ring.setAttribute("stroke", "currentColor");
+    ring.setAttribute("stroke-width", "1.6");
+    svg.appendChild(ring);
+    const half = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    half.setAttribute("d", "M12 4a8 8 0 0 1 0 16z");
+    half.setAttribute("fill", "currentColor");
+    svg.appendChild(half);
+    return svg;
+  }
+
   function mapIcon(part) {
     return svgIcon("pv-map-icon", MAP_ICONS[part] || MAP_ICONS.summary);
   }
@@ -3733,16 +3826,25 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
     syncToggle();
   }
 
-  /* Highlight the button for the selected MODE (System included), and tell
-     the System button which way it currently resolves -- that is the one
-     thing a reader cannot otherwise read off the control. */
+  /* Mark the chosen MODE (System included) in the menu, and say on the
+     opener which theme is actually showing -- with the menu closed that is
+     the one thing a reader cannot otherwise tell. */
   function syncToggle() {
     const mode = document.documentElement.getAttribute("data-theme") || "";
+    let label = "System";
     document.querySelectorAll("[data-theme-set]").forEach(function (b) {
-      b.setAttribute("aria-pressed", String(b.getAttribute("data-theme-set") === mode));
+      const on = b.getAttribute("data-theme-set") === mode;
+      b.setAttribute("aria-checked", String(on));
+      if (on) label = b.textContent;
     });
     const sys = document.querySelector('[data-theme-set=""]');
     if (sys) sys.setAttribute("title", "Follow the system setting (currently " + current() + ")");
+    const opener = document.querySelector(".pv-theme-open");
+    if (opener) {
+      const said = mode ? label : "System (" + current() + ")";
+      opener.title = "Colour theme: " + said;
+      opener.setAttribute("aria-label", "Colour theme: " + said);
+    }
   }
 
   /* What the page is actually showing right now -- the explicit override if
@@ -3873,9 +3975,6 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
         link.appendChild(label);
         head.appendChild(link);
         head.appendChild(phases.length > MAP_DENSE_PHASES ? mapTicks(phases) : mapNumerals(phases));
-        const read = document.createElement("span");
-        read.className = "pv-map-ph-read";
-        head.appendChild(read);
       } else {
         head.appendChild(mapIcon(p.part));
         head.appendChild(label);
@@ -4128,8 +4227,6 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       node.classList.toggle("is-past", i < current);
       setCurrent(node, i === current);
     });
-    const read = track.querySelector(".pv-map-ph-read");
-    if (read) read.textContent = current >= 0 ? (current + 1) + " of " + mapState.phases.length : "";
   }
 
   function scheduleMap() {
@@ -4179,21 +4276,64 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
     });
   }
 
+  /* The theme is a preference, not a part of the review: one small control at
+     the end of the bar that opens the four choices, rather than four buttons
+     standing beside the plan's own identity. */
   function mountThemeToggle(root) {
     const host = root.querySelector(".pv-topbar-right");
     if (!host || host.querySelector(".pv-theme")) return;
     const group = document.createElement("div");
     group.className = "pv-theme";
-    group.setAttribute("role", "group");
-    group.setAttribute("aria-label", "Colour theme");
+
+    const opener = document.createElement("button");
+    opener.type = "button";
+    opener.className = "pv-theme-open";
+    opener.setAttribute("aria-haspopup", "true");
+    opener.setAttribute("aria-expanded", "false");
+    opener.setAttribute("aria-label", "Colour theme");
+    opener.title = "Colour theme";
+    opener.appendChild(themeIcon());
+    group.appendChild(opener);
+
+    const menu = document.createElement("div");
+    menu.className = "pv-theme-menu";
+    menu.setAttribute("role", "menu");
+    menu.hidden = true;
     [["", "System"], ["light", "Light"], ["dark", "Dark"], ["vibe", "Vibe"]].forEach(function (pair) {
       const btn = document.createElement("button");
       btn.type = "button";
+      btn.setAttribute("role", "menuitemradio");
       btn.setAttribute("data-theme-set", pair[0]);
       btn.textContent = pair[1];
-      btn.addEventListener("click", function () { applyTheme(pair[0], true); });
-      group.appendChild(btn);
+      btn.addEventListener("click", function () { applyTheme(pair[0], true); close(true); });
+      menu.appendChild(btn);
     });
+    group.appendChild(menu);
+
+    const close = function (focusOpener) {
+      if (menu.hidden) return;
+      menu.hidden = true;
+      opener.setAttribute("aria-expanded", "false");
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("mousedown", onOutside, true);
+      if (focusOpener) opener.focus();
+    };
+    const onKey = function (e) {
+      if (e.key === "Escape") { e.preventDefault(); close(true); }
+    };
+    const onOutside = function (e) {
+      if (!group.contains(e.target)) close(false);
+    };
+    opener.addEventListener("click", function () {
+      if (!menu.hidden) return close(true);
+      menu.hidden = false;
+      opener.setAttribute("aria-expanded", "true");
+      document.addEventListener("keydown", onKey, true);
+      document.addEventListener("mousedown", onOutside, true);
+      const checked = menu.querySelector('[aria-checked="true"]') || menu.firstChild;
+      if (checked && checked.focus) checked.focus();
+    });
+
     host.appendChild(group);
     applyTheme(storedTheme(), false);
 
