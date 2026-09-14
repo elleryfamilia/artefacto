@@ -2524,10 +2524,12 @@ fn a_toggles_error_line_cannot_be_clicked_into_a_second_mark() {
         "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle + .pv-error')",
         "the error line beside the label",
     );
+    // The write failed on every retry, so the mark never landed and the box
+    // must read unmarked. Asserted absolutely rather than against a snapshot
+    // taken while the failure was still being handled: that compares two
+    // different moments, and the moment the first read lands in depends on
+    // how fast the machine is.
     let calls = page.eval("window.__calls");
-    let checked = page.eval(
-        "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle input').checked",
-    );
     page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle + .pv-error");
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert_eq!(
@@ -2539,7 +2541,8 @@ fn a_toggles_error_line_cannot_be_clicked_into_a_second_mark() {
         page.eval(
             "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle input').checked"
         ),
-        checked
+        false,
+        "and the mark that failed is not left looking like it landed"
     );
     assert_eq!(
         page.eval("!!document.querySelector('.reviewed-toggle .pv-error')"),
