@@ -2162,7 +2162,21 @@ build -- and the page had no way to say so. It does now:
   dark and bright gold in vibe, so it put a status colour on every node. A
   render test holds that edge to the neutral family.
 
-Eight mutations, all caught. Gate: 564 tests.
+Two more from the same look. The conversation's verdict still read
+*Approve* on a plan with nothing left to approve; it reads **Sign off**
+there, and follows the plan rather than being fixed when the panel was
+built, so a revision that finishes the last task changes the word without a
+reload. The event is still `approve` either way -- that is what the protocol
+calls the positive verdict, and only the question changes. And the title now
+carries a **stamp**: an outlined *Implemented* in the status family, rotated
+a few degrees so it reads as a stamp rather than as one more label. The
+banner's chip says *For sign-off* rather than repeating the stamp's word in
+a second colour: the chip is what the page wants from the reader, the stamp
+is what the plan is.
+
+Fourteen mutations, all caught. One survived the first pass: nothing
+asserted the verdict's wording on a plan with work still outstanding. Gate:
+564 tests.
 
 ## Where the code diverges from plan 2b, with the reason
 

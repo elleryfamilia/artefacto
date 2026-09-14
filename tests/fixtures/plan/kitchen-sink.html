@@ -860,6 +860,35 @@ code {
   border-bottom: var(--rule-w) solid var(--rule);
 }
 
+/* The title, and the one thing a reader must not have to work out: whether
+   this is work to come or work already done. The stamp takes the status
+   family, because that is what it is -- something the plan says, which a
+   reader never clicks -- and the small rotation is what makes it read as a
+   stamp rather than as another label in a page full of labels. */
+.pv-title-row {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.pv-title-row h1 { flex: 1 1 18rem; }
+
+.pv-stamp {
+  flex: none;
+  padding: 0.4375rem 0.9375rem;
+  border: 2px solid var(--ok);
+  border-radius: var(--radius);
+  color: var(--ok);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transform: rotate(-3deg);
+}
+
 /* The banner shows once per plan, so it carries its own way out rather than
    waiting to be scrolled past. */
 .pv-banner-dismiss { flex: none; }
@@ -3021,7 +3050,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
   details.phase { break-inside: avoid; }
   .is-reviewed { opacity: 1; }
 }
-</style></head><body data-plan-fingerprint="sha256:01bdbd56aa2b3524013a7662173ece75a446a5ab6aa9b228f2275e58b358b01e"><div class="pv-sheet"><header class="pv-topbar"><div class="pv-brand"><span class="pv-brand-mark" aria-hidden="true"></span><span class="pv-brand-name">artefacto</span><span class="pv-brand-surface">Plan</span></div><div class="pv-topbar-right"></div></header><div class="pv-banner"><span class="pv-chip pv-chip-solid">For review</span><p class="pv-banner-text">This plan is being worked through — <strong>the statuses below are the agent's own record.</strong> Comment on anything, then copy your feedback back into the conversation.</p><span class="pv-banner-steps"><b>01</b> skim  <b>02</b> comment  <b>03</b> copy feedback</span></div><main class="pv-main"><div class="pv-head"><p class="pv-eyebrow">by claude · 2026-07-07 · <span class="pv-eyebrow-rev">revision 2</span></p><h1>Auth refactor</h1><div class="pv-lede"><p>Extract <em>session</em> handling.</p>
+</style></head><body data-plan-fingerprint="sha256:01bdbd56aa2b3524013a7662173ece75a446a5ab6aa9b228f2275e58b358b01e"><div class="pv-sheet"><header class="pv-topbar"><div class="pv-brand"><span class="pv-brand-mark" aria-hidden="true"></span><span class="pv-brand-name">artefacto</span><span class="pv-brand-surface">Plan</span></div><div class="pv-topbar-right"></div></header><div class="pv-banner"><span class="pv-chip pv-chip-solid">For review</span><p class="pv-banner-text">This plan is being worked through — <strong>the statuses below are the agent's own record.</strong> Comment on anything, then copy your feedback back into the conversation.</p><span class="pv-banner-steps"><b>01</b> skim  <b>02</b> comment  <b>03</b> copy feedback</span></div><main class="pv-main"><div class="pv-head"><p class="pv-eyebrow">by claude · 2026-07-07 · <span class="pv-eyebrow-rev">revision 2</span></p><div class="pv-title-row"><h1>Auth refactor</h1></div><div class="pv-lede"><p>Extract <em>session</em> handling.</p>
 </div></div><div class="pv-stats"><div class="pv-stat"><span class="pv-stat-n">5</span><span class="pv-stat-l">Tasks · 1 done</span></div><div class="pv-stat"><span class="pv-stat-n">2</span><span class="pv-stat-l">Phases</span></div><div class="pv-stat is-hot"><span class="pv-stat-n">1</span><span class="pv-stat-l">Risks · 1 high</span></div><div class="pv-stat is-hot"><span class="pv-stat-n">2</span><span class="pv-stat-l">Questions · 1 blocking</span></div></div><div class="pv-rule" data-part="summary"><span class="pv-label">Summary</span><span class="pv-rule-line"></span></div><section class="plan-summary" data-plan-ref="meta:auth-refactor"><div class="summary-grid"><div class="summary-exec"><p>This refactor extracts <code>SessionStore</code> behind a trait so a Redis-backed implementation can slot in without touching call sites. It ships behind a config flag and closes the <em>lock contention</em> risk by sharding the store. The ask: review the trait boundary in <code>t-session-store</code> before Redis work starts.</p>
 </div><aside class="summary-glance"><table class="pv-ledger"><thead><tr><th>Phase</th><th>Tasks</th></tr></thead><tbody><tr data-phase-row="p-core"><td><a href="#phase-p-core">Core</a></td><td class="pv-ledger-fig">2 tasks</td></tr><tr data-phase-row="p-backend"><td><a href="#phase-p-backend">Backend</a></td><td class="pv-ledger-fig">3 tasks <span class="pv-ledger-risk" title="1 high risk" aria-label="1 high risk">(1)</span></td></tr></tbody></table><p class="summary-ask has-blocking"><span class="pv-dot pv-dot-high" aria-hidden="true"></span><span>1 blocking question(s) must be resolved before implementation: <a href="#question-q-ttl">Session TTL?</a></span></p></aside></div><ul class="summary-keypoints"><li><p><strong>Trait extraction</strong> decouples session persistence from its backing store, gated behind a config flag.</p>
 </li><li><p><strong>Redis backend</strong> (<code>t-redis</code>) is blocked on the trait boundary landing first.</p>
@@ -6300,6 +6329,10 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       const approve = bar.querySelector(".feedback-bar-approve");
       request.disabled = S.lost || S.submitting;
       approve.disabled = S.lost || S.submitting;
+      /* A revision can turn a plan into a record while the page is open, so
+         the word follows the plan rather than being fixed when the group was
+         built. */
+      approve.textContent = planIsImplemented() ? "Sign off" : "Approve";
       request.classList.toggle("is-filled", !!S.state.submitted && S.state.verdict !== "approve");
       approve.classList.toggle("is-filled", !!S.state.submitted && S.state.verdict === "approve");
     }
@@ -6806,11 +6839,17 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
         el("span", { class: "feedback-bar-blocking is-alarm" })));
       foot.appendChild(el("span", { class: "feedback-bar-sent" }));
       /* Two verdicts on the plan, one group. Request changes is enabled with
-         nothing written: it is a verdict on the plan, not on the comments. */
+         nothing written: it is a verdict on the plan, not on the comments.
+
+         On a plan whose work is already done, "Approve" is the wrong word --
+         there is nothing left to approve. The event is still `approve`,
+         because that is what the protocol calls the positive verdict; only
+         what the reviewer is asked changes. */
       const verdict = el("div", { class: "feedback-bar-verdict", role: "group", "aria-label": "Your verdict" });
       verdict.appendChild(el("button", { type: "button", class: "pv-btn is-alarm feedback-bar-send", text: "Request changes",
         onclick: function () { submitReview("request_changes"); } }));
-      verdict.appendChild(el("button", { type: "button", class: "pv-btn feedback-bar-approve", text: "Approve",
+      verdict.appendChild(el("button", { type: "button", class: "pv-btn feedback-bar-approve",
+        text: planIsImplemented() ? "Sign off" : "Approve",
         onclick: function () { submitReview("approve"); } }));
       foot.appendChild(verdict);
       panel.appendChild(foot);

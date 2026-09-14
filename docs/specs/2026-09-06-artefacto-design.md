@@ -296,7 +296,12 @@ Behaviour added in server mode:
   Derived from the statuses the plan already carries, never declared -- a
   field an agent has to remember to set is a field that goes stale, and the
   page and the served banner must agree, so the banner reads the island the
-  page was rendered from rather than a snapshot that has not arrived yet
+  page was rendered from rather than a snapshot that has not arrived yet.
+  The title carries a stamp, *Implemented*, in the status family, and the
+  banner's chip says *For sign-off* rather than repeating it; the positive
+  verdict reads *Sign off* rather than *Approve*, while still sending
+  `approve`, because the protocol's verdict has not changed, only the
+  question put to the reviewer
 - open questions rendered as inputs, so answers arrive as data. In v1 an answer
   is free text, because `artefacto.plan/1` questions have no options field
   (`model.rs:134-139`). An optional `options` list is an additive later change.

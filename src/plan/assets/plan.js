@@ -3268,6 +3268,10 @@
       const approve = bar.querySelector(".feedback-bar-approve");
       request.disabled = S.lost || S.submitting;
       approve.disabled = S.lost || S.submitting;
+      /* A revision can turn a plan into a record while the page is open, so
+         the word follows the plan rather than being fixed when the group was
+         built. */
+      approve.textContent = planIsImplemented() ? "Sign off" : "Approve";
       request.classList.toggle("is-filled", !!S.state.submitted && S.state.verdict !== "approve");
       approve.classList.toggle("is-filled", !!S.state.submitted && S.state.verdict === "approve");
     }
@@ -3774,11 +3778,17 @@
         el("span", { class: "feedback-bar-blocking is-alarm" })));
       foot.appendChild(el("span", { class: "feedback-bar-sent" }));
       /* Two verdicts on the plan, one group. Request changes is enabled with
-         nothing written: it is a verdict on the plan, not on the comments. */
+         nothing written: it is a verdict on the plan, not on the comments.
+
+         On a plan whose work is already done, "Approve" is the wrong word --
+         there is nothing left to approve. The event is still `approve`,
+         because that is what the protocol calls the positive verdict; only
+         what the reviewer is asked changes. */
       const verdict = el("div", { class: "feedback-bar-verdict", role: "group", "aria-label": "Your verdict" });
       verdict.appendChild(el("button", { type: "button", class: "pv-btn is-alarm feedback-bar-send", text: "Request changes",
         onclick: function () { submitReview("request_changes"); } }));
-      verdict.appendChild(el("button", { type: "button", class: "pv-btn feedback-bar-approve", text: "Approve",
+      verdict.appendChild(el("button", { type: "button", class: "pv-btn feedback-bar-approve",
+        text: planIsImplemented() ? "Sign off" : "Approve",
         onclick: function () { submitReview("approve"); } }));
       foot.appendChild(verdict);
       panel.appendChild(foot);

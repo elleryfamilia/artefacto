@@ -859,6 +859,35 @@ code {
   border-bottom: var(--rule-w) solid var(--rule);
 }
 
+/* The title, and the one thing a reader must not have to work out: whether
+   this is work to come or work already done. The stamp takes the status
+   family, because that is what it is -- something the plan says, which a
+   reader never clicks -- and the small rotation is what makes it read as a
+   stamp rather than as another label in a page full of labels. */
+.pv-title-row {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.pv-title-row h1 { flex: 1 1 18rem; }
+
+.pv-stamp {
+  flex: none;
+  padding: 0.4375rem 0.9375rem;
+  border: 2px solid var(--ok);
+  border-radius: var(--radius);
+  color: var(--ok);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transform: rotate(-3deg);
+}
+
 /* The banner shows once per plan, so it carries its own way out rather than
    waiting to be scrolled past. */
 .pv-banner-dismiss { flex: none; }

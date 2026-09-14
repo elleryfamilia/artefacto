@@ -4256,6 +4256,13 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
         "Saved. The agent sees your notes when you send them."
     );
 
+    // This plan has work left, so the verdict is approval of a proposal.
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-approve').textContent"),
+        "Approve",
+        "a plan with work outstanding is approved, not signed off"
+    );
+
     // Request changes is one verdict, Approve the other; the sent one fills.
     page.click(".feedback-bar-send");
     page.wait_until(
@@ -4722,7 +4729,8 @@ fn a_served_plan_whose_work_is_done_asks_a_different_question() {
     // is already in. It says what it is and asks whether it matches.
     assert_eq!(
         page.text("document.querySelector('.pv-banner .pv-chip').textContent"),
-        "Implemented"
+        "For sign-off",
+        "the chip says what the page wants; the stamp says what the plan is"
     );
     let said = page.text("document.querySelector('.pv-banner-text').textContent");
     assert!(
@@ -4733,6 +4741,36 @@ fn a_served_plan_whose_work_is_done_asks_a_different_question() {
         page.text("document.querySelector('.pv-banner-steps').textContent")
             .contains("sign off"),
         "the steps say what is being asked for"
+    );
+
+    // And the stamp: the one thing a reader must not have to work out is
+    // whether this is work to come or work already done.
+    assert_eq!(
+        page.text("document.querySelector('.pv-title-row .pv-stamp').textContent"),
+        "Implemented"
+    );
+    assert_eq!(
+        page.eval(
+            "(function(){ const t = document.querySelector('.pv-title-row h1').getBoundingClientRect(); \
+               const s = document.querySelector('.pv-stamp').getBoundingClientRect(); \
+               return s.left >= t.right - 1 && Math.abs((s.top + s.bottom) / 2 - (t.top + t.bottom) / 2) < 40; })()"
+        ),
+        true,
+        "beside the title, not buried somewhere else on the page"
+    );
+
+    page.screenshot(&screenshot_path("implemented-plan"));
+
+    // The verdict asks the right thing too: there is nothing left to approve.
+    page.click(".pv-panel-handle");
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-approve').textContent"),
+        "Sign off"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-send').textContent"),
+        "Request changes",
+        "the other verdict still reads the same: changes to what was built"
     );
     let _ = server;
 }

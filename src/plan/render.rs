@@ -654,8 +654,12 @@ pub fn render(plan: &Plan) -> String {
                     // with it. A reviewer opening a rendered plan cold has no
                     // other way to know the page collects comments.
                     div.pv-banner {
+                        // What the page wants from the reader. The stamp by
+                        // the title says what the plan *is*; saying
+                        // "Implemented" in both put the same word twice at
+                        // the top of the page in two different colours.
                         span.pv-chip.pv-chip-solid {
-                            @if plan_is_implemented(plan) { "Implemented" } @else { "For review" }
+                            @if plan_is_implemented(plan) { "For sign-off" } @else { "For review" }
                         }
                         p.pv-banner-text {
                             (banner_lead(plan).0)
@@ -686,7 +690,17 @@ pub fn render(plan: &Plan) -> String {
                                     span.pv-eyebrow-rev { "revision " (rev) }
                                 }
                             }
-                            h1 { (plan.meta.title) }
+                            // The title, and beside it the one thing a
+                            // reader must not have to work out: whether this
+                            // is work to come or work already done. A stamp,
+                            // not a chip -- a chip in the banner is chrome,
+                            // and this is about the plan itself.
+                            div.pv-title-row {
+                                h1 { (plan.meta.title) }
+                                @if plan_is_implemented(plan) {
+                                    span.pv-stamp { "Implemented" }
+                                }
+                            }
                             @if plan.meta.goal_md.is_some() {
                                 div.pv-lede { (md(&plan.meta.goal_md)) }
                             }
@@ -1208,6 +1222,10 @@ mod tests {
         assert!(!plan_is_implemented(&plan), "not done to begin with");
         let html = render(&plan);
         assert!(html.contains(">For review</span>"), "{html}");
+        assert!(
+            !html.contains("pv-stamp\">"),
+            "no stamp on a plan with work left: {html}"
+        );
 
         for phase in &mut plan.phases {
             for task in &mut phase.tasks {
@@ -1216,7 +1234,19 @@ mod tests {
         }
         assert!(plan_is_implemented(&plan));
         let html = render(&plan);
-        assert!(html.contains(">Implemented</span>"), "{html}");
+        assert!(
+            html.contains("<span class=\"pv-stamp\">Implemented</span>"),
+            "the stamp sits with the title: {html}"
+        );
+        assert!(html.contains(">For sign-off</span>"), "{html}");
+        // As element text, not anywhere: the inlined script has a
+        // `planIsImplemented` in it.
+        assert_eq!(
+            html.matches(">Implemented<").count(),
+            1,
+            "the word is said once: the chip says what the page wants, the \
+             stamp says what the plan is"
+        );
         assert!(html.contains("Every task in this plan is done"), "{html}");
         assert!(
             html.contains("a record of what was built, not a proposal"),
