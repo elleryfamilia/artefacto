@@ -1,0 +1,38 @@
+{
+  "answers": [
+    {
+      "question": "q-installed-how",
+      "text": "no button for those people is acceptable"
+    },
+    {
+      "question": "q-offline",
+      "text": "yes"
+    },
+    {
+      "question": "q-transport",
+      "text": "follow the same approach i use in loadout: https://github.com/elleryfamilia/loadout"
+    },
+    {
+      "question": "q-who-presses",
+      "text": "yes"
+    }
+  ],
+  "base_revision": 1,
+  "comments": [
+    {
+      "asked": true,
+      "blocking": false,
+      "id": "c-1",
+      "quote": "How does artefacto speak HTTPS and read a .tar.xz? It has never made an outbound",
+      "ref": "question:q-transport",
+      "replies": [],
+      "status": "open",
+      "text": "what's teh standard why this is handled? how do i do it in https://github.com/elleryfamilia/loadout?"
+    }
+  ],
+  "format": "artefacto.feedback/1",
+  "plan_hash": "sha256:6ee5fc2d4efb5a8168bd9d28e8a429aab75fc712f1b6c21dc9dd690bd7387643",
+  "plan_id": "self-update",
+  "reviewed": [],
+  "verdict": "approve"
+}
