@@ -3811,6 +3811,31 @@ fn the_ask_button_shares_a_row_with_comment_on_every_kind_of_element() {
         "the vibe theme to apply",
     );
     page.screenshot(&screenshot_path("ask-on-kitchen-sink-vibe"));
+    // The README hero: the plan on its own in the vibe theme, with the
+    // conversation waiting in its handle rather than open over the page.
+    // Loaded a second time so the orientation, which is read once per plan,
+    // is not in the shot.
+    page.navigate(&s.page_url());
+    connected(&mut page);
+    page.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({ "width": 1400, "height": 940, "deviceScaleFactor": 2, "mobile": false }),
+    );
+    page.eval(
+        "(function(){ const hide = document.querySelector('.pv-panel-hide'); \
+           if (hide && !document.querySelector('.pv-dock').classList.contains('is-hidden')) hide.click(); \
+           window.scrollTo({ top: 0, behavior: 'instant' }); return true; })()",
+    );
+    page.wait_until(
+        "window.scrollY === 0 && document.querySelector('.pv-dock').classList.contains('is-hidden') \
+           && !document.querySelector('.pv-banner')",
+        "the plan on its own, at the top",
+    );
+    page.screenshot(&screenshot_path("hero-vibe"));
+    page.call(
+        "Emulation.clearDeviceMetricsOverride",
+        serde_json::json!({}),
+    );
     page.navigate(&s.page_url());
     connected(&mut page);
     assert_eq!(
