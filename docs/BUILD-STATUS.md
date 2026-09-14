@@ -2136,6 +2136,34 @@ every socket frame.
 Twelve mutations on the fixes, all caught in the end; two survived the first
 pass and both named a test that read stronger than it was. Gate: 560 tests.
 
+### What using it for a whole day found
+
+The design work was driven from chat and recorded on the page afterwards:
+each instruction became a phase, built, then pushed as a revision with its
+tasks already `done`. Sixteen revisions of that. The owner opened the page
+at the end and said, correctly, that it was "stuff that we've done already".
+
+That is the tool being run backwards -- its flow is push, get a verdict,
+build -- and the page had no way to say so. It does now:
+
+- **A plan whose work is done is a record, not a proposal.** Every task
+  `done`, any others `cut`, at least one `done`. The chip reads
+  *Implemented*, the banner says every task is done and asks whether what
+  was built matches, and the steps end in "sign off" rather than "verdict".
+  Derived from the statuses the plan already carries: a field an agent has
+  to remember to set is a field that goes stale, which is how this happened.
+  The served banner reads the island the page was rendered from, not the
+  snapshot -- at mount the snapshot has not arrived, and reading it there
+  made the banner contradict the chip beside it.
+- **The dependency graph's nodes read as cards.** The steps between the
+  page's three grounds are deliberately small, too small for a box to carry
+  a whole diagram, so the edge does the work: a neutral at a heavier weight.
+  The first attempt used `--numeral`, which is a quiet grey in light and
+  dark and bright gold in vibe, so it put a status colour on every node. A
+  render test holds that edge to the neutral family.
+
+Eight mutations, all caught. Gate: 564 tests.
+
 ## Where the code diverges from plan 2b, with the reason
 
 - **The lease survives a restart.** Plan 2b's Task 3 test asserts a pre-restart

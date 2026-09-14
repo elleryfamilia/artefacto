@@ -1853,10 +1853,15 @@ pre code { font-size: 1em; }
   height: auto;
 }
 
+/* A node is a card on the page, and the page's own steps between canvas,
+   page and surface are deliberately small -- too small for a box to read as
+   a box across a whole diagram. The edge does the work instead: a neutral
+   with real contrast against both fills, at a weight that survives the
+   scaling an SVG gets. */
 .plan-graph .node {
   fill: var(--surface);
-  stroke: var(--rule);
-  stroke-width: 1;
+  stroke: var(--muted);
+  stroke-width: 1.25;
 }
 
 .plan-graph .node-stripe { stroke: none; fill: var(--muted); }

@@ -289,6 +289,14 @@ Behaviour added in server mode:
   "n high risks". Only high, and only the bracket is tinted: a column that
   says something about every phase says nothing about any of them, and the
   number of tasks is not alarming
+- **a plan whose work is done says so.** Every task `done` (any others
+  `cut`, at least one `done`) makes the plan a record rather than a
+  proposal: the banner's chip reads *Implemented*, and the page asks whether
+  what was built matches rather than asking for approval of work already in.
+  Derived from the statuses the plan already carries, never declared -- a
+  field an agent has to remember to set is a field that goes stale, and the
+  page and the served banner must agree, so the banner reads the island the
+  page was rendered from rather than a snapshot that has not arrived yet
 - open questions rendered as inputs, so answers arrive as data. In v1 an answer
   is free text, because `artefacto.plan/1` questions have no options field
   (`model.rs:134-139`). An optional `options` list is an additive later change.

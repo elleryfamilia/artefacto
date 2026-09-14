@@ -4690,6 +4690,54 @@ fn the_panel_composer_sends_once_and_keeps_its_place() {
 }
 
 #[test]
+fn a_served_plan_whose_work_is_done_asks_a_different_question() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let repo = Repo::new();
+    let server = InProcess::start_in(&repo);
+    let plan = repo.path().join("plan.json");
+    std::fs::write(
+        &plan,
+        r#"{"format":"artefacto.plan/1","meta":{"id":"shipped","title":"A plan that shipped"},
+            "phases":[{"id":"p-one","title":"Phase one","tasks":[
+              {"id":"t-a","title":"Task A","status":"done"},
+              {"id":"t-b","title":"Task B","status":"done"}]}]}"#,
+    )
+    .unwrap();
+    let out = repo.run(&[
+        "plan",
+        "push",
+        plan.to_str().unwrap(),
+        "--json",
+        "--no-open",
+    ]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let v: serde_json::Value = serde_json::from_str(&out.stdout).expect("json");
+    let mut page = browser.new_page();
+    page.navigate(v["url"].as_str().unwrap());
+    connected(&mut page);
+
+    // The page does not ask the reviewer to approve a proposal for work that
+    // is already in. It says what it is and asks whether it matches.
+    assert_eq!(
+        page.text("document.querySelector('.pv-banner .pv-chip').textContent"),
+        "Implemented"
+    );
+    let said = page.text("document.querySelector('.pv-banner-text').textContent");
+    assert!(
+        said.starts_with("Every task in this plan is done.") && said.contains("This is a record"),
+        "{said}"
+    );
+    assert!(
+        page.text("document.querySelector('.pv-banner-steps').textContent")
+            .contains("sign off"),
+        "the steps say what is being asked for"
+    );
+    let _ = server;
+}
+
+#[test]
 fn the_orientation_is_read_once_and_then_gets_out_of_the_way() {
     let Some(browser) = Browser::launch() else {
         return;

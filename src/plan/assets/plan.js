@@ -4393,31 +4393,60 @@
       if (S.ui.pendingFocus && applyFocus(S.ui.pendingFocus)) S.ui.pendingFocus = null;
     }
 
+    /* Every task built or cut, with at least one built: the same rule the
+       renderer uses, in this language. A plan in that state is a record
+       rather than a proposal, and the page asks a different question. */
+    function planIsImplemented(plan) {
+      const phases = ((plan || S.state.plan || S.plan) || {}).phases || [];
+      let built = 0;
+      let outstanding = 0;
+      phases.forEach(function (p) {
+        ((p && p.tasks) || []).forEach(function (t) {
+          const status = (t && t.status) || "planned";
+          if (status === "done") built++;
+          else if (status !== "cut") outstanding++;
+        });
+      });
+      return built > 0 && outstanding === 0;
+    }
+
     /* The render's orientation banner describes the static flow, which
        ends in copying feedback. A served page ends in Send review. */
-    function mountBanner(root) {
+    /* `plan` is the island the page was rendered from: at mount the server's
+       snapshot has not arrived, so reading `S.state.plan` here would answer
+       "not done" for every plan and the banner would contradict the chip
+       the renderer already put beside it. */
+    function mountBanner(root, plan) {
+      const done = planIsImplemented(plan);
       const text = root.querySelector(".pv-banner-text");
       if (text && !text.hasAttribute("data-served")) {
         text.setAttribute("data-served", "");
-        text.replaceChildren(
-          document.createTextNode("This plan is under live review. "),
-          el("strong", { text: "Comment on anything, ask the agent in the conversation, then give your verdict there." }),
-          document.createTextNode(" Everything you write is saved as you go."));
+        if (done) {
+          text.replaceChildren(
+            document.createTextNode("Every task in this plan is done. "),
+            el("strong", { text: "Read what was built, comment on anything that is not what you asked for, then say whether it matches." }),
+            document.createTextNode(" This is a record, not a proposal."));
+        } else {
+          text.replaceChildren(
+            document.createTextNode("This plan is under live review. "),
+            el("strong", { text: "Comment on anything, ask the agent in the conversation, then give your verdict there." }),
+            document.createTextNode(" Everything you write is saved as you go."));
+        }
       }
       const steps = root.querySelector(".pv-banner-steps");
       if (steps && !steps.hasAttribute("data-served")) {
         steps.setAttribute("data-served", "");
         steps.replaceChildren(
-          el("b", { text: "01" }), document.createTextNode(" skim  "),
+          el("b", { text: "01" }), document.createTextNode(done ? " read  " : " skim  "),
           el("b", { text: "02" }), document.createTextNode(" comment  "),
-          el("b", { text: "03" }), document.createTextNode(" verdict, in the conversation"));
+          el("b", { text: "03" }), document.createTextNode(done ? " sign off, in the conversation" : " verdict, in the conversation"));
       }
     }
 
     S.mount = function (root, plan) {
       S.root = root;
       S.plan = plan;
-      mountBanner(root);
+      mountBanner(root, plan);
       mountPresence(root);
       mountElements(root);
       mountPanel(root);
