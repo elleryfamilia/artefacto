@@ -29,6 +29,29 @@ fn start() -> Loop {
     start_with(Nudges::off())
 }
 
+/// A loop whose push ran against a throwaway home, for the paths artefacto
+/// reads out of the person's home rather than out of the repository.
+fn start_with_home() -> LoopAtHome {
+    let home = tempfile::tempdir().expect("home");
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    let repo = Repo::new();
+    let server = InProcess::start_in(&repo);
+    let plan = plan_in(&repo);
+    let pushed = repo.run_with_env(
+        &["plan", "push", &plan, "--no-open"],
+        &[("HOME", &home.path().to_string_lossy())],
+    );
+    assert_eq!(pushed.code, 0, "{}", pushed.stderr);
+    LoopAtHome { repo, server, home }
+}
+
+#[allow(dead_code)]
+struct LoopAtHome {
+    repo: Repo,
+    server: InProcess,
+    home: tempfile::TempDir,
+}
+
 fn start_with(nudges: Nudges) -> Loop {
     let repo = Repo::new();
     let server = InProcess::start_in_with(&repo, nudges);
@@ -415,6 +438,171 @@ fn a_nudge_reaches_the_page_as_a_banner_and_is_not_logged() {
     );
 }
 
+/// Nothing in a downloaded binary can run at install time, so the first time
+/// artefacto is used for its purpose it puts the skill in front of the agents
+/// on this machine. Otherwise the person has installed a binary that nothing
+/// knows how to drive.
+#[test]
+fn pushing_a_plan_puts_the_skill_in_front_of_the_agents_here() {
+    let l = start_with_home();
+    let home = l.home.path().to_string_lossy().to_string();
+    let skill = l.home.path().join(".claude/skills/artefacto-plan/SKILL.md");
+    assert!(skill.exists(), "the push installed it");
+    assert!(
+        !l.home.path().join(".codex").exists(),
+        "and only where an agent already keeps its configuration"
+    );
+
+    // Silent and idempotent afterwards: the second push has nothing to say.
+    let plan = plan_in(&l.repo);
+    let again = l.repo.run_with_env(
+        &["plan", "push", &plan, "--base-revision", "1", "--no-open"],
+        &[("HOME", &home)],
+    );
+    assert_eq!(again.code, 0, "{}", again.stderr);
+    assert!(
+        !again.stderr.contains("installed the artefacto-plan skill"),
+        "nothing changed, so nothing was said: {}",
+        again.stderr
+    );
+
+    // What an older artefacto left behind: its own files, and a receipt that
+    // matches them. That is artefacto's to update, and the push does, so the
+    // skill an agent reads never lags the binary it describes.
+    let root = l.home.path().join(".claude/skills/artefacto-plan");
+    let old_body = "an older artefacto wrote this";
+    std::fs::write(&skill, old_body).unwrap();
+    std::fs::write(
+        root.join(".artefacto.json"),
+        serde_json::json!({
+            "format": "artefacto.skill/1",
+            "artefacto": "0.0.1",
+            "files": {
+                "artefacto-plan/SKILL.md": sha256_of(old_body.as_bytes()),
+                "artefacto-plan/reference.md":
+                    sha256_of(&std::fs::read(root.join("reference.md")).unwrap()),
+            },
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let third = l.repo.run_with_env(
+        &["plan", "push", &plan, "--base-revision", "2", "--no-open"],
+        &[("HOME", &home)],
+    );
+    assert_eq!(third.code, 0, "{}", third.stderr);
+    assert_eq!(
+        std::fs::read_to_string(&skill).unwrap(),
+        std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/artefacto-plan/SKILL.md")
+        )
+        .unwrap(),
+        "the older copy is now this binary's, byte for byte"
+    );
+}
+
+fn sha256_of(bytes: &[u8]) -> String {
+    artefacto::hash::bytes_hash(bytes)
+}
+
+/// An automatic update that reverts a person's own edits is worse than one
+/// that never runs. The receipt says which copies are artefacto's to touch.
+#[test]
+fn a_push_leaves_a_skill_somebody_edited_alone_and_says_so() {
+    let l = start_with_home();
+    let home = l.home.path().to_string_lossy().to_string();
+    let skill = l.home.path().join(".claude/skills/artefacto-plan/SKILL.md");
+    std::fs::write(&skill, "my own version").unwrap();
+
+    let plan = plan_in(&l.repo);
+    let out = l.repo.run_with_env(
+        &["plan", "push", &plan, "--base-revision", "1", "--no-open"],
+        &[("HOME", &home)],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        std::fs::read_to_string(&skill).unwrap(),
+        "my own version",
+        "left exactly as it was"
+    );
+    assert!(
+        out.stderr.contains("has been edited") && out.stderr.contains("left alone"),
+        "and the person is told, or the agent quietly runs an old one: {}",
+        out.stderr
+    );
+}
+
+/// A test suite must not reach into the machine it runs on. Every test
+/// repository gets a home of its own, and a push installs there.
+#[test]
+fn a_plain_push_installs_into_the_tests_own_home_and_no_other() {
+    let repo = Repo::new();
+    std::fs::create_dir_all(repo.home().join(".claude")).unwrap();
+    let _server = InProcess::start_in(&repo);
+    let plan = plan_in(&repo);
+    let out = repo.run(&["plan", "push", &plan, "--no-open"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(
+        repo.home()
+            .join(".claude/skills/artefacto-plan/SKILL.md")
+            .exists(),
+        "HOME is the repository's own, not the machine's"
+    );
+}
+
+/// An install that cannot be done is said out loud. Silence would leave the
+/// agent reading nothing, or an old copy, with nobody the wiser.
+#[test]
+fn a_push_says_when_it_could_not_install_the_skill() {
+    let repo = Repo::new();
+    let skills = repo.home().join(".claude/skills");
+    std::fs::create_dir_all(&skills).unwrap();
+    // A link to nothing: the skill reads as absent, so an install is tried,
+    // and writing through a link is refused.
+    std::os::unix::fs::symlink(repo.home().join("nowhere"), skills.join("artefacto-plan")).unwrap();
+
+    let _server = InProcess::start_in(&repo);
+    let plan = plan_in(&repo);
+    let out = repo.run(&["plan", "push", &plan, "--no-open"]);
+    assert_eq!(
+        out.code, 0,
+        "the push itself still succeeds: {}",
+        out.stderr
+    );
+    assert!(
+        out.stderr
+            .contains("could not install the artefacto-plan skill"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        !repo.home().join("nowhere").exists(),
+        "and nothing was written through the link"
+    );
+}
+
+#[test]
+fn a_push_can_be_told_to_keep_out_of_your_home() {
+    let home = tempfile::tempdir().expect("home");
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    let repo = Repo::new();
+    let _server = InProcess::start_in(&repo);
+    let plan = plan_in(&repo);
+    let out = repo.run_with_env(
+        &["plan", "push", &plan, "--no-open"],
+        &[
+            ("HOME", &home.path().to_string_lossy()),
+            ("ARTEFACTO_NO_SKILL_INSTALL", "1"),
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(
+        !home.path().join(".claude/skills").exists(),
+        "asked not to, so it did not"
+    );
+}
+
 #[test]
 fn an_interrupt_is_a_nudge_that_carries_what_the_dialog_needs() {
     let l = start();
@@ -644,7 +832,7 @@ fn nudged(idle: Option<Duration>, away: Option<Duration>) -> InProcess {
 }
 
 #[test]
-fn idle_fires_once_per_quiet_period_and_re_arms_after_activity() {
+fn idle_is_said_once_until_the_reviewer_actually_does_something() {
     let server = nudged(Some(Duration::from_secs(900)), None);
     let _page = server.connect_page();
     support::wait_for(|| server.page_count() == 1, "the page should attach");
@@ -659,12 +847,33 @@ fn idle_fires_once_per_quiet_period_and_re_arms_after_activity() {
         "once per quiet period, not once per tick"
     );
 
+    // Touched, then quiet again, with nothing written in between. A page left
+    // open beside a day's work does this many times over, and each repeat
+    // costs the agent a turn to be told what it already knows.
     server.mark_reviewer_activity_at(1_300_000);
     presence::tick(&server.shared, 2_300_000);
     assert_eq!(
         server.count_events("reviewer.idle"),
+        1,
+        "moving a pointer is not news"
+    );
+
+    // Something the agent has not seen: now going quiet is worth saying.
+    let cookie = server.session_cookie("plan:demo");
+    let r = server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "element.reviewed", "client_id": "cid-1", "ref": "task:t-a", "on": true
+        }),
+    );
+    assert_eq!(r["ok"], true, "{r}");
+    server.mark_reviewer_activity_at(2_400_000);
+    presence::tick(&server.shared, 3_400_000);
+    assert_eq!(
+        server.count_events("reviewer.idle"),
         2,
-        "activity re-arms it"
+        "the reviewer did something, then went quiet: that is worth one nudge"
     );
 }
 

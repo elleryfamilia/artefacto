@@ -22,6 +22,20 @@ pub fn context_hash<T: Serialize>(value: &T) -> String {
     hex
 }
 
+/// `sha256:<hex>` over bytes, for content the caller already has.
+pub fn bytes_hash(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(7 + digest.len() * 2);
+    hex.push_str("sha256:");
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}
+
 /// Short form of a hash for compact display (`sha256:abcd1234…`).
 pub fn short(hash: &str) -> String {
     match hash.strip_prefix("sha256:") {

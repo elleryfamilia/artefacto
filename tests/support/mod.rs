@@ -67,12 +67,45 @@ impl Repo {
         let mut c = Command::new(bin());
         c.args(args)
             .current_dir(self.dir.path())
-            .env("XDG_STATE_HOME", self.state_root());
+            .env("XDG_STATE_HOME", self.state_root())
+            // A throwaway home by default. `plan push` installs the skill
+            // into the agent directories it finds under HOME, and a test
+            // suite must not reach into the machine it runs on: without
+            // this, running the tests rewrites the developer's own
+            // ~/.claude/skills. A test that is about the install overrides
+            // it with `run_with_env`.
+            .env("HOME", self.home())
+            // HOME alone is not enough: an agent whose configuration
+            // directory has been moved with an environment variable is still
+            // reachable from a test if that variable is inherited.
+            .env_remove("CLAUDE_CONFIG_DIR");
         c
+    }
+
+    /// A home of this repository's own, created on demand.
+    pub fn home(&self) -> PathBuf {
+        let home = self.dir.path().join("home");
+        let _ = std::fs::create_dir_all(&home);
+        home
     }
 
     pub fn run(&self, args: &[&str]) -> Out {
         let out = self.command(args).output().expect("running artefacto");
+        Out {
+            code: out.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+        }
+    }
+
+    /// Run with extra environment, for the paths artefacto reads out of the
+    /// person's home rather than out of the repository.
+    pub fn run_with_env(&self, args: &[&str], env: &[(&str, &str)]) -> Out {
+        let mut c = self.command(args);
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        let out = c.output().expect("running artefacto");
         Out {
             code: out.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&out.stdout).to_string(),
@@ -388,7 +421,7 @@ impl InProcess {
         let shared = Arc::new(Shared::with_nudges(&path, secret, port, nudges).expect("shared"));
         let s = Arc::clone(&server);
         let sh = Arc::clone(&shared);
-        let thread = std::thread::spawn(move || run(sh, s, idle));
+        let thread = std::thread::spawn(move || run(sh, s, Some(idle)));
         InProcess {
             port,
             shared,

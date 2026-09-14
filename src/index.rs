@@ -5,8 +5,8 @@
 //! a static `render` is made with no server running, so the index is its
 //! own file, `index.json` in the state directory. `render` writes it, the
 //! server writes it whenever a review's facts change, and `list` and the
-//! served index page read it. It keeps the conventions rosita settled on
-//! for its Recents registry: a file written by a newer artefacto is left
+//! served index page read it. Its conventions are the ones a registry of
+//! this shape needs: a file written by a newer artefacto is left
 //! alone and read as empty, a corrupt file loads empty and is repaired by
 //! the next write, and nothing is ever pruned on the user's behalf — an
 //! absent source file usually means an unmounted volume, not a dead

@@ -58,11 +58,21 @@ pub enum Command {
     },
 }
 
-/// Exactly one form. Spec 4.5: the manifest is what a skill lifecycle
-/// consumes; the directory is for anything that would rather copy files.
+/// Exactly one form. The agents are what a person installing artefacto
+/// wants; the manifest is what a skill lifecycle consumes; the directory is
+/// for anything that would rather copy files itself.
 #[derive(Args, Debug)]
 #[command(group = clap::ArgGroup::new("form").required(true))]
 pub struct SkillArgs {
+    /// Install into the agents that read skills: a comma-separated list of
+    /// names, or `all` for every one found on this machine.
+    #[arg(
+        long = "for",
+        group = "form",
+        value_name = "AGENTS",
+        value_delimiter = ','
+    )]
+    pub agents: Vec<String>,
     /// Print a JSON manifest of every file's relative path and contents.
     #[arg(long, group = "form")]
     pub print: bool,
@@ -255,6 +265,15 @@ pub struct ServeArgs {
     /// before the agent is told the reviewer is away. `off` disables it.
     #[arg(long, default_value = "5m", value_parser = parse_window)]
     pub away: Window,
+    /// How long with no page connected, no agent holding the lease and no
+    /// request at all before the server exits. `off` keeps it running.
+    ///
+    /// A different window from `--idle`, which is about a reviewer who has
+    /// gone quiet with the page still open. This one is about nobody being
+    /// there at all. Stopping costs nothing: the log is the whole review, and
+    /// `plan push` and `open` both start a server that is not running.
+    #[arg(long = "idle-exit", default_value = "30m", value_parser = parse_window)]
+    pub idle_exit: Window,
 }
 
 impl Default for ServeArgs {
@@ -265,6 +284,7 @@ impl Default for ServeArgs {
             no_open: false,
             idle: Window(Some(std::time::Duration::from_secs(15 * 60))),
             away: Window(Some(std::time::Duration::from_secs(5 * 60))),
+            idle_exit: Window(Some(std::time::Duration::from_secs(30 * 60))),
         }
     }
 }
