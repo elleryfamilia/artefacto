@@ -430,6 +430,21 @@ html.is-interrupted, html.is-interrupted body { overflow: hidden; }
 .ag-interrupt-timer { height: 2px; background: var(--rule-soft); margin: 0.875rem -1.25rem -1rem; }
 .ag-interrupt-timer span { display: block; height: 100%; background: var(--action); transition: width 200ms linear; }
 
+/* The reviewer's own confirm. Same geometry as the interrupt so the page has
+   one dialog shape, but the agent's colour and mark are deliberately absent:
+   nobody is talking to you here, you are being asked whether you meant it. */
+.pv-confirm {
+  width: min(27rem, 100%); margin: auto 0; background: var(--page); border: var(--rule-w) solid var(--rule);
+  border-top: 3px solid var(--action); border-radius: var(--radius-lg); box-shadow: var(--shadow-float);
+  padding: 1.125rem 1.25rem 1rem; animation: ag-interrupt-in var(--t-slow) var(--ease) both;
+}
+.pv-confirm-title { font-family: var(--font-display); font-weight: 400; font-size: 1.375rem; line-height: 1.2; letter-spacing: -0.01em; margin: 0 0 0.5rem; color: var(--ink); text-wrap: pretty; }
+.pv-confirm-body { font-size: 1rem; line-height: 1.5; color: var(--ink-2); margin: 0; max-width: 44ch; text-wrap: pretty; }
+.pv-confirm-detail { font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted); margin: 0.625rem 0 0; }
+.pv-confirm-warn { font-size: 0.8125rem; line-height: 1.45; color: var(--alarm); margin: 0.625rem 0 0; }
+.pv-confirm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 1.125rem; }
+.pv-confirm-actions .is-quiet { margin-left: auto; }
+
 /* ---------------------------------------------------------------------------
    Motion
    ---------------------------------------------------------------------------
@@ -2766,6 +2781,18 @@ pre code { font-size: 1em; }
 .feedback-bar-sent { color: var(--ok); font-weight: 500; }
 .feedback-bar-sent:empty { display: none; }
 
+/* The verdict where the reading ends. The panel foot keeps its copy for a
+   reviewer mid-conversation; this one is for the reviewer who just finished
+   the document and has nowhere else to say what they think. */
+.pv-verdict-end {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1rem;
+  margin: 2.5rem 0 1rem; padding-top: 1.125rem; border-top: var(--rule-w) solid var(--rule);
+}
+.pv-verdict-end-head { display: flex; flex-direction: column; gap: 0.125rem; margin-right: auto; }
+.pv-verdict-end-kicker { font-family: var(--font-mono); font-size: 0.625rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+.pv-verdict-end-note { font-size: 0.8125rem; color: var(--ink-2); }
+.pv-verdict-end-note:empty { display: none; }
+
 label.feedback-bar-approve {
   display: inline-flex;
   align-items: center;
@@ -4226,6 +4253,14 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
     return Math.max(0, max * fraction);
   }
 
+  /* The strip's coordinate space, reachable from a test. The segments are
+     not a linear map of the document -- each has a floor under its width and
+     a gap beside it -- so "scroll to where the strip says phase N is" cannot
+     be written as a fraction of the document without guessing. A test that
+     guesses one is a test that breaks whenever the page grows a row: this
+     pair lets it aim at a segment instead. */
+  core.map = { lineToX: lineToX, xToLine: xToLine, lineToScroll: lineToScroll };
+
   /* That fraction as a position in the document, for the parts to answer to. */
   function readLine() {
     const parts = mapState.parts;
@@ -5354,6 +5389,11 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
     S.ui.interrupted = {};
     S.ui.interruptNext = null;
     S.ui.closeInterrupt = null;
+    /* The reviewer's own confirm, which is a different thing from the
+       agent's interrupt: one asks whether you meant it, the other says the
+       agent has stopped. Kept apart so the agent can take the screen from a
+       confirm without either dialog having to know the other's shape. */
+    S.ui.closeConfirm = null;
 
     /* ---- transport ------------------------------------------------- */
 
@@ -6324,24 +6364,88 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       const when = S.ui.sentAt ? " \u00b7 " + clock(S.ui.sentAt) : "";
       bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent \u00b7 rev " + S.state.revision + when : "";
       bar.classList.toggle("is-sent", !!S.state.submitted);
-      /* Two verdicts, one group; the one that was sent is the filled control. */
-      const request = bar.querySelector(".feedback-bar-send");
-      const approve = bar.querySelector(".feedback-bar-approve");
-      request.disabled = S.lost || S.submitting;
-      approve.disabled = S.lost || S.submitting;
-      /* A revision can turn a plan into a record while the page is open, so
-         the word follows the plan rather than being fixed when the group was
-         built. */
-      approve.textContent = planIsImplemented() ? "Sign off" : "Approve";
-      request.classList.toggle("is-filled", !!S.state.submitted && S.state.verdict !== "approve");
-      approve.classList.toggle("is-filled", !!S.state.submitted && S.state.verdict === "approve");
+      /* Two verdicts, one group; the one that was sent is the filled
+         control. The group is mounted more than once -- the panel foot and
+         the end of the document -- so this walks every instance. A
+         `querySelector` here would leave the second group frozen at whatever
+         it was built with, which is the kind of bug that only shows up after
+         someone sends a review and scrolls. */
+      document.querySelectorAll(".feedback-bar-verdict").forEach(function (group) {
+        const request = group.querySelector(".feedback-bar-send");
+        const approve = group.querySelector(".feedback-bar-approve");
+        request.disabled = S.lost || S.submitting;
+        approve.disabled = S.lost || S.submitting;
+        /* A revision can turn a plan into a record while the page is open, so
+           the word follows the plan rather than being fixed when the group was
+           built. */
+        approve.textContent = planIsImplemented() ? "Sign off" : "Approve";
+        request.classList.toggle("is-filled", !!S.state.submitted && S.state.verdict !== "approve");
+        approve.classList.toggle("is-filled", !!S.state.submitted && S.state.verdict === "approve");
+      });
+      /* The end-of-document group has no counts line of its own to read, so
+         it carries the same summary the panel foot shows. */
+      const endNote = document.querySelector(".pv-verdict-end-note");
+      if (endNote) {
+        endNote.textContent = S.state.submitted
+          ? "sent · rev " + S.state.revision + when
+          : threads.length + (threads.length === 1 ? " thread · " : " threads · ") + k + "/" + taskEls.length + " reviewed";
+      }
     }
 
-    function submitReview(verdict) {
+    /* Approving is the one control on this page whose effect leaves it: the
+       verdict goes to the agent, and the agent may start building on it. So
+       it asks first, and says what is about to be sent.
+
+       Request changes does not ask. It keeps the plan open, which is the
+       recoverable direction, and a confirm on the safe verdict would train
+       the reviewer to click through the one that matters. */
+    function submitReview(verdict, from) {
+      if (S.submitting) return;
+      if (verdict !== "approve") {
+        sendVerdict(verdict, from);
+        return;
+      }
+      const word = planIsImplemented() ? "Sign off" : "Approve";
+      const counts = verdictCounts();
+      confirmDialog({
+        title: word + " revision " + S.state.revision + "?",
+        body: S.state.presence
+          ? "This sends your verdict to " + agentTitle() + "."
+          : "This sends your verdict. No agent is attached, so it waits for one.",
+        detail: counts.open + (counts.open === 1 ? " open thread, " : " open threads, ")
+          + counts.reviewed + " of " + counts.tasks + " tasks reviewed.",
+        warn: counts.blocking
+          ? counts.blocking + (counts.blocking === 1 ? " open thread is marked blocking." : " open threads are marked blocking.")
+          : "",
+        action: word,
+        onGo: function () { sendVerdict(verdict, from); }
+      });
+    }
+
+    /* The counts the confirm reads out, computed the same way the bar does. */
+    function verdictCounts() {
+      const threads = S.state.threads.filter(function (t) { return t.status !== "unanchored"; });
+      const open = threads.filter(function (t) { return t.status === "open"; });
+      const taskEls = S.root ? S.root.querySelectorAll('.task[data-plan-ref^="task:"]') : [];
+      let k = 0;
+      taskEls.forEach(function (t) { if (S.state.reviewed.indexOf(t.getAttribute("data-plan-ref")) >= 0) k++; });
+      return {
+        open: open.length,
+        blocking: open.filter(function (t) { return t.blocking; }).length,
+        reviewed: k,
+        tasks: taskEls.length
+      };
+    }
+
+    function sendVerdict(verdict, from) {
       if (S.submitting) return;
       S.submitting = true;
       renderBar();
+      /* The button that was clicked is the one that pulses -- but only if it
+         is still in the document, because a revision can replace the page
+         while the request is in flight. */
       const button = function () {
+        if (from && document.contains(from)) return from;
         return document.querySelector(verdict === "approve" ? ".feedback-bar-approve" : ".feedback-bar-send");
       };
       send({ cmd: "review.submit", verdict: verdict, base_revision: S.state.revision })
@@ -6838,20 +6942,7 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
         el("span", { class: "feedback-bar-reviewed" }),
         el("span", { class: "feedback-bar-blocking is-alarm" })));
       foot.appendChild(el("span", { class: "feedback-bar-sent" }));
-      /* Two verdicts on the plan, one group. Request changes is enabled with
-         nothing written: it is a verdict on the plan, not on the comments.
-
-         On a plan whose work is already done, "Approve" is the wrong word --
-         there is nothing left to approve. The event is still `approve`,
-         because that is what the protocol calls the positive verdict; only
-         what the reviewer is asked changes. */
-      const verdict = el("div", { class: "feedback-bar-verdict", role: "group", "aria-label": "Your verdict" });
-      verdict.appendChild(el("button", { type: "button", class: "pv-btn is-alarm feedback-bar-send", text: "Request changes",
-        onclick: function () { submitReview("request_changes"); } }));
-      verdict.appendChild(el("button", { type: "button", class: "pv-btn feedback-bar-approve",
-        text: planIsImplemented() ? "Sign off" : "Approve",
-        onclick: function () { submitReview("approve"); } }));
-      foot.appendChild(verdict);
+      foot.appendChild(verdictGroup());
       panel.appendChild(foot);
 
       const dock = el("aside", { class: "pv-dock", "aria-label": "Conversation with the agent" });
@@ -6871,7 +6962,43 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       /* One way in, not two: the floating handle is always in reach and
          steps aside when the panel is open, so the bar carries nothing
          about the conversation. */
+
+      /* The same verdict, at the end of the document. Before this the group
+         existed only in the panel foot, so the only way to approve a plan
+         was to open the conversation with the agent -- a strange place to
+         keep a decision about the document, and reviewers said so. This is
+         where someone who has just read to the end already is. */
+      const main = document.querySelector(".pv-main");
+      if (main) {
+        main.appendChild(el("div", { class: "pv-verdict-end" },
+          el("div", { class: "pv-verdict-end-head" },
+            el("span", { class: "pv-verdict-end-kicker", text: "Your verdict" }),
+            el("span", { class: "pv-verdict-end-note" })),
+          verdictGroup()));
+      }
       wireLeaving();
+    }
+
+    /* Two verdicts on the plan, one group. Request changes is enabled with
+       nothing written: it is a verdict on the plan, not on the comments.
+
+       On a plan whose work is already done, "Approve" is the wrong word --
+       there is nothing left to approve. The event is still `approve`,
+       because that is what the protocol calls the positive verdict; only
+       what the reviewer is asked changes.
+
+       Built more than once -- the panel foot and the end of the document --
+       so nothing here may assume it is the only one. `renderBar` keeps every
+       instance in step, and the button that was clicked is the one that
+       pulses, rather than whichever one the document happens to hold first. */
+    function verdictGroup() {
+      const verdict = el("div", { class: "feedback-bar-verdict", role: "group", "aria-label": "Your verdict" });
+      verdict.appendChild(el("button", { type: "button", class: "pv-btn is-alarm feedback-bar-send", text: "Request changes",
+        onclick: function () { submitReview("request_changes", this); } }));
+      verdict.appendChild(el("button", { type: "button", class: "pv-btn feedback-bar-approve",
+        text: planIsImplemented() ? "Sign off" : "Approve",
+        onclick: function () { submitReview("approve", this); } }));
+      return verdict;
     }
 
     /* ---- the interrupt ------------------------------------------------
@@ -6891,10 +7018,71 @@ label.feedback-bar-approve input { margin: 0; accent-color: var(--ok); }
       hanging: { kind: "", kicker: "The review is waiting", action: "Open the conversation" },
     };
 
+    /* The reviewer's own confirm. It shares the interrupt's backdrop and
+       scroll lock and nothing else: no agent mark, no kicker, no agent
+       colour. This is the page asking whether you meant it, not the agent
+       asking for you. */
+    function confirmDialog(o) {
+      /* The agent's interrupt owns the screen; a confirm underneath it would
+         be unreachable behind its backdrop. */
+      if (S.ui.interrupt || S.ui.closeConfirm) return;
+      const dim = el("div", { class: "ag-dim" });
+      const box = el("div", { class: "pv-confirm", role: "dialog", "aria-modal": "true",
+        "aria-labelledby": "pv-confirm-title" });
+      box.appendChild(el("h2", { class: "pv-confirm-title", id: "pv-confirm-title", text: o.title }));
+      box.appendChild(el("p", { class: "pv-confirm-body", text: o.body }));
+      if (o.detail) box.appendChild(el("p", { class: "pv-confirm-detail", text: o.detail }));
+      if (o.warn) box.appendChild(el("p", { class: "pv-confirm-warn", text: o.warn }));
+      const actions = el("div", { class: "pv-confirm-actions" });
+      const go = el("button", { type: "button", class: "pv-btn is-lg is-filled pv-confirm-go", text: o.action });
+      const not = el("button", { type: "button", class: "pv-btn is-quiet pv-confirm-not", text: "Cancel" });
+      actions.appendChild(go);
+      actions.appendChild(not);
+      box.appendChild(actions);
+      dim.appendChild(box);
+
+      const previous = document.activeElement;
+      const close = function (taken) {
+        document.removeEventListener("keydown", onKey, true);
+        dim.remove();
+        document.documentElement.classList.remove("is-interrupted");
+        S.ui.closeConfirm = null;
+        if (previous && previous.focus && document.contains(previous)) {
+          previous.focus({ preventScroll: true });
+        }
+        if (taken && o.onGo) o.onGo();
+      };
+      S.ui.closeConfirm = close;
+      const onKey = function (e) {
+        if (e.key === "Escape") { e.preventDefault(); close(false); return; }
+        if (e.key !== "Tab") return;
+        const focusable = box.querySelectorAll("button");
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      };
+      go.addEventListener("click", function () { close(true); });
+      not.addEventListener("click", function () { close(false); });
+      dim.addEventListener("mousedown", function (e) { if (e.target === dim) close(false); });
+      document.addEventListener("keydown", onKey, true);
+      document.documentElement.appendChild(dim);
+      document.documentElement.classList.add("is-interrupted");
+      /* Cancel takes the focus, not the verdict. A dialog that asks whether
+         you meant it must not let a stray Enter mean yes. */
+      not.focus({ preventScroll: true });
+    }
+    S.confirmDialog = confirmDialog;
+
     function interrupt(cause, opts) {
       const o = opts || {};
       const spec = INTERRUPT[cause];
       if (!spec) return;
+      /* The agent stopping outranks the reviewer's own confirm: the confirm
+         is a question the reviewer can ask again, and leaving it under the
+         interrupt's backdrop would strand it. */
+      if (S.ui.closeConfirm) S.ui.closeConfirm(false);
       /* A cause with a key is one the page works out for itself and would
          otherwise raise on every render; a cause without one is the agent
          deciding to interrupt, and that is never second-guessed. An empty
