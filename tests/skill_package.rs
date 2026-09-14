@@ -8,7 +8,12 @@ use clap::Parser;
 use std::path::Path;
 
 fn bin() -> Command {
-    Command::cargo_bin("artefacto").expect("binary")
+    let mut c = Command::cargo_bin("artefacto").expect("binary");
+    // Every test names the home it means. A variable inherited from the
+    // developer's own shell must not send a test's writes to their real
+    // agent configuration.
+    c.env_remove("CLAUDE_CONFIG_DIR");
+    c
 }
 
 fn repo_file(rel: &str) -> String {
@@ -596,5 +601,91 @@ fn a_moved_configuration_directory_is_the_one_installed_into() {
     assert!(
         !home.path().join(".claude/skills").exists(),
         "and not to the default it no longer uses"
+    );
+}
+
+/// An override that points nowhere useful is not a place to write. Falling
+/// back to the default would put the skill where the agent is not reading.
+#[test]
+fn a_relative_configuration_override_means_no_agent_rather_than_the_default() {
+    let home = tempfile::tempdir().expect("home");
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    let out = bin()
+        .args(["skill", "--for", "all"])
+        .env("HOME", home.path())
+        .env("CLAUDE_CONFIG_DIR", "somewhere/relative")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("no agent found"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        !home.path().join(".claude/skills").exists(),
+        "and nothing written to the default it is not using"
+    );
+}
+
+/// Staging leaves nothing behind. A leftover would sit in the skills
+/// directory looking like part of the package.
+#[test]
+fn an_install_leaves_no_staging_files_behind() {
+    let home = tempfile::tempdir().expect("home");
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    bin()
+        .args(["skill", "--for", "claude"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    let root = home.path().join(".claude/skills/artefacto-plan");
+    let left: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.contains("artefacto-"))
+        .collect();
+    assert_eq!(left, Vec::<String>::new(), "no staging debris");
+    let mut names: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec![".artefacto.json", "SKILL.md", "reference.md"]);
+}
+
+/// The staging name is not a name anybody can sit on. A fixed one could
+/// itself be a link somebody left in the skills directory, and writing the
+/// staged copy would follow it before the rename ever happened.
+#[test]
+fn a_link_left_at_the_obvious_staging_name_is_not_written_through() {
+    let home = tempfile::tempdir().expect("home");
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let bait = elsewhere.path().join("somebody-elses.md");
+    std::fs::write(&bait, "somebody else's file").unwrap();
+    let root = home.path().join(".claude/skills/artefacto-plan");
+    std::fs::create_dir_all(&root).unwrap();
+    std::os::unix::fs::symlink(&bait, root.join(".SKILL.md.artefacto-new")).unwrap();
+
+    let out = bin()
+        .args(["skill", "--for", "claude"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&bait).unwrap(),
+        "somebody else's file",
+        "the staged write went to a name of its own, not through the bait"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("SKILL.md")).unwrap(),
+        repo_file("skills/artefacto-plan/SKILL.md")
     );
 }

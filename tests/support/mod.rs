@@ -74,7 +74,11 @@ impl Repo {
             // this, running the tests rewrites the developer's own
             // ~/.claude/skills. A test that is about the install overrides
             // it with `run_with_env`.
-            .env("HOME", self.home());
+            .env("HOME", self.home())
+            // HOME alone is not enough: an agent whose configuration
+            // directory has been moved with an environment variable is still
+            // reachable from a test if that variable is inherited.
+            .env_remove("CLAUDE_CONFIG_DIR");
         c
     }
 

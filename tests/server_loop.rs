@@ -551,6 +551,37 @@ fn a_plain_push_installs_into_the_tests_own_home_and_no_other() {
     );
 }
 
+/// An install that cannot be done is said out loud. Silence would leave the
+/// agent reading nothing, or an old copy, with nobody the wiser.
+#[test]
+fn a_push_says_when_it_could_not_install_the_skill() {
+    let repo = Repo::new();
+    let skills = repo.home().join(".claude/skills");
+    std::fs::create_dir_all(&skills).unwrap();
+    // A link to nothing: the skill reads as absent, so an install is tried,
+    // and writing through a link is refused.
+    std::os::unix::fs::symlink(repo.home().join("nowhere"), skills.join("artefacto-plan")).unwrap();
+
+    let _server = InProcess::start_in(&repo);
+    let plan = plan_in(&repo);
+    let out = repo.run(&["plan", "push", &plan, "--no-open"]);
+    assert_eq!(
+        out.code, 0,
+        "the push itself still succeeds: {}",
+        out.stderr
+    );
+    assert!(
+        out.stderr
+            .contains("could not install the artefacto-plan skill"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        !repo.home().join("nowhere").exists(),
+        "and nothing was written through the link"
+    );
+}
+
 #[test]
 fn a_push_can_be_told_to_keep_out_of_your_home() {
     let home = tempfile::tempdir().expect("home");

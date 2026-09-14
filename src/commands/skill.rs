@@ -85,9 +85,11 @@ impl Agent {
         if let Some(var) = self.root_env {
             if let Some(set) = std::env::var_os(var).filter(|v| !v.is_empty()) {
                 let moved = PathBuf::from(set);
-                if moved.is_absolute() {
-                    return Some(moved);
-                }
+                /* A relative override is not somewhere to fall back from:
+                the agent is reading one directory and artefacto would write
+                to another, and nobody would be told. Better to find no
+                agent at all. */
+                return moved.is_absolute().then_some(moved);
             }
         }
         home_dir().map(|h| h.join(self.home))
@@ -315,6 +317,8 @@ pub fn standing(dir: &Path) -> Standing {
 /// the entry rather than following it, and a skill directory that is itself a
 /// link is refused outright.
 pub fn install(dir: &Path) -> Result<Vec<PathBuf>> {
+    use std::io::Write as _;
+
     let root = dir.join(SKILL_NAME);
     if std::fs::symlink_metadata(&root).is_ok_and(|m| m.file_type().is_symlink()) {
         anyhow::bail!(
@@ -322,28 +326,61 @@ pub fn install(dir: &Path) -> Result<Vec<PathBuf>> {
             root.display()
         );
     }
-    let mut written = Vec::with_capacity(FILES.len());
-    for file in FILES {
-        let target = dir.join(file.path);
+
+    /* Everything is staged first and only then renamed into place. Two
+    reasons. A rename replaces the entry at the target rather than following
+    it, so a file that is a link is replaced and whatever it pointed at is
+    left alone. And staging the whole package before moving any of it keeps
+    the window in which half of it is this version and half the last one
+    down to a few renames.
+
+    The staged names carry the process id and are opened with `create_new`,
+    which fails rather than following a link or overwriting anything. A fixed
+    name could itself be a link somebody left there, and two artefacto
+    processes installing at once would write through each other's. */
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(FILES.len() + 1);
+    let mut stage = |target: PathBuf, contents: &str| -> Result<()> {
         let Some(parent) = target.parent() else {
             anyhow::bail!("{} has no parent", target.display());
         };
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
-        let staged = parent.join(format!(
-            ".{}.artefacto-new",
-            target.file_name().unwrap_or_default().to_string_lossy()
-        ));
-        std::fs::write(&staged, file.contents)
-            .with_context(|| format!("writing {}", staged.display()))?;
-        std::fs::rename(&staged, &target)
-            .with_context(|| format!("replacing {}", target.display()))?;
-        written.push(target);
+        let name = target.file_name().unwrap_or_default().to_string_lossy();
+        let at = parent.join(format!(".{name}.artefacto-{}", std::process::id()));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&at)
+            .with_context(|| format!("staging {}", at.display()))?;
+        file.write_all(contents.as_bytes())
+            .with_context(|| format!("writing {}", at.display()))?;
+        staged.push((at, target));
+        Ok(())
+    };
+
+    let mut staging = || -> Result<()> {
+        for file in FILES {
+            stage(dir.join(file.path), file.contents)?;
+        }
+        stage(dir.join(RECEIPT), &format!("{}\n", receipt()))
+    };
+    if let Err(e) = staging() {
+        /* Not reachable from a test: the staged names carry this process's
+        id, so nothing outside can arrange for one of them to fail. Kept
+        because the alternative is leaving half a package's worth of debris
+        in somebody's skills directory. */
+        for (at, _) in &staged {
+            let _ = std::fs::remove_file(at);
+        }
+        return Err(e);
     }
-    let target = dir.join(RECEIPT);
-    let staged = target.with_file_name(".artefacto.json.artefacto-new");
-    std::fs::write(&staged, format!("{}\n", receipt()))
-        .with_context(|| format!("writing {}", staged.display()))?;
-    std::fs::rename(&staged, &target).with_context(|| format!("replacing {}", target.display()))?;
+
+    let mut written = Vec::with_capacity(FILES.len());
+    for (at, target) in staged {
+        std::fs::rename(&at, &target).with_context(|| format!("replacing {}", target.display()))?;
+        if target.file_name().is_some_and(|n| n != ".artefacto.json") {
+            written.push(target);
+        }
+    }
     Ok(written)
 }
