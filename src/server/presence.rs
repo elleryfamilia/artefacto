@@ -142,6 +142,12 @@ pub fn tick(shared: &Arc<Shared>, now_ms: i64) {
     let artifact = committer.with_review(open_artifact);
     match committer.append(&artifact, 0, Actor::Server, kind, data) {
         Ok(event) => {
+            /* Recorded after the append, not before: the nudge is itself an
+            event, so a position taken before it would always look like
+            something new had happened by the next tick. */
+            if matches!(fire, Fire::Idle) {
+                shared.core.lock().unwrap().idle_said_at_seq = Some(event.seq);
+            }
             crate::server::socket::broadcast(shared, &Frame::of(vec![event]));
             drop(committer);
         }
@@ -159,6 +165,20 @@ fn idle_due(
         return None;
     }
     core.idle_fired = true;
+    /* Re-armed by activity, but only said when the reviewer has actually
+    done something since the last time it was said.
+
+    Moving a pointer over the page re-arms this; it is not news. A page left
+    open beside a day's work goes quiet, is touched, and goes quiet again
+    many times over, and each of those is a quiet period. Saying it every
+    time costs the agent a turn to be told what it already knows, and the
+    agent's attention is the expensive thing here -- far more than the
+    daemon's memory or its CPU. So the log's position is the second gate: if
+    nothing has been written since the last nudge, there is nothing to nudge
+    about. */
+    if core.idle_said_at_seq == Some(shared.log.lock().unwrap().last_seq()) {
+        return None;
+    }
     Some(Fire::Idle)
 }
 

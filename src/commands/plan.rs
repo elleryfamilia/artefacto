@@ -491,12 +491,24 @@ fn push(args: &crate::cli::PushArgs) -> Result<()> {
     first; an artefacto upgrade updates the skill the same way. Set
     ARTEFACTO_NO_SKILL_INSTALL to keep it out of your home. */
     if std::env::var_os("ARTEFACTO_NO_SKILL_INSTALL").is_none() {
-        let installed = crate::commands::skill::sync_into_agents();
-        if !installed.is_empty() && !args.json {
+        let done = crate::commands::skill::sync_into_agents();
+        if !args.json && !done.installed.is_empty() {
             eprintln!(
                 "installed the artefacto-plan skill for {}",
-                installed.join(", ")
+                done.installed.join(", ")
             );
+        }
+        // Said even under --json, on stderr: a skill artefacto could not
+        // write, or would not overwrite, is something the person has to know
+        // about or the agent quietly runs an old one.
+        for left in &done.left {
+            eprintln!(
+                "the artefacto-plan skill for {left} has been edited; left alone \
+                 (artefacto skill --for {left} replaces it)"
+            );
+        }
+        for failed in &done.failed {
+            eprintln!("could not install the artefacto-plan skill for {failed}");
         }
     }
 

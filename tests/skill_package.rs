@@ -405,3 +405,141 @@ fn with_no_agents_on_the_machine_it_says_so_rather_than_failing() {
         String::from_utf8_lossy(&out.stdout)
     );
 }
+
+/// A skills directory commonly holds links into a shared store. Writing
+/// through one truncates whatever it points at, which may not even be in
+/// this person's home.
+#[test]
+fn a_skill_that_is_a_symlink_is_refused_rather_than_written_through() {
+    let home = tempfile::tempdir().expect("home");
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let real = elsewhere.path().join("artefacto-plan");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("SKILL.md"), "somebody else's file").unwrap();
+    let skills = home.path().join(".claude/skills");
+    std::fs::create_dir_all(&skills).unwrap();
+    std::os::unix::fs::symlink(&real, skills.join("artefacto-plan")).unwrap();
+
+    let out = bin()
+        .args(["skill", "--for", "claude"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "it must refuse");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("symlink"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(real.join("SKILL.md")).unwrap(),
+        "somebody else's file",
+        "and the file the link pointed at is untouched"
+    );
+}
+
+/// Every installed file, byte for byte, in every agent selected -- and
+/// nothing at all in any agent that was not.
+#[test]
+fn for_all_writes_the_whole_package_and_touches_no_other_agent() {
+    let home = tempfile::tempdir().expect("home");
+    std::fs::create_dir_all(home.path().join(".cursor")).unwrap();
+    bin()
+        .args(["skill", "--for", "all"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    for path in PATHS {
+        assert_eq!(
+            std::fs::read_to_string(home.path().join(".cursor/skills").join(path)).unwrap(),
+            repo_file(&format!("skills/{path}")),
+        );
+    }
+    for other in [".claude", ".codex", ".gemini", ".config/opencode"] {
+        assert!(
+            !home.path().join(other).exists(),
+            "{other} was not selected and must not exist"
+        );
+    }
+}
+
+/// The receipt is what lets an automatic update tell its own work from
+/// somebody else's.
+#[test]
+fn an_install_leaves_a_receipt_and_asking_outright_replaces_an_edited_copy() {
+    let home = tempfile::tempdir().expect("home");
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    bin()
+        .args(["skill", "--for", "claude"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    let root = home.path().join(".claude/skills/artefacto-plan");
+    let receipt: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join(".artefacto.json")).unwrap())
+            .expect("json");
+    assert_eq!(receipt["format"], "artefacto.skill/1");
+    for path in PATHS {
+        assert!(
+            receipt["files"][path]
+                .as_str()
+                .is_some_and(|h| h.starts_with("sha256:")),
+            "the receipt records what each file hashed to: {receipt}"
+        );
+    }
+
+    // Asking outright replaces an edited copy: that is the person's own call.
+    std::fs::write(root.join("SKILL.md"), "my own version").unwrap();
+    bin()
+        .args(["skill", "--for", "claude"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("SKILL.md")).unwrap(),
+        repo_file("skills/artefacto-plan/SKILL.md")
+    );
+}
+
+/// `HOME=.` would make a repository that happens to hold a `.claude`
+/// directory look like the person's configuration.
+#[test]
+fn a_relative_home_is_not_a_home() {
+    let out = bin()
+        .args(["skill", "--for", "claude"])
+        .env("HOME", ".")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("absolute"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Claude Code moves its whole configuration directory with an environment
+/// variable; an install that only knows `~/.claude` writes to a directory
+/// nothing reads.
+#[test]
+fn a_moved_configuration_directory_is_the_one_installed_into() {
+    let home = tempfile::tempdir().expect("home");
+    let moved = tempfile::tempdir().expect("moved");
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    std::fs::create_dir_all(moved.path()).unwrap();
+
+    bin()
+        .args(["skill", "--for", "all"])
+        .env("HOME", home.path())
+        .env("CLAUDE_CONFIG_DIR", moved.path())
+        .output()
+        .unwrap();
+    assert!(
+        moved.path().join("skills/artefacto-plan/SKILL.md").exists(),
+        "written where the agent actually reads"
+    );
+    assert!(
+        !home.path().join(".claude/skills").exists(),
+        "and not to the default it no longer uses"
+    );
+}

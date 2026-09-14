@@ -2,7 +2,7 @@
 
 use crate::cli::{OpenArgs, ServeArgs};
 use crate::server::daemon::{self, ForkOutcome};
-use crate::server::http::{self, Shared, SELF_EXIT};
+use crate::server::http::{self, Shared};
 use crate::server::log::now_rfc3339;
 use crate::server::state_dir::{self, ServerFile, StartupLock};
 use anyhow::{bail, Context, Result};
@@ -82,7 +82,7 @@ pub fn serve(args: &ServeArgs) -> Result<()> {
     if let Some(r) = readiness {
         r.ready();
     }
-    http::run(shared, server, SELF_EXIT);
+    http::run(shared, server, args.idle_exit.0);
 
     // `server.json` is deliberately left behind: it carries the port and
     // secret the next start reuses, and its now-dead pid already reads as

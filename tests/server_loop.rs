@@ -466,17 +466,70 @@ fn pushing_a_plan_puts_the_skill_in_front_of_the_agents_here() {
         again.stderr
     );
 
-    // A stale copy is brought back up to date rather than left to drift: the
-    // skill is compiled into the binary so the two cannot disagree.
-    std::fs::write(&skill, "an older artefacto wrote this").unwrap();
+    // What an older artefacto left behind: its own files, and a receipt that
+    // matches them. That is artefacto's to update, and the push does, so the
+    // skill an agent reads never lags the binary it describes.
+    let root = l.home.path().join(".claude/skills/artefacto-plan");
+    let old_body = "an older artefacto wrote this";
+    std::fs::write(&skill, old_body).unwrap();
+    std::fs::write(
+        root.join(".artefacto.json"),
+        serde_json::json!({
+            "format": "artefacto.skill/1",
+            "artefacto": "0.0.1",
+            "files": {
+                "artefacto-plan/SKILL.md": sha256_of(old_body.as_bytes()),
+                "artefacto-plan/reference.md":
+                    sha256_of(&std::fs::read(root.join("reference.md")).unwrap()),
+            },
+        })
+        .to_string(),
+    )
+    .unwrap();
+
     let third = l.repo.run_with_env(
         &["plan", "push", &plan, "--base-revision", "2", "--no-open"],
         &[("HOME", &home)],
     );
     assert_eq!(third.code, 0, "{}", third.stderr);
+    assert_eq!(
+        std::fs::read_to_string(&skill).unwrap(),
+        std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/artefacto-plan/SKILL.md")
+        )
+        .unwrap(),
+        "the older copy is now this binary's, byte for byte"
+    );
+}
+
+fn sha256_of(bytes: &[u8]) -> String {
+    artefacto::hash::bytes_hash(bytes)
+}
+
+/// An automatic update that reverts a person's own edits is worse than one
+/// that never runs. The receipt says which copies are artefacto's to touch.
+#[test]
+fn a_push_leaves_a_skill_somebody_edited_alone_and_says_so() {
+    let l = start_with_home();
+    let home = l.home.path().to_string_lossy().to_string();
+    let skill = l.home.path().join(".claude/skills/artefacto-plan/SKILL.md");
+    std::fs::write(&skill, "my own version").unwrap();
+
+    let plan = plan_in(&l.repo);
+    let out = l.repo.run_with_env(
+        &["plan", "push", &plan, "--base-revision", "1", "--no-open"],
+        &[("HOME", &home)],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        std::fs::read_to_string(&skill).unwrap(),
+        "my own version",
+        "left exactly as it was"
+    );
     assert!(
-        std::fs::read_to_string(&skill).unwrap().len() > 100,
-        "the stale copy was replaced"
+        out.stderr.contains("has been edited") && out.stderr.contains("left alone"),
+        "and the person is told, or the agent quietly runs an old one: {}",
+        out.stderr
     );
 }
 
@@ -730,7 +783,7 @@ fn nudged(idle: Option<Duration>, away: Option<Duration>) -> InProcess {
 }
 
 #[test]
-fn idle_fires_once_per_quiet_period_and_re_arms_after_activity() {
+fn idle_is_said_once_until_the_reviewer_actually_does_something() {
     let server = nudged(Some(Duration::from_secs(900)), None);
     let _page = server.connect_page();
     support::wait_for(|| server.page_count() == 1, "the page should attach");
@@ -745,12 +798,33 @@ fn idle_fires_once_per_quiet_period_and_re_arms_after_activity() {
         "once per quiet period, not once per tick"
     );
 
+    // Touched, then quiet again, with nothing written in between. A page left
+    // open beside a day's work does this many times over, and each repeat
+    // costs the agent a turn to be told what it already knows.
     server.mark_reviewer_activity_at(1_300_000);
     presence::tick(&server.shared, 2_300_000);
     assert_eq!(
         server.count_events("reviewer.idle"),
+        1,
+        "moving a pointer is not news"
+    );
+
+    // Something the agent has not seen: now going quiet is worth saying.
+    let cookie = server.session_cookie("plan:demo");
+    let r = server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "element.reviewed", "client_id": "cid-1", "ref": "task:t-a", "on": true
+        }),
+    );
+    assert_eq!(r["ok"], true, "{r}");
+    server.mark_reviewer_activity_at(2_400_000);
+    presence::tick(&server.shared, 3_400_000);
+    assert_eq!(
+        server.count_events("reviewer.idle"),
         2,
-        "activity re-arms it"
+        "the reviewer did something, then went quiet: that is worth one nudge"
     );
 }
 

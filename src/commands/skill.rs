@@ -71,21 +71,38 @@ pub fn run(args: &SkillArgs) -> Result<()> {
 pub struct Agent {
     pub name: &'static str,
     home: &'static str,
-    skills: &'static str,
+    /// An environment variable that moves this agent's whole configuration
+    /// directory. Claude Code has one; where an agent has none this is
+    /// `None` rather than a guessed name, because an install is a write into
+    /// somebody's home and a guess there is not free.
+    root_env: Option<&'static str>,
 }
 
 impl Agent {
+    /// This agent's configuration directory: the environment override when
+    /// it is set, else the default under the home.
+    fn root(&self) -> Option<PathBuf> {
+        if let Some(var) = self.root_env {
+            if let Some(set) = std::env::var_os(var).filter(|v| !v.is_empty()) {
+                let moved = PathBuf::from(set);
+                if moved.is_absolute() {
+                    return Some(moved);
+                }
+            }
+        }
+        home_dir().map(|h| h.join(self.home))
+    }
+
     /// Whether this agent keeps a configuration directory here.
     pub fn present(&self) -> bool {
-        home_dir()
-            .map(|h| h.join(self.home).is_dir())
-            .unwrap_or(false)
+        self.root().is_some_and(|r| r.is_dir())
     }
 
     pub fn skills_dir(&self) -> Result<PathBuf> {
-        Ok(home_dir()
-            .context("no HOME to install into")?
-            .join(self.skills))
+        Ok(self
+            .root()
+            .context("no absolute HOME to install into")?
+            .join("skills"))
     }
 }
 
@@ -97,34 +114,38 @@ pub const AGENTS: &[Agent] = &[
     Agent {
         name: "claude",
         home: ".claude",
-        skills: ".claude/skills",
+        root_env: Some("CLAUDE_CONFIG_DIR"),
     },
     Agent {
         name: "codex",
         home: ".codex",
-        skills: ".codex/skills",
+        root_env: None,
     },
     Agent {
         name: "cursor",
         home: ".cursor",
-        skills: ".cursor/skills",
+        root_env: None,
     },
     Agent {
         name: "gemini",
         home: ".gemini",
-        skills: ".gemini/skills",
+        root_env: None,
     },
     Agent {
         name: "opencode",
         home: ".config/opencode",
-        skills: ".config/opencode/skills",
+        root_env: None,
     },
 ];
 
+/// The home to install under. Absolute only: with `HOME=.` a repository that
+/// happens to contain a `.claude` directory would be read as the person's
+/// configuration and written into.
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
         .map(PathBuf::from)
+        .filter(|h| h.is_absolute())
 }
 
 /// The agents a `--for` list names. `all` is every one found here; a name
@@ -166,22 +187,49 @@ pub fn resolve(names: &[String]) -> Result<Vec<&'static Agent>> {
 /// and it is compiled into this binary so the two can never drift. Writing
 /// only where the contents differ keeps it quiet on every push after the
 /// first, and makes an artefacto upgrade update the skill by itself.
-pub fn sync_into_agents() -> Vec<String> {
-    let mut changed = Vec::new();
+pub fn sync_into_agents() -> Synced {
+    let mut done = Synced::default();
     for agent in AGENTS.iter().filter(|a| a.present()) {
         let Ok(dir) = agent.skills_dir() else {
             continue;
         };
-        if FILES.iter().all(|f| {
-            std::fs::read_to_string(dir.join(f.path)).is_ok_and(|on_disk| on_disk == f.contents)
-        }) {
-            continue;
-        }
-        if install(&dir).is_ok() {
-            changed.push(agent.name.to_string());
+        match standing(&dir) {
+            /* Somebody's own copy, or one this did not write. Left exactly
+            as it is: an automatic update that reverts a person's edits is
+            worse than one that never runs. */
+            Standing::Theirs => {
+                if !current(&dir) {
+                    done.left.push(agent.name.to_string());
+                }
+            }
+            Standing::Ours if current(&dir) => {}
+            _ => match install(&dir) {
+                Ok(_) => done.installed.push(agent.name.to_string()),
+                /* Said, not swallowed. A half-written package is worth
+                knowing about, and the push itself already succeeded, so this
+                cannot fail the command. */
+                Err(e) => done.failed.push(format!("{}: {e:#}", agent.name)),
+            },
         }
     }
-    changed
+    done
+}
+
+/// Whether what is on disk already is what this binary would write.
+fn current(dir: &Path) -> bool {
+    FILES.iter().all(|f| {
+        std::fs::read_to_string(dir.join(f.path)).is_ok_and(|on_disk| on_disk == f.contents)
+    })
+}
+
+/// What one sync did, per agent.
+#[derive(Default)]
+pub struct Synced {
+    pub installed: Vec<String>,
+    /// Left alone because the copy there is not one artefacto wrote, or has
+    /// been edited since it did.
+    pub left: Vec<String>,
+    pub failed: Vec<String>,
 }
 
 /// The manifest: every file's relative path and contents, under the skill's
@@ -200,19 +248,99 @@ pub fn manifest() -> serde_json::Value {
     })
 }
 
+/// The receipt artefacto leaves beside the skill it wrote: which version, and
+/// what each file's contents hashed to.
+///
+/// It is what makes an automatic update safe. Without it there is no way to
+/// tell a copy artefacto wrote from one somebody edited, and "replace
+/// anything that differs" silently reverts a person's own changes on the
+/// next push.
+pub const RECEIPT: &str = "artefacto-plan/.artefacto.json";
+
+fn receipt() -> serde_json::Value {
+    serde_json::json!({
+        "format": SKILL_FORMAT,
+        "artefacto": env!("CARGO_PKG_VERSION"),
+        "files": FILES
+            .iter()
+            .map(|f| (f.path.to_string(), crate::hash::bytes_hash(f.contents.as_bytes())))
+            .collect::<std::collections::BTreeMap<_, _>>(),
+    })
+}
+
+/// Whether the copy under `dir` is one artefacto wrote and nobody has
+/// touched since: the receipt is there, and every file still hashes to what
+/// the receipt recorded.
+///
+/// A missing skill is not "ours" and not "theirs" -- `Fresh` says so, because
+/// writing where there is nothing is safe and replacing somebody's work is
+/// not.
+pub enum Standing {
+    Fresh,
+    Ours,
+    Theirs,
+}
+
+pub fn standing(dir: &Path) -> Standing {
+    if !dir.join(SKILL_NAME).exists() {
+        return Standing::Fresh;
+    }
+    let Ok(raw) = std::fs::read_to_string(dir.join(RECEIPT)) else {
+        return Standing::Theirs;
+    };
+    let Ok(seen): std::result::Result<serde_json::Value, _> = serde_json::from_str(&raw) else {
+        return Standing::Theirs;
+    };
+    for file in FILES {
+        let Ok(on_disk) = std::fs::read(dir.join(file.path)) else {
+            return Standing::Theirs;
+        };
+        if seen["files"][file.path] != serde_json::json!(crate::hash::bytes_hash(&on_disk)) {
+            return Standing::Theirs;
+        }
+    }
+    Standing::Ours
+}
+
 /// Write the package under `dir`, replacing what is there: an install over an
 /// older version is the way to update it. Returns the paths written.
+///
+/// Never through a symlink. A skills directory commonly holds links into a
+/// shared store, and `fs::write` follows one and truncates whatever it points
+/// at -- somebody else's file, possibly outside the home entirely. Each file
+/// goes to a temporary sibling and is renamed over the target, which replaces
+/// the entry rather than following it, and a skill directory that is itself a
+/// link is refused outright.
 pub fn install(dir: &Path) -> Result<Vec<PathBuf>> {
+    let root = dir.join(SKILL_NAME);
+    if std::fs::symlink_metadata(&root).is_ok_and(|m| m.file_type().is_symlink()) {
+        anyhow::bail!(
+            "{} is a symlink; artefacto will not write through one",
+            root.display()
+        );
+    }
     let mut written = Vec::with_capacity(FILES.len());
     for file in FILES {
         let target = dir.join(file.path);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
-        std::fs::write(&target, file.contents)
-            .with_context(|| format!("writing {}", target.display()))?;
+        let Some(parent) = target.parent() else {
+            anyhow::bail!("{} has no parent", target.display());
+        };
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+        let staged = parent.join(format!(
+            ".{}.artefacto-new",
+            target.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        std::fs::write(&staged, file.contents)
+            .with_context(|| format!("writing {}", staged.display()))?;
+        std::fs::rename(&staged, &target)
+            .with_context(|| format!("replacing {}", target.display()))?;
         written.push(target);
     }
+    let target = dir.join(RECEIPT);
+    let staged = target.with_file_name(".artefacto.json.artefacto-new");
+    std::fs::write(&staged, format!("{}\n", receipt()))
+        .with_context(|| format!("writing {}", staged.display()))?;
+    std::fs::rename(&staged, &target).with_context(|| format!("replacing {}", target.display()))?;
     Ok(written)
 }

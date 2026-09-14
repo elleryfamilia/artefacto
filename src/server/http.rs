@@ -53,6 +53,10 @@ pub struct Core {
     pub reviewer_pings: u64,
     /// The idle nudge has fired for this quiet period. Cleared by activity.
     pub idle_fired: bool,
+    /// The log position the last idle nudge was sent at. A second nudge with
+    /// nothing written in between tells the agent nothing and costs it a
+    /// turn, so it is not sent.
+    pub idle_said_at_seq: Option<u64>,
     /// The away nudge has fired. Cleared when a page comes back.
     pub away_fired: bool,
     /// When the last page socket closed. `None` while a page is open.
@@ -130,6 +134,7 @@ impl Shared {
                 last_reviewer_activity_ms: 0,
                 reviewer_pings: 0,
                 idle_fired: false,
+                idle_said_at_seq: None,
                 away_fired: false,
                 page_gone_since_ms: None,
                 page_seen: false,
@@ -201,7 +206,7 @@ impl Shared {
 /// The accept loop. One thread per request, so a long poll blocks only its own
 /// thread. A fixed worker pool would let N concurrent polls starve every other
 /// route.
-pub fn run(shared: Arc<Shared>, server: Arc<tiny_http::Server>, idle: Duration) {
+pub fn run(shared: Arc<Shared>, server: Arc<tiny_http::Server>, idle: Option<Duration>) {
     let mut last_tick = Instant::now();
     loop {
         if shared.stopping() {
@@ -227,7 +232,7 @@ pub fn run(shared: Arc<Shared>, server: Arc<tiny_http::Server>, idle: Duration) 
             // `Server::unblock` also produces this, which is why the stopping
             // flag is checked at the top rather than trusting the timeout.
             Ok(None) => {
-                if should_self_exit(&shared, idle) {
+                if idle.is_some_and(|idle| should_self_exit(&shared, idle)) {
                     break;
                 }
             }
@@ -257,6 +262,9 @@ fn drain(shared: &Arc<Shared>) {
 /// window. Traffic is not the measure — an unauthenticated stranger must not
 /// be able to hold the daemon open, and a page connected over a WebSocket
 /// sends no further HTTP requests but is very much present.
+///
+/// The window is `--idle-exit`; `off` gives `None` to `run` and the server
+/// stays up until it is told to stop.
 fn should_self_exit(shared: &Arc<Shared>, idle: Duration) -> bool {
     if crate::server::socket::page_count(shared) > 0 {
         return false;

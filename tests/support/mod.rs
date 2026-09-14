@@ -67,8 +67,22 @@ impl Repo {
         let mut c = Command::new(bin());
         c.args(args)
             .current_dir(self.dir.path())
-            .env("XDG_STATE_HOME", self.state_root());
+            .env("XDG_STATE_HOME", self.state_root())
+            // A throwaway home by default. `plan push` installs the skill
+            // into the agent directories it finds under HOME, and a test
+            // suite must not reach into the machine it runs on: without
+            // this, running the tests rewrites the developer's own
+            // ~/.claude/skills. A test that is about the install overrides
+            // it with `run_with_env`.
+            .env("HOME", self.home());
         c
+    }
+
+    /// A home of this repository's own, created on demand.
+    pub fn home(&self) -> PathBuf {
+        let home = self.dir.path().join("home");
+        let _ = std::fs::create_dir_all(&home);
+        home
     }
 
     pub fn run(&self, args: &[&str]) -> Out {
@@ -403,7 +417,7 @@ impl InProcess {
         let shared = Arc::new(Shared::with_nudges(&path, secret, port, nudges).expect("shared"));
         let s = Arc::clone(&server);
         let sh = Arc::clone(&shared);
-        let thread = std::thread::spawn(move || run(sh, s, idle));
+        let thread = std::thread::spawn(move || run(sh, s, Some(idle)));
         InProcess {
             port,
             shared,

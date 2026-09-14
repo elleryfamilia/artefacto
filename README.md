@@ -43,8 +43,11 @@ artefacto skill --for all        # every agent found here
 artefacto skill --for claude     # or name them
 ```
 
-It writes only where an agent already keeps its configuration, and
-`ARTEFACTO_NO_SKILL_INSTALL=1` keeps it out of your home entirely.
+It writes only where an agent already keeps its configuration, never through
+a symlink, and never over a copy you have edited: it leaves a receipt of what
+it wrote and only replaces its own work. `ARTEFACTO_NO_SKILL_INSTALL=1` stops
+the automatic install on push; `skill --for` is an explicit request and still
+does what you ask.
 
 Then the agent writes a plan as `artefacto.plan/1` JSON and pushes it:
 
