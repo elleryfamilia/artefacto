@@ -533,6 +533,24 @@ fn a_push_leaves_a_skill_somebody_edited_alone_and_says_so() {
     );
 }
 
+/// A test suite must not reach into the machine it runs on. Every test
+/// repository gets a home of its own, and a push installs there.
+#[test]
+fn a_plain_push_installs_into_the_tests_own_home_and_no_other() {
+    let repo = Repo::new();
+    std::fs::create_dir_all(repo.home().join(".claude")).unwrap();
+    let _server = InProcess::start_in(&repo);
+    let plan = plan_in(&repo);
+    let out = repo.run(&["plan", "push", &plan, "--no-open"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(
+        repo.home()
+            .join(".claude/skills/artefacto-plan/SKILL.md")
+            .exists(),
+        "HOME is the repository's own, not the machine's"
+    );
+}
+
 #[test]
 fn a_push_can_be_told_to_keep_out_of_your_home() {
     let home = tempfile::tempdir().expect("home");

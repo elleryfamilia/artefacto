@@ -438,6 +438,61 @@ fn a_skill_that_is_a_symlink_is_refused_rather_than_written_through() {
     );
 }
 
+/// The directory can be real while a file inside it is the link. Writing in
+/// place follows it; replacing the entry does not.
+#[test]
+fn a_linked_file_inside_the_skill_is_replaced_not_followed() {
+    let home = tempfile::tempdir().expect("home");
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let target = elsewhere.path().join("somebody-elses.md");
+    std::fs::write(&target, "somebody else's file").unwrap();
+    let root = home.path().join(".claude/skills/artefacto-plan");
+    std::fs::create_dir_all(&root).unwrap();
+    std::os::unix::fs::symlink(&target, root.join("SKILL.md")).unwrap();
+
+    let out = bin()
+        .args(["skill", "--for", "claude"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "somebody else's file",
+        "the file the link pointed at is untouched"
+    );
+    assert!(
+        !std::fs::symlink_metadata(root.join("SKILL.md"))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "and the link itself was replaced by the real file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("SKILL.md")).unwrap(),
+        repo_file("skills/artefacto-plan/SKILL.md")
+    );
+}
+
+/// A skill with no receipt is not artefacto's to touch, whatever its
+/// contents: an older artefacto that left none, or a copy somebody put there
+/// by hand, both read the same way.
+#[test]
+fn a_skill_with_no_receipt_is_left_alone_by_an_automatic_update() {
+    let home = tempfile::tempdir().expect("home");
+    let root = home.path().join(".claude/skills/artefacto-plan");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("SKILL.md"), "put here by hand").unwrap();
+    assert!(matches!(
+        artefacto::commands::skill::standing(&home.path().join(".claude/skills")),
+        artefacto::commands::skill::Standing::Theirs
+    ));
+}
+
 /// Every installed file, byte for byte, in every agent selected -- and
 /// nothing at all in any agent that was not.
 #[test]

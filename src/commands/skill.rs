@@ -285,10 +285,13 @@ pub fn standing(dir: &Path) -> Standing {
     if !dir.join(SKILL_NAME).exists() {
         return Standing::Fresh;
     }
-    let Ok(raw) = std::fs::read_to_string(dir.join(RECEIPT)) else {
-        return Standing::Theirs;
-    };
-    let Ok(seen): std::result::Result<serde_json::Value, _> = serde_json::from_str(&raw) else {
+    /* No receipt, or one this cannot read: not artefacto's to touch. One
+    rule rather than two, because two that reach the same answer cannot be
+    told apart by a test. */
+    let Some(seen) = std::fs::read_to_string(dir.join(RECEIPT))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+    else {
         return Standing::Theirs;
     };
     for file in FILES {
