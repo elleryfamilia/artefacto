@@ -29,6 +29,29 @@ fn start() -> Loop {
     start_with(Nudges::off())
 }
 
+/// A loop whose push ran against a throwaway home, for the paths artefacto
+/// reads out of the person's home rather than out of the repository.
+fn start_with_home() -> LoopAtHome {
+    let home = tempfile::tempdir().expect("home");
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    let repo = Repo::new();
+    let server = InProcess::start_in(&repo);
+    let plan = plan_in(&repo);
+    let pushed = repo.run_with_env(
+        &["plan", "push", &plan, "--no-open"],
+        &[("HOME", &home.path().to_string_lossy())],
+    );
+    assert_eq!(pushed.code, 0, "{}", pushed.stderr);
+    LoopAtHome { repo, server, home }
+}
+
+#[allow(dead_code)]
+struct LoopAtHome {
+    repo: Repo,
+    server: InProcess,
+    home: tempfile::TempDir,
+}
+
 fn start_with(nudges: Nudges) -> Loop {
     let repo = Repo::new();
     let server = InProcess::start_in_with(&repo, nudges);
@@ -412,6 +435,69 @@ fn a_nudge_reaches_the_page_as_a_banner_and_is_not_logged() {
         l.server.count_events("nudge"),
         0,
         "a banner is not a fact about the review"
+    );
+}
+
+/// Nothing in a downloaded binary can run at install time, so the first time
+/// artefacto is used for its purpose it puts the skill in front of the agents
+/// on this machine. Otherwise the person has installed a binary that nothing
+/// knows how to drive.
+#[test]
+fn pushing_a_plan_puts_the_skill_in_front_of_the_agents_here() {
+    let l = start_with_home();
+    let home = l.home.path().to_string_lossy().to_string();
+    let skill = l.home.path().join(".claude/skills/artefacto-plan/SKILL.md");
+    assert!(skill.exists(), "the push installed it");
+    assert!(
+        !l.home.path().join(".codex").exists(),
+        "and only where an agent already keeps its configuration"
+    );
+
+    // Silent and idempotent afterwards: the second push has nothing to say.
+    let plan = plan_in(&l.repo);
+    let again = l.repo.run_with_env(
+        &["plan", "push", &plan, "--base-revision", "1", "--no-open"],
+        &[("HOME", &home)],
+    );
+    assert_eq!(again.code, 0, "{}", again.stderr);
+    assert!(
+        !again.stderr.contains("installed the artefacto-plan skill"),
+        "nothing changed, so nothing was said: {}",
+        again.stderr
+    );
+
+    // A stale copy is brought back up to date rather than left to drift: the
+    // skill is compiled into the binary so the two cannot disagree.
+    std::fs::write(&skill, "an older artefacto wrote this").unwrap();
+    let third = l.repo.run_with_env(
+        &["plan", "push", &plan, "--base-revision", "2", "--no-open"],
+        &[("HOME", &home)],
+    );
+    assert_eq!(third.code, 0, "{}", third.stderr);
+    assert!(
+        std::fs::read_to_string(&skill).unwrap().len() > 100,
+        "the stale copy was replaced"
+    );
+}
+
+#[test]
+fn a_push_can_be_told_to_keep_out_of_your_home() {
+    let home = tempfile::tempdir().expect("home");
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    let repo = Repo::new();
+    let _server = InProcess::start_in(&repo);
+    let plan = plan_in(&repo);
+    let out = repo.run_with_env(
+        &["plan", "push", &plan, "--no-open"],
+        &[
+            ("HOME", &home.path().to_string_lossy()),
+            ("ARTEFACTO_NO_SKILL_INSTALL", "1"),
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(
+        !home.path().join(".claude/skills").exists(),
+        "asked not to, so it did not"
     );
 }
 

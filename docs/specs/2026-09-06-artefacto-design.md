@@ -549,7 +549,7 @@ artefacto reply  --session TOKEN (--thread ID | --artifact ID) [--nudge]
                  [--interrupt [--title TEXT] [--ref ELEMENT]] (<text> | --stdin)
 artefacto resolve <thread-id> --session TOKEN (--changed | --declined) [--note TEXT]
 
-artefacto skill (--print | --install DIR)
+artefacto skill (--for AGENTS | --print | --install DIR)
 artefacto clean [--json]             # --json added in plan 4, as every other command has it
 ```
 

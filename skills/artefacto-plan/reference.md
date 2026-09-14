@@ -276,7 +276,7 @@ artefacto open   [--artifact ID] [--no-open] [--json]
 artefacto serve  [--port N] [--idle 15m] [--away 5m] [--no-open] [--foreground]
 artefacto stop
 artefacto clean  [--json]
-artefacto skill  (--print | --install DIR)
+artefacto skill  (--for AGENTS | --print | --install DIR)
 ```
 
 | command | does |
@@ -296,7 +296,7 @@ artefacto skill  (--print | --install DIR)
 | `open` | a fresh one-time link to the page; with several artifacts and no `--artifact`, to the index; starts the server if none is running and the log holds an artifact (after a `clean` that removed every review, it exits 2 until something is pushed again; `list` still shows the rows) |
 | `serve`, `stop` | the daemon by hand; `push` and `open` start it for you |
 | `clean` | drops sent reviews from the log, keeps open ones, rotates the session secret (open pages need `open` again), keeps the index; stops the server first |
-| `skill` | this package, as a JSON manifest (`--print`) or written under a directory (`--install`) |
+| `skill` | this package: installed for the agents on this machine (`--for all`, or names), as a JSON manifest (`--print`), or written under a directory (`--install`) |
 
 Names and tokens: `--agent` is the lease name (default `agent`; not empty,
 not starting with `-`, no control characters). One agent acts at a time per

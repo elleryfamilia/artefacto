@@ -2,7 +2,7 @@
 //!
 //! # Why not `--dump-dom`
 //!
-//! Rosita's browser smokes ran over `file://` with `--dump-dom`, and their
+//! An earlier project's browser smokes ran over `file://` with `--dump-dom`, and their
 //! comments record why that could not be reused: a page served over a real
 //! socket plus a virtual time budget makes Chrome dump an empty document in
 //! CI. This harness never uses virtual time. It launches a headless Chromium

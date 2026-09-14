@@ -1,6 +1,6 @@
 //! The artifact index (spec 4.4) and `artefacto list` (spec 5), through the
 //! real binary: `render` records a row and draws a poster, `list` reads the
-//! registry with no server running, and the registry keeps rosita's Recents
+//! registry with no server running, and the registry keeps the Recents
 //! conventions — a newer file is left alone, a corrupt one self-heals, and a
 //! row whose source is gone is greyed, never pruned.
 

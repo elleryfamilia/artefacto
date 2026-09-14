@@ -58,11 +58,21 @@ pub enum Command {
     },
 }
 
-/// Exactly one form. Spec 4.5: the manifest is what a skill lifecycle
-/// consumes; the directory is for anything that would rather copy files.
+/// Exactly one form. The agents are what a person installing artefacto
+/// wants; the manifest is what a skill lifecycle consumes; the directory is
+/// for anything that would rather copy files itself.
 #[derive(Args, Debug)]
 #[command(group = clap::ArgGroup::new("form").required(true))]
 pub struct SkillArgs {
+    /// Install into the agents that read skills: a comma-separated list of
+    /// names, or `all` for every one found on this machine.
+    #[arg(
+        long = "for",
+        group = "form",
+        value_name = "AGENTS",
+        value_delimiter = ','
+    )]
+    pub agents: Vec<String>,
     /// Print a JSON manifest of every file's relative path and contents.
     #[arg(long, group = "form")]
     pub print: bool,

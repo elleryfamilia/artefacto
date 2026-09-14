@@ -80,6 +80,21 @@ impl Repo {
         }
     }
 
+    /// Run with extra environment, for the paths artefacto reads out of the
+    /// person's home rather than out of the repository.
+    pub fn run_with_env(&self, args: &[&str], env: &[(&str, &str)]) -> Out {
+        let mut c = self.command(args);
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        let out = c.output().expect("running artefacto");
+        Out {
+            code: out.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+        }
+    }
+
     pub fn spawn(&self, args: &[&str]) -> std::process::Child {
         self.command(args)
             .stdout(Stdio::piped())

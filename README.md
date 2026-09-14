@@ -12,9 +12,8 @@ recaps, checklists, and findings triage are planned to follow on the same
 spine.
 
 artefacto is agent-agnostic. It ships as a single binary with a CLI that any
-coding agent can drive, and a skill that teaches the loop. It is the
-interactive-artifact plugin for [loadout](https://loadout.tools), and it also
-runs on its own.
+coding agent can drive, and a skill that teaches the loop. Installing it
+teaches the agents you already have.
 
 ## Install
 
@@ -33,11 +32,19 @@ cargo install --path .
 
 ## Use it
 
-Teach your agent the loop once, wherever it reads skills from:
+Installing the binary is the whole setup. The first plan you push puts the
+skill that teaches the loop in front of every agent on this machine that
+reads skills — Claude Code, Codex, Cursor, Gemini, opencode — and keeps it
+in step with the binary on every upgrade after that. To do it now, or to
+pick:
 
 ```sh
-artefacto skill --install ~/.claude/skills
+artefacto skill --for all        # every agent found here
+artefacto skill --for claude     # or name them
 ```
+
+It writes only where an agent already keeps its configuration, and
+`ARTEFACTO_NO_SKILL_INSTALL=1` keeps it out of your home entirely.
 
 Then the agent writes a plan as `artefacto.plan/1` JSON and pushes it:
 

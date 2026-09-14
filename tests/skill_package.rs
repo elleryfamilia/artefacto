@@ -307,3 +307,101 @@ not-artefacto
         "the parser refuses what the skill must not say"
     );
 }
+
+/// The binary on its own does nothing for anybody: the skill is what teaches
+/// an agent the loop. `--for` puts it where the agents on this machine read
+/// from, so installing artefacto and using it is the whole setup.
+#[test]
+fn for_all_installs_into_every_agent_found_and_no_others() {
+    let home = tempfile::tempdir().expect("home");
+    // Two of the five are here. The other three are not, and a directory is
+    // never created for a tool the person does not use.
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    std::fs::create_dir_all(home.path().join(".config/opencode")).unwrap();
+
+    let out = bin()
+        .args(["skill", "--for", "all"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let said = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(said.contains("claude:"), "{said}");
+    assert!(said.contains("opencode:"), "{said}");
+    assert!(!said.contains("codex"), "{said}");
+
+    for path in PATHS {
+        assert_eq!(
+            std::fs::read_to_string(home.path().join(".claude/skills").join(path)).unwrap(),
+            repo_file(&format!("skills/{path}")),
+            "the file the binary carries, byte for byte"
+        );
+        assert!(home
+            .path()
+            .join(".config/opencode/skills")
+            .join(path)
+            .exists());
+    }
+    assert!(
+        !home.path().join(".codex").exists(),
+        "no directory for an agent that is not installed"
+    );
+}
+
+#[test]
+fn an_agent_named_outright_is_installed_into_whether_or_not_it_is_there() {
+    let home = tempfile::tempdir().expect("home");
+    let out = bin()
+        .args(["skill", "--for", "codex"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(
+        home.path()
+            .join(".codex/skills/artefacto-plan/SKILL.md")
+            .exists(),
+        "asking for it by name is the person saying it is there"
+    );
+}
+
+#[test]
+fn an_agent_this_build_does_not_know_is_refused_by_name() {
+    let home = tempfile::tempdir().expect("home");
+    let out = bin()
+        .args(["skill", "--for", "claude,nope"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let said = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(said.contains("no agent called nope"), "{said}");
+    assert!(
+        said.contains("claude") && said.contains("opencode"),
+        "it says which ones it knows: {said}"
+    );
+    assert!(
+        !home.path().join(".claude").exists(),
+        "and writes nothing: guessing writes files into somebody's home"
+    );
+}
+
+#[test]
+fn with_no_agents_on_the_machine_it_says_so_rather_than_failing() {
+    let home = tempfile::tempdir().expect("home");
+    let out = bin()
+        .args(["skill", "--for", "all"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("no agent found"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
