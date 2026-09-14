@@ -2524,10 +2524,12 @@ fn a_toggles_error_line_cannot_be_clicked_into_a_second_mark() {
         "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle + .pv-error')",
         "the error line beside the label",
     );
+    // The write failed on every retry, so the mark never landed and the box
+    // must read unmarked. Asserted absolutely rather than against a snapshot
+    // taken while the failure was still being handled: that compares two
+    // different moments, and the moment the first read lands in depends on
+    // how fast the machine is.
     let calls = page.eval("window.__calls");
-    let checked = page.eval(
-        "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle input').checked",
-    );
     page.click("[data-plan-ref=\"task:t-a\"] .reviewed-toggle + .pv-error");
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert_eq!(
@@ -2539,7 +2541,8 @@ fn a_toggles_error_line_cannot_be_clicked_into_a_second_mark() {
         page.eval(
             "document.querySelector('[data-plan-ref=\"task:t-a\"] .reviewed-toggle input').checked"
         ),
-        checked
+        false,
+        "and the mark that failed is not left looking like it landed"
     );
     assert_eq!(
         page.eval("!!document.querySelector('.reviewed-toggle .pv-error')"),
@@ -4256,6 +4259,13 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
         "Saved. The agent sees your notes when you send them."
     );
 
+    // This plan has work left, so the verdict is approval of a proposal.
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-approve').textContent"),
+        "Approve",
+        "a plan with work outstanding is approved, not signed off"
+    );
+
     // Request changes is one verdict, Approve the other; the sent one fills.
     page.click(".feedback-bar-send");
     page.wait_until(
@@ -4687,6 +4697,85 @@ fn the_panel_composer_sends_once_and_keeps_its_place() {
         "document.querySelectorAll('.pv-chat-msg').length === 1",
         "it went to the plan as a whole",
     );
+}
+
+#[test]
+fn a_served_plan_whose_work_is_done_asks_a_different_question() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let repo = Repo::new();
+    let server = InProcess::start_in(&repo);
+    let plan = repo.path().join("plan.json");
+    std::fs::write(
+        &plan,
+        r#"{"format":"artefacto.plan/1","meta":{"id":"shipped","title":"A plan that shipped"},
+            "phases":[{"id":"p-one","title":"Phase one","tasks":[
+              {"id":"t-a","title":"Task A","status":"done"},
+              {"id":"t-b","title":"Task B","status":"done"}]}]}"#,
+    )
+    .unwrap();
+    let out = repo.run(&[
+        "plan",
+        "push",
+        plan.to_str().unwrap(),
+        "--json",
+        "--no-open",
+    ]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let v: serde_json::Value = serde_json::from_str(&out.stdout).expect("json");
+    let mut page = browser.new_page();
+    page.navigate(v["url"].as_str().unwrap());
+    connected(&mut page);
+
+    // The page does not ask the reviewer to approve a proposal for work that
+    // is already in. It says what it is and asks whether it matches.
+    assert_eq!(
+        page.text("document.querySelector('.pv-banner .pv-chip').textContent"),
+        "For sign-off",
+        "the chip says what the page wants; the stamp says what the plan is"
+    );
+    let said = page.text("document.querySelector('.pv-banner-text').textContent");
+    assert!(
+        said.starts_with("Every task in this plan is done.") && said.contains("This is a record"),
+        "{said}"
+    );
+    assert!(
+        page.text("document.querySelector('.pv-banner-steps').textContent")
+            .contains("sign off"),
+        "the steps say what is being asked for"
+    );
+
+    // And the stamp: the one thing a reader must not have to work out is
+    // whether this is work to come or work already done.
+    assert_eq!(
+        page.text("document.querySelector('.pv-title-row .pv-stamp').textContent"),
+        "Implemented"
+    );
+    assert_eq!(
+        page.eval(
+            "(function(){ const t = document.querySelector('.pv-title-row h1').getBoundingClientRect(); \
+               const s = document.querySelector('.pv-stamp').getBoundingClientRect(); \
+               return s.left >= t.right - 1 && Math.abs((s.top + s.bottom) / 2 - (t.top + t.bottom) / 2) < 40; })()"
+        ),
+        true,
+        "beside the title, not buried somewhere else on the page"
+    );
+
+    page.screenshot(&screenshot_path("implemented-plan"));
+
+    // The verdict asks the right thing too: there is nothing left to approve.
+    page.click(".pv-panel-handle");
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-approve').textContent"),
+        "Sign off"
+    );
+    assert_eq!(
+        page.text("document.querySelector('.feedback-bar-send').textContent"),
+        "Request changes",
+        "the other verdict still reads the same: changes to what was built"
+    );
+    let _ = server;
 }
 
 #[test]

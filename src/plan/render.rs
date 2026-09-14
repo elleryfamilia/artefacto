@@ -315,6 +315,12 @@ fn stat_cells(plan: &Plan) -> Vec<Stat> {
 /// saying "nothing is built yet" over a plan showing eight done tasks would be
 /// plainly false to the reader looking at it.
 fn banner_lead(plan: &Plan) -> (&'static str, &'static str) {
+    if plan_is_implemented(plan) {
+        return (
+            "Every task in this plan is done — ",
+            "this is a record of what was built, not a proposal.",
+        );
+    }
     let tasks: Vec<&PlanTask> = plan.phases.iter().flat_map(|p| p.tasks.iter()).collect();
     let started = tasks
         .iter()
@@ -327,6 +333,26 @@ fn banner_lead(plan: &Plan) -> (&'static str, &'static str) {
     } else {
         ("An agent drafted this plan — ", "nothing is built yet.")
     }
+}
+
+/// Whether every task in the plan has been built or cut, with at least one
+/// built.
+///
+/// A plan in this state is no longer a proposal, and asking a reviewer to
+/// approve it as one is asking a question that has no answer left: the work
+/// is already in. The page says what it is instead, so a reviewer opening it
+/// knows they are reading a record and whatever they write is about what was
+/// built rather than about what to build.
+///
+/// Derived, not declared. The statuses are already in the plan, and a field
+/// an agent has to remember to set is a field that goes stale.
+pub fn plan_is_implemented(plan: &Plan) -> bool {
+    let tasks: Vec<&PlanTask> = plan.phases.iter().flat_map(|p| p.tasks.iter()).collect();
+    !tasks.is_empty()
+        && tasks.iter().any(|t| matches!(t.status, Status::Done))
+        && tasks
+            .iter()
+            .all(|t| matches!(t.status, Status::Done | Status::Cut))
 }
 
 /// `"{n} {word}"`, pluralized with a trailing `s` above one — used for the
@@ -628,7 +654,13 @@ pub fn render(plan: &Plan) -> String {
                     // with it. A reviewer opening a rendered plan cold has no
                     // other way to know the page collects comments.
                     div.pv-banner {
-                        span.pv-chip.pv-chip-solid { "For review" }
+                        // What the page wants from the reader. The stamp by
+                        // the title says what the plan *is*; saying
+                        // "Implemented" in both put the same word twice at
+                        // the top of the page in two different colours.
+                        span.pv-chip.pv-chip-solid {
+                            @if plan_is_implemented(plan) { "For sign-off" } @else { "For review" }
+                        }
                         p.pv-banner-text {
                             (banner_lead(plan).0)
                             strong { (banner_lead(plan).1) }
@@ -658,7 +690,17 @@ pub fn render(plan: &Plan) -> String {
                                     span.pv-eyebrow-rev { "revision " (rev) }
                                 }
                             }
-                            h1 { (plan.meta.title) }
+                            // The title, and beside it the one thing a
+                            // reader must not have to work out: whether this
+                            // is work to come or work already done. A stamp,
+                            // not a chip -- a chip in the banner is chrome,
+                            // and this is about the plan itself.
+                            div.pv-title-row {
+                                h1 { (plan.meta.title) }
+                                @if plan_is_implemented(plan) {
+                                    span.pv-stamp { "Implemented" }
+                                }
+                            }
                             @if plan.meta.goal_md.is_some() {
                                 div.pv-lede { (md(&plan.meta.goal_md)) }
                             }
@@ -1171,6 +1213,67 @@ mod tests {
         assert!(seen >= 4, "the kitchen sink should have every part: {seen}");
     }
 
+    /// A plan whose work is all done is a record, not a proposal, and the
+    /// page says so: asking a reviewer to approve a plan for work that is
+    /// already in is asking a question with no answer left.
+    #[test]
+    fn a_plan_whose_work_is_done_says_it_is_a_record() {
+        let mut plan = plan_from("kitchen-sink.json");
+        assert!(!plan_is_implemented(&plan), "not done to begin with");
+        let html = render(&plan);
+        assert!(html.contains(">For review</span>"), "{html}");
+        assert!(
+            !html.contains("pv-stamp\">"),
+            "no stamp on a plan with work left: {html}"
+        );
+
+        for phase in &mut plan.phases {
+            for task in &mut phase.tasks {
+                task.status = Status::Done;
+            }
+        }
+        assert!(plan_is_implemented(&plan));
+        let html = render(&plan);
+        assert!(
+            html.contains("<span class=\"pv-stamp\">Implemented</span>"),
+            "the stamp sits with the title: {html}"
+        );
+        assert!(html.contains(">For sign-off</span>"), "{html}");
+        // As element text, not anywhere: the inlined script has a
+        // `planIsImplemented` in it.
+        assert_eq!(
+            html.matches(">Implemented<").count(),
+            1,
+            "the word is said once: the chip says what the page wants, the \
+             stamp says what the plan is"
+        );
+        assert!(html.contains("Every task in this plan is done"), "{html}");
+        assert!(
+            html.contains("a record of what was built, not a proposal"),
+            "{html}"
+        );
+    }
+
+    /// Cut is not outstanding, but a plan that was entirely cut was never
+    /// implemented -- and a plan with no tasks at all is not a record of
+    /// anything.
+    #[test]
+    fn a_plan_that_was_cut_or_never_had_tasks_is_not_implemented() {
+        let mut plan = plan_from("kitchen-sink.json");
+        for phase in &mut plan.phases {
+            for task in &mut phase.tasks {
+                task.status = Status::Cut;
+            }
+        }
+        assert!(!plan_is_implemented(&plan), "all cut is not all built");
+        plan.phases[0].tasks[0].status = Status::Done;
+        assert!(plan_is_implemented(&plan), "one built, the rest cut");
+        for phase in &mut plan.phases {
+            phase.tasks.clear();
+        }
+        assert!(!plan_is_implemented(&plan), "nothing to have implemented");
+    }
+
     /// A plan whose phases hold no tasks has nothing to put in the figure
     /// column, and a `TASKS` header over a stack of empty cells reads as a
     /// rendering failure rather than as "none yet".
@@ -1251,6 +1354,38 @@ mod tests {
         assert_ne!(
             horizontal, "0",
             "the ledger's text would sit on the current row's accent bar"
+        );
+    }
+
+    /// The dependency graph's nodes are cards, and their edge is what makes
+    /// them read as cards. It has to be a neutral: `--numeral` is gold in
+    /// the vibe theme, so an edge drawn with it reads as a status the node
+    /// does not have.
+    #[test]
+    fn the_graphs_nodes_are_outlined_in_a_neutral() {
+        let css = stylesheet();
+        let rule = css
+            .split_once(".plan-graph .node {")
+            .expect(".plan-graph .node")
+            .1
+            .split_once('}')
+            .expect("a closed rule")
+            .0;
+        let stroke = rule
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("stroke:"))
+            .expect("a stroke")
+            .trim()
+            .trim_end_matches(';');
+        assert!(
+            [
+                "var(--muted)",
+                "var(--ink-3)",
+                "var(--rule)",
+                "var(--ink-2)"
+            ]
+            .contains(&stroke),
+            "a node's edge must be neutral in every theme, not {stroke}"
         );
     }
 
