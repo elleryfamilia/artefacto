@@ -25,6 +25,13 @@ const NOT_MANAGED: i32 = 4;
 const NO_ANSWER: i32 = 5;
 
 pub fn run(args: &UpdateArgs) -> Result<()> {
+    // The detached refresher the server spawns. Handled before anything that
+    // could print: this process exists only to leave a file behind, and
+    // anything it wrote to a stream would be written to /dev/null anyway.
+    if args.refresh_cache {
+        update::refresh_cache();
+        return Ok(());
+    }
     match update::perform(args.check)? {
         Outcome::Updated { from, to } => {
             match from {

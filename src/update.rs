@@ -17,6 +17,8 @@
 //! `artefacto update`.
 
 use anyhow::Result;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 /// The app name axoupdater uses to find the receipt and the releases.
 const APP: &str = "artefacto";
@@ -124,6 +126,218 @@ pub fn check_suppressed() -> bool {
     std::env::var_os(NO_CHECK_ENV).is_some()
 }
 
+// ---- the check that nothing waits on ---------------------------------------
+//
+// Nothing in artefacto ever blocks on the network. Reading the verdict is a
+// file read; *producing* it happens in a process nobody is waiting for. So
+// there is no timeout to pick, no thread that can hang, and no command that
+// gets slower because GitHub is slow. The whole price is that a brand-new
+// release is noticed one invocation late.
+
+/// How often the verdict is re-asked.
+const DAILY: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// What the last completed check concluded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// A newer release exists.
+    Available,
+    /// This binary is the newest release.
+    Current,
+    /// The check could not complete: offline, or not a copy artefacto may
+    /// replace. Also the honest placeholder written before a refresher is
+    /// spawned, which doubles as its retry backoff if the child never lands.
+    Failed,
+}
+
+impl Verdict {
+    fn as_str(self) -> &'static str {
+        match self {
+            Verdict::Available => "available",
+            Verdict::Current => "current",
+            Verdict::Failed => "failed",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Verdict> {
+        match s {
+            "available" => Some(Verdict::Available),
+            "current" => Some(Verdict::Current),
+            "failed" => Some(Verdict::Failed),
+            _ => None,
+        }
+    }
+}
+
+/// The persisted result: when, by which binary version, and what it found.
+///
+/// The version stamp is what makes this correct across an update. An
+/// "available" computed by 0.2.0 must never nudge the 0.3.0 that replaced it,
+/// and a cache from any other version is simply ignored — which also means
+/// the state self-heals the moment a new binary runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckCache {
+    pub at: SystemTime,
+    pub version: String,
+    pub verdict: Verdict,
+}
+
+/// The one decision, pure over `(cache, now)`: no clock of its own, no
+/// filesystem, no environment. Returns `(a newer one exists, go and re-ask)`.
+///
+/// The first half always comes from the last known verdict, even when it is
+/// due for a refresh: stale-but-known beats silent. The second half is simply
+/// "the verdict is missing, or old, or was written by a different binary".
+pub fn decide(cache: Option<&CheckCache>, now: SystemTime) -> (bool, bool) {
+    let mine = cache.filter(|c| c.version == env!("CARGO_PKG_VERSION"));
+    let available = mine.is_some_and(|c| c.verdict == Verdict::Available);
+    let stale = match mine {
+        None => true,
+        // A clock that went backwards counts as due rather than as never due
+        // again: `duration_since` fails in exactly that case.
+        Some(c) => now.duration_since(c.at).map(|d| d >= DAILY).unwrap_or(true),
+    };
+    (available, stale)
+}
+
+/// Where the verdict lives: beside the repositories' state directories rather
+/// than inside any one of them, so this is one answer per machine.
+pub fn cache_path() -> PathBuf {
+    crate::server::state_dir::shared_dir().join("update-check")
+}
+
+/// Read the verdict. One line: `<unix-secs> <version> <verdict>`. Anything
+/// unreadable is `None`, which reads as "due for a refresh" — never an error,
+/// because a corrupt cache file is not worth failing a command over.
+pub fn read_cache(path: &Path) -> Option<CheckCache> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut parts = text.split_whitespace();
+    let secs: u64 = parts.next()?.parse().ok()?;
+    let at = SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+    let version = parts.next()?.to_string();
+    let verdict = Verdict::parse(parts.next()?)?;
+    Some(CheckCache {
+        at,
+        version,
+        verdict,
+    })
+}
+
+/// Persist the verdict. Best-effort: a machine whose state directory cannot
+/// be written still runs reviews, it just re-asks more often than it needs to.
+pub fn write_cache(path: &Path, cache: &CheckCache) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let secs = cache
+        .at
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    std::fs::write(
+        path,
+        format!("{secs} {} {}\n", cache.version, cache.verdict.as_str()),
+    )
+}
+
+/// What to tell a page: `Available`, or nothing at all.
+///
+/// One small file read and no other work. Deliberately does **not** start a
+/// refresher: this runs while a page request is being served, and a request
+/// handler is the wrong place to fork a process. Keeping the verdict warm is
+/// [`tick_check`]'s job, on the server's own clock.
+pub fn cached_verdict() -> Option<Verdict> {
+    if check_suppressed() {
+        return None;
+    }
+    let (available, _) = decide(read_cache(&cache_path()).as_ref(), SystemTime::now());
+    available.then_some(Verdict::Available)
+}
+
+/// Keep the verdict warm. Called from the server's tick loop and nowhere else.
+///
+/// Performs no request itself: the most it does is one file read, one file
+/// write, and a `fork`/`exec` of a process it never waits for.
+pub fn tick_check() {
+    if check_suppressed() {
+        return;
+    }
+    if claim_refresh(&cache_path(), SystemTime::now()) {
+        spawn_refresher();
+    }
+}
+
+/// Take the right to go and ask, stamping the cache if the answer is yes.
+///
+/// Separated from the spawn so the rule can be tested without forking
+/// anything, because the rule is the whole of the concurrency story: the stamp
+/// lands **before** the child starts, which closes the window immediately, so
+/// a burst of ticks produces one refresher rather than a swarm of them. The
+/// child then overwrites the stamp with the real answer.
+///
+/// `Failed` is the honest placeholder — it claims nothing — and it doubles as
+/// the retry backoff if the child dies before writing.
+fn claim_refresh(path: &Path, now: SystemTime) -> bool {
+    let (_, stale) = decide(read_cache(path).as_ref(), now);
+    if !stale {
+        return false;
+    }
+    let _ = write_cache(
+        path,
+        &CheckCache {
+            at: now,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            verdict: Verdict::Failed,
+        },
+    );
+    true
+}
+
+/// Launch `artefacto update --refresh-cache` detached: nothing inherited,
+/// nothing waited on, its own process group so it outlives a short-lived
+/// parent. Best-effort — a spawn that fails just means the stamped window
+/// retries later.
+fn spawn_refresher() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["update", "--refresh-cache"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        cmd.process_group(0);
+    }
+    if let Ok(child) = cmd.spawn() {
+        drop(child);
+    }
+}
+
+/// The detached child's whole job: ask, and write down the answer for next
+/// time. Silent and infallible by design — its only observable effect is the
+/// file the next tick reads.
+pub fn refresh_cache() {
+    let verdict = match perform(true) {
+        Ok(Outcome::UpdateAvailable) => Verdict::Available,
+        Ok(Outcome::AlreadyCurrent) => Verdict::Current,
+        // Not managed, not this copy, or no answer: all "there is nothing to
+        // tell the reviewer", and all worth re-asking tomorrow rather than
+        // never again.
+        _ => Verdict::Failed,
+    };
+    let _ = write_cache(
+        &cache_path(),
+        &CheckCache {
+            at: SystemTime::now(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            verdict,
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +357,127 @@ mod tests {
         temp_env(NO_CHECK_ENV, None, || {
             assert!(!check_suppressed(), "unset leaves the check on");
         });
+    }
+
+    fn cache(version: &str, verdict: Verdict, ago: Duration) -> CheckCache {
+        CheckCache {
+            at: SystemTime::now() - ago,
+            version: version.to_string(),
+            verdict,
+        }
+    }
+
+    const MINE: &str = env!("CARGO_PKG_VERSION");
+    const HOUR: Duration = Duration::from_secs(3600);
+
+    #[test]
+    fn a_fresh_verdict_is_reported_and_not_re_asked() {
+        let now = SystemTime::now();
+        let c = cache(MINE, Verdict::Available, HOUR);
+        assert_eq!(decide(Some(&c), now), (true, false));
+        let c = cache(MINE, Verdict::Current, HOUR);
+        assert_eq!(decide(Some(&c), now), (false, false));
+    }
+
+    #[test]
+    fn a_day_old_verdict_still_speaks_while_a_new_one_is_fetched() {
+        // Stale-but-known beats silent: the reviewer is told what was true
+        // yesterday while today's answer is being fetched behind them.
+        let c = cache(MINE, Verdict::Available, HOUR * 25);
+        assert_eq!(decide(Some(&c), SystemTime::now()), (true, true));
+    }
+
+    #[test]
+    fn a_verdict_from_another_version_is_ignored_entirely() {
+        // The case this exists for: 0.2.0 wrote "available", then updated
+        // itself to 0.3.0. Reading that verdict would have the new binary
+        // nudging about the release it already is.
+        let c = cache("0.0.1-other", Verdict::Available, HOUR);
+        assert_eq!(
+            decide(Some(&c), SystemTime::now()),
+            (false, true),
+            "another version's verdict must not be believed, and must be replaced"
+        );
+    }
+
+    #[test]
+    fn no_cache_at_all_is_a_refresh_and_never_a_claim() {
+        assert_eq!(decide(None, SystemTime::now()), (false, true));
+    }
+
+    #[test]
+    fn a_clock_that_went_backwards_is_due_rather_than_never_due_again() {
+        // `duration_since` fails when `at` is in the future, and the tempting
+        // `unwrap_or(ZERO)` would read as "asked just now" -- freezing the
+        // check until the clock caught up.
+        let c = CheckCache {
+            at: SystemTime::now() + HOUR * 48,
+            version: MINE.to_string(),
+            verdict: Verdict::Current,
+        };
+        assert_eq!(decide(Some(&c), SystemTime::now()).1, true);
+    }
+
+    #[test]
+    fn the_cache_survives_a_round_trip_and_shrugs_off_rubbish() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("update-check");
+        let written = CheckCache {
+            at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+            version: "1.2.3".to_string(),
+            verdict: Verdict::Available,
+        };
+        write_cache(&path, &written).unwrap();
+        assert_eq!(read_cache(&path), Some(written), "a round trip is lossless");
+
+        // Every shape of damage reads as "no verdict", never as a panic and
+        // never as a confident answer.
+        for junk in [
+            "",
+            "   ",
+            "not-a-number x current",
+            "123",
+            "123 1.2.3",
+            "123 1.2.3 sideways",
+        ] {
+            std::fs::write(&path, junk).unwrap();
+            assert_eq!(read_cache(&path), None, "{junk:?} must read as no verdict");
+        }
+        assert_eq!(read_cache(Path::new("/nonexistent/update-check")), None);
+    }
+
+    #[test]
+    fn the_stamp_lands_before_the_child_so_a_burst_starts_one_refresher() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update-check");
+        let now = SystemTime::now();
+
+        assert!(
+            claim_refresh(&path, now),
+            "nothing cached, so the first tick goes and asks"
+        );
+        let stamped = read_cache(&path).expect("the stamp is written before the child starts");
+        assert_eq!(
+            stamped.verdict,
+            Verdict::Failed,
+            "the placeholder claims nothing: it is not yet an answer"
+        );
+
+        // The burst. Every one of these is a tick arriving before the child
+        // has had time to write anything.
+        for _ in 0..10 {
+            assert!(
+                !claim_refresh(&path, now),
+                "the window is already closed, so no second child is started"
+            );
+        }
+
+        // And the placeholder is its own backoff: a child that died without
+        // writing does not wedge the check forever.
+        assert!(
+            claim_refresh(&path, now + DAILY),
+            "a day later it asks again, even though the last attempt failed"
+        );
     }
 
     /// Set or clear one variable for the duration of `f`. The suite runs

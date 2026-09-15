@@ -20,6 +20,18 @@ pub struct ServerFile {
     pub port: u16,
     pub secret: String,
     pub started_at: String,
+    /// The artefacto that wrote this file.
+    ///
+    /// After an update the binary on disk is new and every already-running
+    /// daemon is still the old one — a process keeps its own copy of the file
+    /// it was started from, which is exactly why replacing it is safe. Without
+    /// this field a new CLI has no way to notice it is talking to old code.
+    ///
+    /// `default` rather than required: a `server.json` written before this
+    /// existed must still parse, or upgrading would orphan the running server
+    /// instead of merely out-dating it.
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 pub fn repo_root(cwd: &Path) -> Result<PathBuf> {
@@ -45,6 +57,14 @@ pub fn state_dir_in(base: &Path, repo_root: &Path) -> PathBuf {
 
 pub fn state_dir(repo_root: &Path) -> PathBuf {
     state_dir_in(&ambient_base(), repo_root)
+}
+
+/// The directory every repository's state dir sits inside. A file here is a
+/// fact about this *machine* rather than about one repository, which is what
+/// lets five checkouts share one answer instead of asking five times. The
+/// update check's verdict is the only such file.
+pub fn shared_dir() -> PathBuf {
+    ambient_base().join("artefacto")
 }
 
 fn ambient_base() -> PathBuf {
@@ -171,7 +191,40 @@ mod tests {
             port: 4321,
             secret: new_secret(),
             started_at: "2026-09-09T00:00:00Z".to_string(),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
         }
+    }
+
+    #[test]
+    fn a_server_file_written_before_versions_existed_still_parses() {
+        // The upgrade path this protects: a daemon started by 0.2.0 is still
+        // running when 0.3.0 arrives. If its `server.json` stopped parsing,
+        // the new CLI would decide no server was running and start a second
+        // one on the same log -- which is worse than not knowing the version.
+        let old = r#"{"pid":123,"port":4321,"secret":"abc","started_at":"2026-09-09T00:00:00Z"}"#;
+        let parsed: ServerFile = serde_json::from_str(old).expect("an older file must still parse");
+        assert_eq!(parsed.pid, 123);
+        assert_eq!(parsed.version, None, "and reads as an unknown version");
+    }
+
+    #[test]
+    fn a_server_file_records_the_artefacto_that_wrote_it() {
+        let dir = tempfile::tempdir().unwrap();
+        write_server_file(dir.path(), &sample(1)).unwrap();
+        let back = read_server_file_any(dir.path()).expect("written and read back");
+        assert_eq!(back.version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn the_shared_directory_is_the_parent_every_repository_sits_in() {
+        // One answer per machine rather than one per checkout: the update
+        // verdict lives here, beside the per-repository directories.
+        let a = state_dir_in(Path::new("/tmp/base"), Path::new("/tmp/one"));
+        assert_eq!(
+            a.parent(),
+            Some(Path::new("/tmp/base/artefacto")),
+            "a repository's state dir sits directly inside the shared one"
+        );
     }
 
     #[test]

@@ -90,6 +90,15 @@ pub struct UpdateArgs {
     /// Only report whether a newer release exists; install nothing.
     #[arg(long)]
     pub check: bool,
+
+    /// The detached refresher: ask, write the verdict down, print nothing.
+    ///
+    /// Hidden because it is not a thing to run by hand. It exists so that the
+    /// server can learn whether a new release exists without ever waiting on
+    /// the network itself: it spawns this and forgets about it, and the answer
+    /// is there for the next tick.
+    #[arg(long, hide = true)]
+    pub refresh_cache: bool,
 }
 
 #[derive(Args, Debug)]

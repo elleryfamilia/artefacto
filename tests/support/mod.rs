@@ -360,6 +360,7 @@ impl InProcess {
                 port: server.port,
                 secret,
                 started_at: "2026-09-10T00:00:00Z".to_string(),
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
             },
         )
         .expect("server.json");

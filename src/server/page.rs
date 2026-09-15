@@ -386,6 +386,8 @@ pub fn state_json(shared: &Arc<Shared>, artifact: &str) -> Result<Option<serde_j
     let presence = crate::server::lease::current(shared)
         .map(|h| serde_json::json!({ "agent": h.agent, "mode": h.mode }));
     let html = served_fragment(&render_plan(&art.plan)?, artifact, art.revision);
+    let update_available =
+        crate::update::cached_verdict() == Some(crate::update::Verdict::Available);
     Ok(Some(serde_json::json!({
         "ok": true,
         "artifact": art.id,
@@ -402,6 +404,15 @@ pub fn state_json(shared: &Arc<Shared>, artifact: &str) -> Result<Option<serde_j
         "verdict": art.verdict,
         "presence": presence,
         "last_seq": last_seq,
+        // What this server is running, and whether a newer release exists.
+        //
+        // The verdict is read from a file the tick loop keeps warm; nothing
+        // here makes a request, so serving a page can never be slower or less
+        // reliable because the release host is. A static export has no server,
+        // so it carries neither and the notice cannot appear -- which is the
+        // behaviour the notice wants anyway.
+        "version": env!("CARGO_PKG_VERSION"),
+        "update": update_available.then_some("available"),
     })))
 }
 

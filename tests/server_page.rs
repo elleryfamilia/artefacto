@@ -410,6 +410,17 @@ fn the_state_route_returns_the_folded_review_and_the_rendered_body() {
     assert_eq!(v["reviewed"][0], "task:t-b");
     assert_eq!(v["submitted"], false);
     assert!(v["presence"].is_null(), "no agent has attached");
+    assert_eq!(
+        v["version"],
+        env!("CARGO_PKG_VERSION"),
+        "the page is told what this server is running: after an update the \
+         binary on disk is new and this daemon is still the old one, and the \
+         page is the only place that difference can be explained"
+    );
+    assert!(
+        v["update"].is_null(),
+        "and nothing about a release, because no check has produced a verdict"
+    );
     assert_eq!(v["last_seq"], s.last_seq());
     assert!(
         v["plan"]["phases"].is_array(),

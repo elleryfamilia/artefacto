@@ -61,6 +61,7 @@ pub fn clean(json: bool) -> Result<()> {
                     port: previous.port,
                     secret: state_dir::new_secret(),
                     started_at: crate::time::now_rfc3339(),
+                    version: Some(env!("CARGO_PKG_VERSION").to_string()),
                 },
             )?;
             true
