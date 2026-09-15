@@ -1171,7 +1171,20 @@
      be written as a fraction of the document without guessing. A test that
      guesses one is a test that breaks whenever the page grows a row: this
      pair lets it aim at a segment instead. */
-  core.map = { lineToX: lineToX, xToLine: xToLine, lineToScroll: lineToScroll };
+  core.map = {
+    lineToX: lineToX,
+    xToLine: xToLine,
+    lineToScroll: lineToScroll,
+    /* Draw the strip now instead of on the next frame. The strip is normally
+       repainted from `requestAnimationFrame`, which is the right call for
+       something that follows a scroll -- but a browser is free to throttle
+       rAF to nothing when the page is not visible, and a headless one under
+       load does exactly that. A test that scrolled and then waited for the
+       strip to catch up could wait forever through no fault of the page. */
+    renderNow: function () {
+      renderMap();
+    },
+  };
 
   /* That fraction as a position in the document, for the parts to answer to. */
   function readLine() {

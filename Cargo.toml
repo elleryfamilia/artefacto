@@ -31,6 +31,12 @@ tiny_http = "0.12"
 tungstenite = "0.30"
 libc = "0.2.189"
 getrandom = "0.4.3"
+# Self-update (`artefacto update`) via cargo-dist's own updater: artefacto's
+# releases are built by cargo-dist, so the two agree about asset names, target
+# triples, checksums and the install receipt by construction. `blocking` adds
+# the sync wrappers; the default features carry `github_releases`, which is
+# where artefacto publishes.
+axoupdater = { version = "0.10", features = ["blocking"] }
 
 [dev-dependencies]
 assert_cmd = "2"

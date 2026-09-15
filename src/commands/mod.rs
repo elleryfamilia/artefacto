@@ -6,6 +6,7 @@ pub mod list;
 pub mod plan;
 pub mod serve;
 pub mod skill;
+pub mod update;
 
 use crate::cli::{Cli, Command};
 
@@ -55,5 +56,6 @@ pub fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Resolve(args) => agent::resolve(args),
         Command::Skill(args) => skill::run(args),
         Command::Clean { json } => clean::clean(*json),
+        Command::Update(args) => update::run(args),
     }
 }

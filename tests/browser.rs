@@ -5343,7 +5343,10 @@ fn the_plan_strip_says_where_you_are_and_takes_you_there() {
         page.text("document.querySelector('.pv-map-part.is-active').dataset.mapPart"),
         "summary"
     );
-    page.eval("document.querySelector('[data-plan-ref=\"phase:p-backend\"]').scrollIntoView({ block: 'start' })");
+    page.eval(
+        "(function(){ document.querySelector('[data-plan-ref=\"phase:p-backend\"]').scrollIntoView({ block: 'start' }); \
+           window.artefactoPlan.map.renderNow(); return true; })()",
+    );
     page.wait_until(
         "document.querySelector('.pv-map-part.is-active') && document.querySelector('.pv-map-part.is-active').dataset.mapPart === 'phases'",
         "the phases part to become the one you are in",
@@ -5371,14 +5374,17 @@ fn the_plan_strip_says_where_you_are_and_takes_you_there() {
              return document.querySelector(sel).getBoundingClientRect().top + window.scrollY; }; \
            const a = top('[data-plan-ref=\"phase:p-core\"]'), b = top('[data-plan-ref=\"phase:p-backend\"]'); \
            window.scrollTo({ top: window.artefactoPlan.map.lineToScroll((a + b) / 2), left: 0, behavior: 'instant' }); \
-           return true; })()",
+           window.artefactoPlan.map.renderNow(); return true; })()",
     );
     page.wait_until(
         "document.querySelector('.pv-map-ph.is-active') && \
            document.querySelector('.pv-map-ph.is-active').textContent === '01'",
         "the numeral for the phase the read line is in",
     );
-    page.eval("window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' })");
+    page.eval(
+        "(function(){ window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' }); \
+           window.artefactoPlan.map.renderNow(); return true; })()",
+    );
     page.wait_until(
         "document.querySelector('.pv-map-ph.is-active').textContent === '02'",
         "the numeral to follow the reader to the last phase",
@@ -5607,7 +5613,10 @@ fn a_long_plan_gets_ticks_instead_of_numerals() {
         "Emulation.setDeviceMetricsOverride",
         serde_json::json!({ "width": 1280, "height": 520, "deviceScaleFactor": 1, "mobile": false }),
     );
-    page.eval("window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' })");
+    page.eval(
+        "(function(){ window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' }); \
+           window.artefactoPlan.map.renderNow(); return true; })()",
+    );
     page.wait_until(
         "!!document.querySelector('.pv-map-tick.is-active')",
         "the tick for the phase you are in",

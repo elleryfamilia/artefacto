@@ -705,3 +705,95 @@ fn check_json_reports_the_deprecated_format_as_a_warning_not_stderr() {
         "the deprecation note must not print to stderr: {stderr}"
     );
 }
+
+/// A HOME with no install receipt in it, so `update` cannot mistake the
+/// developer's real install for the one under test. Every update test needs
+/// this: without it the command reads `~/.config/artefacto/` and would report
+/// on whatever is actually installed on the machine running the suite.
+fn homeless() -> (tempfile::TempDir, Command) {
+    let home = tempfile::tempdir().expect("a temp home");
+    let mut c = bin();
+    c.env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env_remove("CARGO_HOME");
+    (home, c)
+}
+
+#[test]
+fn update_without_a_receipt_says_so_and_names_the_installer() {
+    let (_home, mut c) = homeless();
+    let assert = c.args(["update", "--check"]).assert().code(4);
+    let err = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        err.contains("not installed by the artefacto installer"),
+        "it must say why it cannot update: {err}"
+    );
+    assert!(
+        err.contains("artefacto-installer.sh"),
+        "and name the way to get an install it can update: {err}"
+    );
+    // Nothing on stdout: an agent parsing this must not find prose there.
+    assert!(
+        assert.get_output().stdout.is_empty(),
+        "a refusal writes to stderr only"
+    );
+}
+
+#[test]
+fn update_refuses_when_the_receipt_is_for_a_binary_somewhere_else() {
+    // The hazard this closes: axoupdater installs into the *receipt's* prefix,
+    // not next to the binary you ran. So `cargo run -- update` from a checkout
+    // would replace the copy on the developer's PATH. axoupdater's own guard
+    // refuses, but it refuses by reporting "no update needed" -- which reads
+    // as "you are on the latest release", a confident answer to a question it
+    // never asked, and it never touches the network to find out.
+    let home = tempfile::tempdir().expect("a temp home");
+    let elsewhere = home.path().join("elsewhere");
+    std::fs::create_dir_all(home.path().join(".config/artefacto")).unwrap();
+    std::fs::create_dir_all(elsewhere.join("bin")).unwrap();
+    std::fs::write(
+        home.path().join(".config/artefacto/artefacto-receipt.json"),
+        serde_json::json!({
+            "binaries": ["artefacto"],
+            "install_layout": "cargo-home",
+            "install_prefix": elsewhere.to_str().unwrap(),
+            "modify_path": true,
+            "provider": { "source": "cargo-dist", "version": "0.32.0" },
+            "source": {
+                "app_name": "artefacto",
+                "name": "artefacto",
+                "owner": "elleryfamilia",
+                "release_type": "github"
+            },
+            "version": "0.1.0"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let assert = bin()
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .args(["update", "--check"])
+        .assert()
+        .code(4);
+    let err = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        err.contains("not the installed artefacto"),
+        "it must say this copy is not the one the receipt names: {err}"
+    );
+    assert!(
+        !err.contains("latest release") && !err.contains("is available"),
+        "and must not answer the version question it never asked: {err}"
+    );
+}
+
+#[test]
+fn update_help_documents_check_and_says_installs_only() {
+    bin()
+        .args(["update", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--check"))
+        .stdout(contains("Installer-based installs only"));
+}

@@ -70,9 +70,32 @@ closes a comment with `artefacto resolve`, pushes a new revision with
 `artefacto ack`. Nothing is lost if either side goes away: the whole review is
 an append-only log, and both the page and the agent rebuild from it.
 
-There is no network. The server listens on loopback, the page is one
-self-contained HTML file with its fonts embedded, and nothing is fetched from
-anywhere.
+The review touches no network. The server listens on loopback, the page is one
+self-contained HTML file with its fonts embedded, and nothing on the page is
+fetched from anywhere. The one exception is `artefacto update`, below, which
+you have to type: it asks GitHub for the latest release. No other command
+makes an outbound request.
+
+## Updating
+
+```sh
+artefacto update          # move to the latest release
+artefacto update --check  # only say whether a newer one exists
+```
+
+This works for installs done with the installer above, which leaves a receipt
+recording where the binary went. A copy from `cargo install`, a package
+manager, or an unpacked archive has no receipt, and artefacto will not replace
+a binary it did not install — it says so and names the installer instead. The
+tool that installed it should be the tool that updates it.
+
+Replacing the file does not disturb a server already running from it: a
+running process keeps its own copy. So an update during a live review changes
+nothing you are looking at, and the next artefacto you start is the new one.
+
+`ARTEFACTO_NO_UPDATE_CHECK=1` turns off any automatic check, the same way
+`ARTEFACTO_NO_SKILL_INSTALL=1` turns off the skill install. Neither stops a
+command you typed yourself.
 
 Without a server at all:
 

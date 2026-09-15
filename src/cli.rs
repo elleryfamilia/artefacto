@@ -49,6 +49,8 @@ pub enum Command {
     Resolve(ResolveArgs),
     /// Emit the skill package: a JSON manifest, or files under a directory.
     Skill(SkillArgs),
+    /// Update artefacto to the latest release. Installer-based installs only.
+    Update(UpdateArgs),
     /// Drop sent reviews from the log and rotate the session secret. Stops the
     /// server first; the artifact index is kept.
     Clean {
@@ -79,6 +81,15 @@ pub struct SkillArgs {
     /// Write the package under this directory, replacing what is there.
     #[arg(long, group = "form", value_name = "DIR")]
     pub install: Option<PathBuf>,
+}
+
+/// `artefacto update`. The only command that makes an outbound request, and
+/// it does so only because somebody typed it.
+#[derive(Args, Debug)]
+pub struct UpdateArgs {
+    /// Only report whether a newer release exists; install nothing.
+    #[arg(long)]
+    pub check: bool,
 }
 
 #[derive(Args, Debug)]
