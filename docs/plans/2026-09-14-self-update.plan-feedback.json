@@ -17,7 +17,7 @@
       "text": "yes"
     }
   ],
-  "base_revision": 1,
+  "base_revision": 4,
   "comments": [
     {
       "asked": true,
@@ -25,13 +25,19 @@
       "id": "c-1",
       "quote": "How does artefacto speak HTTPS and read a .tar.xz? It has never made an outbound",
       "ref": "question:q-transport",
-      "replies": [],
-      "status": "open",
+      "replies": [
+        {
+          "actor": "agent",
+          "text": "You already solved this in loadout, and the answer is option (d) — axoupdater, cargo-dist's own updater crate. I read `load`'s source to be sure.\n\nloadout has `axoupdater = { version = \"0.10\", features = [\"blocking\"] }` and `src/update.rs` wraps it: `AxoUpdater::new_for(\"loadout\")`, `load_receipt()`, `is_update_needed_sync()`, `run_sync()`. That one crate does the whole job — finds the receipt, picks the target triple, downloads the .tar.xz, verifies the checksum, unpacks it, and replaces the running binary. Every hard task in my `p-fetch` phase disappears.\n\nIt also already answers three other things I was asking you:\n\n- **No receipt means no update.** loadout returns `NotManaged` and prints the installer command instead. That is exactly the \"no button for those people\" you just approved.\n- **The check never blocks anything.** This is the part I would not have thought of. The nudge reads only a cache file on disk. When the verdict is stale it spawns a *detached child* — `load update --refresh-cache` — that does the network call and writes the answer for the *next* command. So no timeout to tune, no thread that can hang, and a new release shows up at most one command late. It stamps the cache before spawning so a burst of commands starts one child, not a swarm.\n- **The cache carries the binary's version**, so a verdict computed by the old binary cannot nudge the new one that replaced it.\n\nSo I am rewriting this as revision 3: drop the hand-rolled download, extract, checksum, smoke-test and swap entirely, wrap axoupdater the way loadout does, and keep only what is genuinely artefacto's own — the page notice, the button, and the fact that a running review server keeps its old binary.\n\nThe one place I will not copy loadout exactly: loadout nudges on a TTY, artefacto nudges in the page. So the daemon still needs to read the verdict cache and put it in the state payload, and the detached-refresher trick replaces my \"daily check on the tick loop\".\n\nThe cost is the dependency tree — axoupdater pulls axoasset, miette, reqwest and self-replace. Bigger than the ~2-4 MB I quoted for option (a). You already pay it in loadout, so I am taking that as settled, but say the word if artefacto's binary size matters more than loadout's does.",
+          "ts": "2026-09-14T23:14:07Z"
+        }
+      ],
+      "status": "unanchored",
       "text": "what's teh standard why this is handled? how do i do it in https://github.com/elleryfamilia/loadout?"
     }
   ],
   "format": "artefacto.feedback/1",
-  "plan_hash": "sha256:6ee5fc2d4efb5a8168bd9d28e8a429aab75fc712f1b6c21dc9dd690bd7387643",
+  "plan_hash": "sha256:2635fc2399dd5fedc6cc3f51dfedb17ca5122c5bdef39b09985281f2372e3e85",
   "plan_id": "self-update",
   "reviewed": [],
   "verdict": "approve"
