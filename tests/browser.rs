@@ -524,6 +524,84 @@ fn the_reviewer_approves_and_the_agent_receives_the_document() {
 }
 
 #[test]
+fn the_bar_says_when_no_agent_is_listening() {
+    // The reviewer's doubt this exists for: a click that looked like it did
+    // nothing. The verdict is stored either way -- what the bar must not say
+    // is "sent" and stop there.
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    page.click(".pv-panel-foot .feedback-bar-approve");
+    page.click(".pv-confirm-go");
+    page.wait_until(
+        "document.querySelector('.feedback-bar-sent').textContent.indexOf('review sent') === 0",
+        "the bar to confirm the review was sent",
+    );
+    let sent = "document.querySelector('.feedback-bar-sent').textContent";
+    assert!(
+        page.text(sent).contains("not read yet"),
+        "the push still holds the lease and has read nothing: {}",
+        page.text(sent)
+    );
+
+    // Let that lease lapse: the agent pushed and stopped. Nobody is listening.
+    s.server()
+        .age_lease(artefacto::server::lease::TTL + std::time::Duration::from_secs(1));
+    page.wait_until(
+        "document.querySelector('.feedback-bar-sent').textContent.indexOf('no agent is attached') >= 0",
+        "the lapsed lease to reach the page",
+    );
+    assert!(
+        page.text(sent).contains("review sent"),
+        "and it is still sent, not lost: {}",
+        page.text(sent)
+    );
+}
+
+#[test]
+fn the_bar_names_the_agent_that_read_the_verdict() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    page.click(".pv-panel-foot .feedback-bar-approve");
+    page.click(".pv-confirm-go");
+    page.wait_until(
+        "document.querySelector('.feedback-bar-sent').textContent.indexOf('review sent') === 0",
+        "the bar to confirm the review was sent",
+    );
+
+    // The agent acknowledges the frame that carried the verdict. That
+    // acknowledgement is the only proof the protocol has of reading.
+    let seq = s.server().last_event_of_type("review.submitted")["seq"]
+        .as_u64()
+        .expect("the verdict's seq")
+        .to_string();
+    s.repo
+        .run(&["ack", "--seq", &seq, "--session", &s.session])
+        .success();
+
+    page.wait_until(
+        "document.querySelector('.feedback-bar-sent').textContent.indexOf('read by') >= 0",
+        "the acknowledgement to reach the page",
+    );
+    assert!(
+        page.text("document.querySelector('.feedback-bar-sent').textContent")
+            .contains("read by agent"),
+        "the agent that acknowledged is the one named"
+    );
+}
+
+#[test]
 fn an_answer_to_an_open_question_arrives_as_data() {
     let Some(browser) = Browser::launch() else {
         return;
@@ -3179,7 +3257,12 @@ fn a_sent_review_is_unmistakable() {
         text.starts_with("Review sent for revision 1: 1 comment"),
         "{text}"
     );
-    assert!(text.contains("The agent has it"), "{text}");
+    assert!(
+        text.contains("agent has not read it yet"),
+        "what the notice says is true: the push holds the lease and has \
+         acknowledged nothing, so the verdict is stored and unread -- not \
+         \"the agent has it\": {text}"
+    );
     page.wait_until(
         "document.querySelector('.pv-panel-foot .feedback-bar-send').classList.contains('is-filled')",
         "the button to say a second click is a second send",

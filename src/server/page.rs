@@ -376,13 +376,18 @@ pub fn body_fragment(rendered: &str) -> Option<String> {
 pub fn state_json(shared: &Arc<Shared>, artifact: &str) -> Result<Option<serde_json::Value>> {
     let snapshot = {
         let c = Committer::open(shared);
-        let Some(art) = c.with_review(|r| r.artifacts.get(artifact).cloned()) else {
+        let Some((art, cursors)) = c.with_review(|r| {
+            r.artifacts
+                .get(artifact)
+                .cloned()
+                .map(|art| (art, r.cursors.clone()))
+        }) else {
             return Ok(None);
         };
         let last_seq = shared.log.lock().unwrap().last_seq();
-        (art, last_seq)
+        (art, cursors, last_seq)
     };
-    let (art, last_seq) = snapshot;
+    let (art, cursors, last_seq) = snapshot;
     let presence = crate::server::lease::current(shared)
         .map(|h| serde_json::json!({ "agent": h.agent, "mode": h.mode }));
     let html = served_fragment(&render_plan(&art.plan)?, artifact, art.revision);
@@ -402,6 +407,13 @@ pub fn state_json(shared: &Arc<Shared>, artifact: &str) -> Result<Option<serde_j
         "chat": art.chat,
         "submitted": art.submitted,
         "verdict": art.verdict,
+        /* Whether the verdict has been read: the seq it arrived at, and where
+        every agent's cursor stands. A cursor at or past `verdict_seq` means
+        that agent acknowledged a frame carrying the verdict, which is the
+        only proof of reading the protocol has. The page compares the two;
+        with no verdict, or no agent, there is nothing to compare. */
+        "verdict_seq": art.verdict_seq,
+        "cursors": cursors,
         "presence": presence,
         "last_seq": last_seq,
         // What this server is running, and whether a newer release exists.

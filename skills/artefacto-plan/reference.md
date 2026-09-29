@@ -455,9 +455,12 @@ reason it was sent, and the frame's `seq` is that event's seq. Passive events
 never cause a frame on their own; they arrive in the next frame an active
 event causes, or in a `timeout` result's tail.
 
-`nudge`, `agent.attached`, and `agent.detached` are announced to open pages
-and never logged; you do not receive them. An interrupt is a `nudge` carrying
-`data.interrupt`; a page that does not know the field shows the banner.
+`nudge`, `agent.attached`, `agent.detached`, and `review.read` are announced to
+open pages and never logged; you do not receive them. An interrupt is a `nudge`
+carrying `data.interrupt`; a page that does not know the field shows the banner.
+`review.read` is the page being told that an agent acknowledged the frame
+carrying the last verdict, which is the only proof the protocol has of reading;
+the page says so on the bar in place of "not read yet".
 
 ## The feedback document
 

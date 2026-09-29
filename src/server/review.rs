@@ -128,6 +128,11 @@ pub struct Artifact {
     /// The last verdict sent, kept across a new revision: a new revision
     /// reopens the review, and the verdict is still the last one given.
     pub verdict: Option<String>,
+    /// The `seq` of the event that carried that verdict. An agent's cursor at
+    /// or past it is the only proof that anybody has read the verdict, and
+    /// the page's delivery state is built on exactly that. Folded like every
+    /// other field, so a restart keeps it.
+    pub verdict_seq: Option<u64>,
     /// When the current revision was published, from its event.
     pub revised_at: String,
 }

@@ -16,7 +16,8 @@
      of whatever was logged last -- because they have no seq of their own.
      So a page must never drop a frame by seq alone; see `applyFrame`. */
   const ANNOUNCED = {
-    "agent.attached": true, "agent.detached": true, "nudge": true, "server.stopping": true,
+    "agent.attached": true, "agent.detached": true, "nudge": true,
+    "review.read": true, "server.stopping": true,
   };
 
   const core = {
@@ -104,6 +105,10 @@
         artifact: artifact, revision: 0, planHash: "", plan: null, threads: [],
         answers: {}, reviewed: [], chat: [], submitted: false,
         verdict: null, presence: null, lastSeq: 0,
+        /* Where the verdict arrived, and who has read it. `verdictSeq` comes
+           from the server (or the page's own reply); `readBy` is null until a
+           cursor passes it. */
+        verdictSeq: null, readBy: null,
       };
     },
     /* What `GET /a/<artifact>/state` returns, as page state. */
@@ -125,6 +130,19 @@
         chat: (s.chat || []).slice(),
         submitted: !!s.submitted,
         verdict: s.verdict || null,
+        verdictSeq: s.verdict_seq || null,
+        /* Read means an agent's cursor is at or past the seq the verdict
+           arrived at. A cursor moves only by acknowledging a frame, and a
+           frame carrying a verdict is one at or past its seq -- so this is
+           proof of reading, not a guess about attention. */
+        readBy: (function () {
+          if (s.verdict_seq == null) return null;
+          const cursors = s.cursors || {};
+          const reading = Object.keys(cursors).filter(function (name) {
+            return (cursors[name] || 0) >= s.verdict_seq;
+          });
+          return reading.length ? reading[0] : null;
+        })(),
         presence: s.presence || null,
         lastSeq: s.last_seq || 0,
       };
@@ -233,6 +251,16 @@
         case "review.submitted":
           state.submitted = true;
           state.verdict = d.verdict || null;
+          /* The seq the verdict landed at is what reading is measured
+             against, and a verdict nobody has acknowledged yet is unread. */
+          state.verdictSeq = e.seq || state.verdictSeq;
+          state.readBy = null;
+          return true;
+        case "review.read":
+          /* Page-only, never logged: an agent acknowledged a frame that
+             carried this verdict. It is what closes the doubt a reviewer has
+             when the click looks like it did nothing. */
+          state.readBy = d.agent || "the agent";
           return true;
         case "agent.attached":
           state.presence = { agent: d.agent || "", mode: d.mode || "waiting" };
@@ -2953,10 +2981,19 @@
       parts.push(threads.length + (threads.length === 1 ? " comment" : " comments"));
       parts.push(answers + (answers === 1 ? " answer" : " answers"));
       parts.push(reviewed + " of " + taskEls.length + " tasks reviewed");
+      /* What is true right now, not what the reviewer hopes: an agent that
+         is attached but has not acknowledged the frame has not read it, and
+         one that is not attached reads it when it next checks. Saying "the
+         agent has it" was the sentence that made a stored verdict look
+         delivered. */
+      const delivery = S.state.readBy
+        ? " " + S.state.readBy + " has read it."
+        : S.state.presence
+          ? " " + S.state.presence.agent + " has not read it yet."
+          : " No agent is attached; it is saved, and the agent reads it when it next checks.";
       notice("sent",
         (S.state.verdict === "approve" ? "Approval sent" : "Review sent") + " for revision " + S.state.revision + ": "
-          + parts.join(", ") + ". The agent has it."
-          + (S.state.presence ? "" : " No agent is attached; it will be delivered when one is."),
+          + parts.join(", ") + "." + delivery,
         { dismiss: true });
     }
 
@@ -3264,6 +3301,16 @@
         || S.state.reviewed.length > 0;
     }
 
+    /* What the reviewer is owed after sending: whether anybody has read the
+       verdict. "Sent" alone read as "done", and a click that no agent was
+       listening for looked like a click that did nothing -- the verdict is
+       stored either way, so say which of the three it actually is. */
+    function deliveryNote() {
+      if (!S.state.submitted) return "";
+      if (S.state.readBy) return " \u00b7 read by " + S.state.readBy;
+      return S.state.presence ? " \u00b7 not read yet" : " \u00b7 no agent is attached";
+    }
+
     function renderBar() {
       const bar = document.querySelector(".pv-panel-foot");
       if (!bar) return;
@@ -3287,7 +3334,7 @@
           ? "Saved. The agent sees your notes when you send them."
           : "Saved \u00b7 rev " + S.state.revision;
       const when = S.ui.sentAt ? " \u00b7 " + clock(S.ui.sentAt) : "";
-      bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent \u00b7 rev " + S.state.revision + when : "";
+      bar.querySelector(".feedback-bar-sent").textContent = S.state.submitted ? "review sent \u00b7 rev " + S.state.revision + when + deliveryNote() : "";
       bar.classList.toggle("is-sent", !!S.state.submitted);
       /* Two verdicts, one group; the one that was sent is the filled
          control. The group is mounted more than once -- the panel foot and
@@ -3312,7 +3359,7 @@
       const endNote = document.querySelector(".pv-verdict-end-note");
       if (endNote) {
         endNote.textContent = S.state.submitted
-          ? "sent · rev " + S.state.revision + when
+          ? "sent · rev " + S.state.revision + when + deliveryNote()
           : threads.length + (threads.length === 1 ? " thread · " : " threads · ") + k + "/" + taskEls.length + " reviewed";
       }
     }

@@ -451,6 +451,48 @@ fn the_state_route_returns_the_folded_review_and_the_rendered_body() {
 }
 
 #[test]
+fn the_snapshot_says_where_the_verdict_stands_delivered() {
+    // What the page's delivery state reads. A verdict sent with nobody
+    // attached must read as unread, and an agent's acknowledgement past its
+    // seq is the only thing that may turn it read -- the same seq the
+    // protocol has the agent name when it acknowledges a frame.
+    let s = InProcess::start();
+    s.seed_artifact();
+    let cookie = s.session_cookie("plan:demo");
+    let review = s.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "review.submit", "client_id": "cid-1",
+            "verdict": "approve", "base_revision": 1,
+        }),
+    );
+    let verdict_seq = review["seq"].as_u64().expect("the seq it landed at");
+
+    let state = |s: &InProcess| -> serde_json::Value {
+        let r = s.get("/a/plan:demo/state", &[("Cookie", &cookie)]);
+        serde_json::from_str(r.split("\r\n\r\n").nth(1).expect("a body")).expect("json")
+    };
+
+    let v = state(&s);
+    assert_eq!(v["verdict_seq"], verdict_seq, "where the verdict arrived");
+    assert!(
+        v["cursors"].as_object().is_some_and(|c| c.is_empty()),
+        "nobody has acknowledged anything, so the verdict is unread: {}",
+        v["cursors"]
+    );
+
+    // The agent acknowledges the frame that carried it.
+    s.log_event(
+        artefacto::server::event::Actor::Server,
+        "cursor.acked",
+        serde_json::json!({ "agent": "claude", "acked_seq": verdict_seq }),
+    );
+    let v = state(&s);
+    assert_eq!(v["cursors"]["claude"], verdict_seq);
+}
+
+#[test]
 fn the_state_route_reports_the_lease_holder() {
     let s = InProcess::start();
     s.seed_artifact();
