@@ -415,7 +415,7 @@ mod tests {
             version: MINE.to_string(),
             verdict: Verdict::Current,
         };
-        assert_eq!(decide(Some(&c), SystemTime::now()).1, true);
+        assert!(decide(Some(&c), SystemTime::now()).1);
     }
 
     #[test]
