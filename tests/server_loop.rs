@@ -338,6 +338,59 @@ fn presence_is_announced_and_never_logged() {
 }
 
 #[test]
+fn a_page_is_told_the_verdict_was_read_and_it_is_never_logged() {
+    // The reviewer's doubt this removes: "Approve did nothing." The verdict is
+    // accepted either way, and the bar says so; what a page could not say was
+    // whether any agent had actually read it. The acknowledgement is the only
+    // proof, and it reaches the page as an announcement -- like presence, it
+    // describes what the page has been told, so it is not written down.
+    let server = InProcess::start();
+    server.seed_artifact();
+    let mut page = server.connect_page();
+    page.hello();
+
+    let cookie = server.session_cookie("plan:demo");
+    let reply = server.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "review.submit", "client_id": "cid-1",
+            "verdict": "approve", "base_revision": 1,
+        }),
+    );
+    let verdict_seq = reply["seq"].as_u64().expect("the seq it landed at");
+
+    let session = artefacto::server::lease::acquire(
+        &server.shared,
+        artefacto::server::lease::Claim::waiting("claude"),
+    )
+    .unwrap();
+    artefacto::server::delivery::ack(&server.shared, &session, verdict_seq).unwrap();
+
+    // The lease change announces itself too, so read until the one we mean.
+    let mut seen: Vec<String> = Vec::new();
+    let frame = loop {
+        let frame = page.next_frame();
+        let kind = frame["events"][0]["type"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        seen.push(kind.clone());
+        if kind == "review.read" {
+            break frame;
+        }
+        assert!(seen.len() < 10, "no review.read among {seen:?}");
+    };
+    assert_eq!(frame["events"][0]["artifact"], "plan:demo");
+    assert_eq!(frame["events"][0]["data"]["agent"], "claude");
+    assert_eq!(
+        server.count_events("review.read"),
+        0,
+        "an announcement is a view over the cursor, not a fact the log keeps"
+    );
+}
+
+#[test]
 fn an_expired_lease_announces_detached() {
     // Spec 4.2: "the pill changes only when the lease changes hands or
     // expires" — so expiry has to reach the page. Nothing calls `release` for

@@ -389,3 +389,28 @@ fn a_new_revision_reopens_a_submitted_review() {
     assert!(!r.artifacts["plan:demo"].submitted);
     assert_eq!(r.artifacts["plan:demo"].revision, 2);
 }
+
+#[test]
+fn a_verdict_remembers_the_seq_it_arrived_at() {
+    // The page's delivery state reads this: an agent's cursor at or past the
+    // verdict's seq is the only thing that proves somebody read it, and a
+    // page that reloaded has no other way to learn which seq to compare.
+    let r = fold(&[
+        ev(1, Actor::Agent, "revision.published", plan_data()),
+        ev(
+            4,
+            Actor::Reviewer,
+            "review.submitted",
+            serde_json::json!({ "verdict": "approve", "base_revision": 1 }),
+        ),
+    ]);
+    let a = &r.artifacts["plan:demo"];
+    assert_eq!(a.verdict.as_deref(), Some("approve"));
+    assert_eq!(a.verdict_seq, Some(4), "the seq the verdict arrived at");
+}
+
+#[test]
+fn a_verdict_with_no_review_has_no_seq() {
+    let r = fold(&[ev(1, Actor::Agent, "revision.published", plan_data())]);
+    assert_eq!(r.artifacts["plan:demo"].verdict_seq, None);
+}

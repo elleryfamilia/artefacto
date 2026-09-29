@@ -429,6 +429,21 @@ html.is-interrupted, html.is-interrupted body { overflow: hidden; }
 .ag-interrupt-timer { height: 2px; background: var(--rule-soft); margin: 0.875rem -1.25rem -1rem; }
 .ag-interrupt-timer span { display: block; height: 100%; background: var(--action); transition: width 200ms linear; }
 
+/* The reviewer's own confirm. Same geometry as the interrupt so the page has
+   one dialog shape, but the agent's colour and mark are deliberately absent:
+   nobody is talking to you here, you are being asked whether you meant it. */
+.pv-confirm {
+  width: min(27rem, 100%); margin: auto 0; background: var(--page); border: var(--rule-w) solid var(--rule);
+  border-top: 3px solid var(--action); border-radius: var(--radius-lg); box-shadow: var(--shadow-float);
+  padding: 1.125rem 1.25rem 1rem; animation: ag-interrupt-in var(--t-slow) var(--ease) both;
+}
+.pv-confirm-title { font-family: var(--font-display); font-weight: 400; font-size: 1.375rem; line-height: 1.2; letter-spacing: -0.01em; margin: 0 0 0.5rem; color: var(--ink); text-wrap: pretty; }
+.pv-confirm-body { font-size: 1rem; line-height: 1.5; color: var(--ink-2); margin: 0; max-width: 44ch; text-wrap: pretty; }
+.pv-confirm-detail { font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted); margin: 0.625rem 0 0; }
+.pv-confirm-warn { font-size: 0.8125rem; line-height: 1.45; color: var(--alarm); margin: 0.625rem 0 0; }
+.pv-confirm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 1.125rem; }
+.pv-confirm-actions .is-quiet { margin-left: auto; }
+
 /* ---------------------------------------------------------------------------
    Motion
    ---------------------------------------------------------------------------
@@ -2764,6 +2779,18 @@ pre code { font-size: 1em; }
 .feedback-bar-verdict .pv-btn.is-sent { animation: pv-pop var(--t-mid) var(--ease); }
 .feedback-bar-sent { color: var(--ok); font-weight: 500; }
 .feedback-bar-sent:empty { display: none; }
+
+/* The verdict where the reading ends. The panel foot keeps its copy for a
+   reviewer mid-conversation; this one is for the reviewer who just finished
+   the document and has nowhere else to say what they think. */
+.pv-verdict-end {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1rem;
+  margin: 2.5rem 0 1rem; padding-top: 1.125rem; border-top: var(--rule-w) solid var(--rule);
+}
+.pv-verdict-end-head { display: flex; flex-direction: column; gap: 0.125rem; margin-right: auto; }
+.pv-verdict-end-kicker { font-family: var(--font-mono); font-size: 0.625rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+.pv-verdict-end-note { font-size: 0.8125rem; color: var(--ink-2); }
+.pv-verdict-end-note:empty { display: none; }
 
 label.feedback-bar-approve {
   display: inline-flex;

@@ -298,6 +298,10 @@ fn submitted(review: &mut Review, event: &Event) {
         if let Some(verdict) = event.data.get("verdict").and_then(|v| v.as_str()) {
             artifact.verdict = Some(verdict.to_string());
         }
+        /* The seq is what says whether anybody has read this verdict yet: an
+        agent's cursor moves only by acknowledging a frame, and a frame that
+        carried this event is one whose seq is at or past it. */
+        artifact.verdict_seq = Some(event.seq);
     }
 }
 

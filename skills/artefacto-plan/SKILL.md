@@ -22,7 +22,7 @@ what is there rather than asking them to write it.
 1. Write `plan.json` (schema in reference.md). Keep ids stable across revisions.
 2. `artefacto plan check plan.json --json`; fix every error by its `path`.
 3. `artefacto plan push plan.json --json`; the page opens. Keep `session` and `revision` from the result.
-4. Wait for the reviewer (a monitor, or the poll loop). Act on each frame, **then** acknowledge it.
+4. Wait for the reviewer (the poll loop; a monitor where the harness has one). Act on each frame, **then** acknowledge it.
 5. When the review is sent, address every comment, push the next revision with `--resolutions`, and keep waiting for the next round.
 
 ## 1. Write and publish
@@ -62,21 +62,11 @@ nobody is reviewing.
 
 ## 2. Wait for the reviewer
 
-Two ways. Both hand you the same frames from the same cursor, and both leave
+Two ways, and they hand you the same frames from the same cursor. Both leave
 the cursor where it is until you acknowledge.
 
-**With a monitor** (Claude Code: the section at the end).
-
-```bash
-artefacto status --json
-```
-
-prints `follow.command`, the exact line to run in the background:
-`artefacto events --follow --agent <name>`, under the name you pushed with.
-Its first stdout line is a session record carrying your token; every later
-line is one frame. It exits 0 when the server stops.
-
-**Without one, the poll loop.** Each call returns within 90 seconds:
+**The poll loop is the default, and the only way that works everywhere.** Each
+call returns within 90 seconds:
 
 ```bash
 artefacto await --session "$SESSION"
@@ -95,6 +85,33 @@ without `--ack` is handed the same frame again; that is what makes a crash
 between receiving a frame and acting on it safe. If you have no token,
 `artefacto await` under the same `--agent` name rejoins the lease the push
 took and returns one.
+
+**The loop is the wait.** A `timeout` means "not yet", nothing else. While the
+review is open, call again; do not end your turn to ask the reviewer whether
+to keep waiting, and do not report a timeout as a result. An agent that stops
+calling is an agent the reviewer cannot reach: the server never calls out to
+you, so a verdict sent while nobody is mid-call sits in the log until the next
+`await`. Nothing is lost when that happens — the cursor does not move until
+you acknowledge — but the reviewer is left looking at a page that took their
+verdict and no agent that reacted to it.
+
+**With a monitor, where your harness has one.** If the harness can keep a
+command running and hand you each line as it is written — Claude Code's
+Monitor, a streaming shell — use the follow instead. It is the same frames,
+one JSON object per line, and nothing to re-arm:
+
+```bash
+artefacto status --json
+```
+
+prints `follow.command`, the exact line to run in the background:
+`artefacto events --follow --agent <name>`, under the name you pushed with.
+Its first stdout line is a session record carrying your token; every later
+line is one frame. It exits 0 when the server stops. The Claude Code section
+at the end has the tool call.
+
+A harness that tells you *only when a command finishes* has no monitor: a
+follow that never exits never tells you anything. Use the poll loop there.
 
 ## 3. Act on a frame
 

@@ -67,10 +67,12 @@ pub fn run(args: &SkillArgs) -> Result<()> {
 ///
 /// `home` is the agent's own configuration directory. Its existence is how
 /// we know the agent is installed: creating it would leave a stray directory
-/// for a tool the person does not use.
+/// for a tool the person does not use. `None` means this build knows no
+/// default on this platform, and the agent is reachable only through its
+/// environment override.
 pub struct Agent {
     pub name: &'static str,
-    home: &'static str,
+    home: Option<&'static str>,
     /// An environment variable that moves this agent's whole configuration
     /// directory. Claude Code has one; where an agent has none this is
     /// `None` rather than a guessed name, because an install is a write into
@@ -92,7 +94,8 @@ impl Agent {
                 return moved.is_absolute().then_some(moved);
             }
         }
-        home_dir().map(|h| h.join(self.home))
+        let home = self.home?;
+        home_dir().map(|h| h.join(home))
     }
 
     /// Whether this agent keeps a configuration directory here.
@@ -115,28 +118,42 @@ impl Agent {
 pub const AGENTS: &[Agent] = &[
     Agent {
         name: "claude",
-        home: ".claude",
+        home: Some(".claude"),
         root_env: Some("CLAUDE_CONFIG_DIR"),
     },
     Agent {
         name: "codex",
-        home: ".codex",
+        home: Some(".codex"),
         root_env: None,
     },
     Agent {
         name: "cursor",
-        home: ".cursor",
+        home: Some(".cursor"),
         root_env: None,
     },
     Agent {
         name: "gemini",
-        home: ".gemini",
+        home: Some(".gemini"),
         root_env: None,
     },
     Agent {
         name: "opencode",
-        home: ".config/opencode",
+        home: Some(".config/opencode"),
         root_env: None,
+    },
+    Agent {
+        name: "hokki",
+        /* A desktop app, not a dotfile in the home: it keeps its engine --
+        and the skills it reads -- in the platform's application-data
+        directory. macOS is the default this build knows; elsewhere the
+        engine is found through `DSH_HOME`, and with neither there is no
+        directory to guess at. */
+        home: if cfg!(target_os = "macos") {
+            Some("Library/Application Support/hokki/engine")
+        } else {
+            None
+        },
+        root_env: Some("DSH_HOME"),
     },
 ];
 

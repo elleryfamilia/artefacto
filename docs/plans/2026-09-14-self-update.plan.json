@@ -1,0 +1,434 @@
+{
+  "format": "artefacto.plan/1",
+  "meta": {
+    "id": "self-update",
+    "title": "Keeping artefacto current, without ever moving the floor mid-review",
+    "goal_md": "The page says when a newer artefacto exists and offers one click to fetch it. The review you are in the middle of keeps running the version it started with.",
+    "summary_md": "artefacto has no upgrade path. The only way to get a new version is to re-run the install command from the README, and nothing tells you a new version exists. Someone who installed 0.1.0 yesterday is still running it, still without the skill install that 0.2.0 added.\n\nAll four questions from revision 2 are answered, and the answer to the big one shrinks this plan by about half. You said to follow loadout, so I read `load`'s source: it uses **axoupdater**, cargo-dist's own updater crate. One dependency does the receipt, the platform, the download, the checksum, the unpack and the replace. Revision 2 spent a whole phase hand-rolling all of that, badly.\n\nWhat is left is the part that is actually artefacto's own: a review page is open while this happens. So the daemon reads a verdict written by a detached child process, puts it in the page's state, and the page shows one line and one button. The running server keeps its own copy of the binary, so the review does not blink.\n\nFolded in at your request: the one-time `/b/` link that reads as \"the server died\" when you click it twice. It is in this plan because a page you cannot get back to is a page that cannot offer you an update.\n\nOne question left, not blocking: axoupdater is a heavy dependency, and I want to confirm you are fine paying it here as well as in loadout.",
+    "key_points": [
+      "**axoupdater does the update.** loadout already ships this: `axoupdater = { version = \"0.10\", features = [\"blocking\"] }`, wrapped in about 100 lines. Everything revision 2 planned to build by hand — decompressing xz, reading a tar, picking one member, checking a SHA-256, running the new binary before trusting it, renaming it into place — is inside that crate, written by the people who generate the installer.",
+      "**No install receipt means no update, and that is the whole answer to \"who gets a button\".** A binary from `cargo install` or a package manager has no receipt, so it reports `NotManaged` and names the installer command instead. You approved this: those people see the notice, not the button.",
+      "**The check never blocks anything, because nothing checks inline.** This is loadout's best idea and I would not have arrived at it. Reading the verdict is a file read. When the verdict is stale, a *detached child process* does the network call and writes the answer for next time. There is no timeout to tune, no thread that can hang, and no command that gets slower. The cost is that a brand-new release appears at most one command late.",
+      "**The verdict cache is stamped with the binary's version**, so an \"update available\" computed by 0.2.0 can never nudge the 0.3.0 that replaced it. The cache is also stamped *before* the child is spawned, so ten commands in a row start one child rather than ten.",
+      "**The review keeps the version it started with.** Replacing the file does not disturb a process already running from it — it keeps its own inode. So after an update the daemon is still old, and the notice says so rather than repeating an offer that has already been taken. `server.json` gains a `version` field so a new CLI can tell it is talking to an old daemon at all.",
+      "**The no-network claim narrows in the same commit that first breaks it.** The README says artefacto touches no network. That stops being true the moment the first phase merges, so the README changes then — not in the last phase.",
+      "**`ARTEFACTO_NO_UPDATE_CHECK=1` turns off the automatic check**, named beside `ARTEFACTO_NO_SKILL_INSTALL` because it is the same kind of promise. The command you typed still works: suppressing a background check is not the same as refusing an instruction.",
+      "**A spent `/b/` link stops looking like a dead server.** Clicking a one-time link twice currently returns raw JSON, which reads as a crash. If the browser already holds a session it just goes to the page; if it does not, it gets a real page saying the link is one-time and how to get another."
+    ],
+    "out_of_scope": [
+      "Choosing an arbitrary older release, or any rollback: axoupdater does not keep the replaced binary, and loadout accepts the same trade",
+      "Replacing a running server, restarting it, or interrupting an attached agent to apply an update",
+      "Updating anything other than the artefacto binary (the skill travels inside it)",
+      "Windows support, which artefacto does not have",
+      "Updating other repositories' running daemons, which keep the old binary until they next start",
+      "Telemetry: the check sends no identifier, no plan content and no repository name (a request does send this machine's IP and a User-Agent, which is unavoidable)"
+    ],
+    "agent": "claude",
+    "created": "2026-09-14",
+    "revision": 3
+  },
+  "open_questions": [
+    {
+      "id": "q-weight",
+      "question_md": "**Is axoupdater's weight acceptable in artefacto specifically?**\n\nIt pulls `axoasset`, `axoprocess`, `miette`, `self-replace`, `tempfile` and — through `axoasset` — `reqwest` and a TLS stack. That is heavier than the 2-4 MB I estimated for hand-rolling `ureq` + `rustls`, and artefacto today is ten small local dependencies with no outbound request at all.\n\nYou already pay this in loadout, and you told me to follow loadout, so I am treating it as settled and building it that way. I am asking only because artefacto's README currently sells it as a small, auditable, no-network binary, and this is the change that makes that less true. If binary size or dependency count matters more here than it does in loadout, say so and I will fall back to `curl` and `tar`.\n\n**Not blocking.** I will build on axoupdater unless you say otherwise.",
+      "blocking": false
+    }
+  ],
+  "risks": [
+    {
+      "id": "r-dependencies",
+      "title": "axoupdater's dependency tree lands in a crate that has ten small local dependencies",
+      "severity": "medium",
+      "mitigation_md": "`axoasset` brings `reqwest` and TLS; `miette` is a large diagnostics crate. This is the single biggest change the plan makes to `Cargo.toml` and it is the subject of `q-weight`. The mitigation is that it is one dependency boundary rather than six — the alternative was `ureq`, `rustls`, a root-certificate source, `xz2` and `tar`, plus the code joining them, which is what revision 2 tried to plan and got wrong in five separate ways. `t-updater` measures the built binary before and after and records both numbers in the build log, so the cost is a fact rather than a guess."
+    },
+    {
+      "id": "r-daemon-is-old",
+      "title": "The running daemon keeps serving the old binary's code after an update",
+      "severity": "medium",
+      "mitigation_md": "This is the safety property, not a bug — but revision 1 said \"the next start is the new version\" and meant the wrong process. `plan push` calls `serve()`, which returns immediately when a live server is recorded (`src/commands/serve.rs:33`), and the daemon self-exits only after thirty minutes with no page and no lease. So after an update the daemon is still old, serving the old `plan.js` and the old routes, and the new CLI is talking to it. `t-state` adds a `version` field to `server.json` so the two can tell each other apart, and `t-notice` changes the page's line to name the version this review is running instead of repeating an offer already taken."
+    },
+    {
+      "id": "r-no-undo",
+      "title": "No way back to the previous binary",
+      "severity": "medium",
+      "mitigation_md": "axoupdater replaces the binary and does not keep the old one, so there is no `--rollback` here. Revision 2 planned to keep `artefacto.previous` by hand; adopting axoupdater gives that up. The honest mitigation is that the previous release is one installer command away and the README says so, and that loadout has shipped this exact trade for eight minor versions without it biting. If it ever does bite, the fix is to keep a copy beside the target before calling `run_sync()` — a few lines, added then rather than now."
+    },
+    {
+      "id": "r-shared-skill",
+      "title": "One repository's new binary rewriting the shared skill under another repository's live review",
+      "severity": "medium",
+      "mitigation_md": "`sync_into_agents()` runs on every `plan push` (`src/commands/skill.rs:180`) and writes into `~/.claude/skills/` and the other agents' directories, which are shared across every repository on the machine. So updating in repository A means repository B's next push — still on the old daemon — rewrites or is rewritten by a different version's skill text. The rule this implies should be written down in the spec: any on-disk format shared across repositories stays readable and writable by the previous version for at least one version. `src/index.rs:266` already marks the index read-only when a newer artefacto wrote it, and says so once into a log file nobody reads."
+    },
+    {
+      "id": "r-network-claim",
+      "title": "The README's \"there is no network\" becoming untrue and staying that way",
+      "severity": "medium",
+      "mitigation_md": "It is a claim people choose the tool for. Revision 1 left the fix in the last phase, which would have shipped a false README for three phases. The narrowing now lands in `t-updater`, the same commit that makes the first request possible: the review touches no network, and the update check and download are the only things that do."
+    },
+    {
+      "id": "r-child-swarm",
+      "title": "The detached refresher spawning more than once, or never",
+      "severity": "low",
+      "mitigation_md": "loadout's answer, which this copies: stamp the cache *before* spawning, with a `Failed` verdict as the honest placeholder. The stamp closes the refresh window immediately, so a burst of commands starts one child; the child overwrites the stamp with the real verdict; and if the child dies before writing, the placeholder doubles as the retry backoff. `t-cache` tests `decide()` as a pure function over `(mode, cache, now)` with no I/O at all, which is how loadout tests it."
+    },
+    {
+      "id": "r-updater-release-shape",
+      "title": "Depending on axoupdater's agreement with the release format",
+      "severity": "low",
+      "mitigation_md": "artefacto's releases are generated by cargo-dist, and axoupdater is cargo-dist's own updater, so the two move together by construction — that is the main reason to use it rather than reading `dist-manifest.json` by hand, which revision 2 proposed. The failure mode is a cargo-dist upgrade that changes the manifest faster than the pinned axoupdater follows; the mitigation is that a failed check is a `Failed` verdict, never an error, and `t-updater` has an acceptance criterion for it."
+    }
+  ],
+  "phases": [
+    {
+      "id": "p-cli",
+      "title": "`artefacto update`",
+      "summary_md": "The first slice ships one whole command, the same shape as `load update`. It is useful on its own, with no page involved, and it is where the dependency lands.",
+      "tasks": [
+        {
+          "id": "t-updater",
+          "title": "Wrap axoupdater, and narrow the README in the same commit",
+          "summary_md": "Add `axoupdater = { version = \"0.10\", features = [\"blocking\"] }` and wrap it the way `loadout/src/update.rs` does:\n\n```rust\nlet mut updater = AxoUpdater::new_for(\"artefacto\");\nif updater.load_receipt().is_err() {\n    return Ok(Outcome::NotManaged);\n}\nif check_only {\n    return Ok(if updater.is_update_needed_sync()? {\n        Outcome::UpdateAvailable\n    } else {\n        Outcome::AlreadyCurrent\n    });\n}\nmatch updater.run_sync()? { ... }\n```\n\nFour outcomes, exactly loadout's: `Updated { from, to }`, `AlreadyCurrent`, `UpdateAvailable`, `NotManaged`. `NotManaged` prints the installer command rather than erroring — that is the approved \"no button for those people\", and it is what somebody who ran `cargo install` needs to read.\n\nExit codes are a contract in this codebase (`src/client.rs:22`), so they are chosen deliberately and documented rather than falling out of `Result`.\n\nThe README's \"there is no network\" becomes untrue the moment this merges, so it changes here.\n\nRecord the built binary's size before and after. `q-weight` deserves a number, not an adjective.",
+          "status": "planned",
+          "estimate": "m",
+          "risk": "medium",
+          "files": [
+            {
+              "path": "Cargo.toml",
+              "action": "modify",
+              "note": "axoupdater with the `blocking` feature; nothing here today can make an HTTPS request"
+            },
+            {
+              "path": "src/update.rs",
+              "action": "create",
+              "note": "the `perform` wrapper and the four outcomes"
+            },
+            {
+              "path": "src/commands/update.rs",
+              "action": "create"
+            },
+            {
+              "path": "src/cli.rs",
+              "action": "modify",
+              "note": "`update`, `--check`, `--refresh-cache` (hidden)"
+            },
+            {
+              "path": "README.md",
+              "action": "modify",
+              "note": "the no-network claim narrows in this commit, not four phases later"
+            }
+          ],
+          "acceptance": [
+            "`artefacto update` on the newest release says so and exits 0",
+            "`--check` reports whether a newer release exists and installs nothing",
+            "An install with no receipt reports `NotManaged` and prints the installer command, and does not error",
+            "A check that cannot reach the release host is a failure verdict, never a non-zero exit from `--check`",
+            "The exit codes are documented and distinguish up-to-date, available, not-managed, and could-not-tell",
+            "The README no longer claims artefacto touches no network",
+            "The binary size before and after is recorded"
+          ],
+          "validation": [
+            "cargo test --test cli -- update",
+            "a test with `HOME` pointed at a directory holding no receipt must report `NotManaged`",
+            "the gate: cargo fmt --check, cargo clippy --all-targets, cargo test"
+          ]
+        },
+        {
+          "id": "t-off",
+          "title": "Turning the background check off",
+          "summary_md": "`ARTEFACTO_NO_UPDATE_CHECK=1` stops the automatic check entirely, for a machine that must make no outbound request. Named and documented beside `ARTEFACTO_NO_SKILL_INSTALL` (`src/commands/plan.rs:492`), because they are the same kind of promise — and it matches loadout's `LOADOUT_NO_UPDATE_CHECK`, which is the hard kill switch that wins over any config.\n\nIt stops the *background* check. `artefacto update` run outright still works. The automatic thing is suppressible; the thing you typed does what you asked.",
+          "status": "planned",
+          "estimate": "s",
+          "risk": "low",
+          "depends_on": [
+            "t-updater"
+          ],
+          "files": [
+            {
+              "path": "src/update.rs",
+              "action": "modify"
+            },
+            {
+              "path": "README.md",
+              "action": "modify",
+              "note": "documented beside the skill-install switch"
+            }
+          ],
+          "acceptance": [
+            "With it set, no automatic path makes a request and no child is spawned",
+            "With it set, the page shows no update notice",
+            "With it set, `artefacto update` and `--check` still work",
+            "It is documented in the same place as `ARTEFACTO_NO_SKILL_INSTALL`"
+          ],
+          "validation": [
+            "cargo test --test update -- off"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p-check",
+      "title": "Knowing, without ever waiting",
+      "summary_md": "The check that cannot slow anything down, because nothing waits on it. Reading the answer is a file read; producing the answer happens in a process nobody is waiting for.\n\nThis is loadout's design, copied deliberately. It removes the whole class of problem revision 2 was trying to manage with timeouts.",
+      "tasks": [
+        {
+          "id": "t-cache",
+          "title": "The verdict cache, and one pure decision",
+          "summary_md": "One small file: when the last check ran, which binary version ran it, and what it concluded — available, current, or failed. Shared across every repository on the machine, so five checkouts ask once.\n\nThe version stamp is what makes it correct across an update: an \"available\" computed by 0.2.0 must never nudge the 0.3.0 that replaced it, and a cache from a different version is simply ignored and refreshed, which self-heals right after an update.\n\nThe decision itself — nudge, and/or refresh — is a pure function of `(mode, cache, now)` with no I/O, so it is fully unit-tested. That is how loadout tests it and it is the reason its logic is trustworthy.\n\nA clock that went backwards counts as due, rather than never being due again.",
+          "status": "planned",
+          "estimate": "s",
+          "risk": "low",
+          "depends_on": [
+            "t-updater"
+          ],
+          "files": [
+            {
+              "path": "src/update.rs",
+              "action": "modify"
+            }
+          ],
+          "acceptance": [
+            "The cache records the time, the binary version, and the verdict",
+            "A cache written by a different binary version is ignored and a refresh is due",
+            "A missing or unparseable cache is a refresh, never an error",
+            "A clock that moved backwards counts as due",
+            "The decision function does no I/O and is tested directly",
+            "The cache is shared across repositories: two different repository roots read the same file"
+          ],
+          "validation": [
+            "cargo test --test update -- cache",
+            "cargo test --test update -- decide: a table of (mode, cache, now) cases with no filesystem at all"
+          ]
+        },
+        {
+          "id": "t-refresher",
+          "title": "The detached child that does the asking",
+          "summary_md": "When the verdict is stale, spawn `artefacto update --refresh-cache` detached — no wait, no inherited stdio, its own process group — and carry on. The child performs the check with no deadline and writes the verdict for next time. Its only observable effect is that file.\n\nStamp the cache *before* spawning, with `failed` as the placeholder. That closes the window immediately, so a burst of commands starts one child rather than a swarm, and if the child dies before writing, the placeholder doubles as the retry backoff.\n\n`--refresh-cache` is hidden from `--help` and handled before anything else in the command, prints nothing, and exits 0.\n\nThis is what makes the whole design safe: nothing in artefacto ever waits on the network, so there is no timeout to pick and no thread that can hang. A new release shows up at most one command late, which is the entire price.",
+          "status": "planned",
+          "estimate": "m",
+          "risk": "medium",
+          "depends_on": [
+            "t-cache"
+          ],
+          "files": [
+            {
+              "path": "src/update.rs",
+              "action": "modify"
+            },
+            {
+              "path": "src/commands/update.rs",
+              "action": "modify"
+            }
+          ],
+          "acceptance": [
+            "The cache is stamped before the child is spawned",
+            "Ten rapid calls start one child, not ten",
+            "The child prints nothing on any stream and exits 0",
+            "A child that fails to spawn leaves the stamp, so the next window retries",
+            "A child that dies before writing leaves a failure verdict, not a stale success",
+            "No caller ever blocks on the child"
+          ],
+          "validation": [
+            "cargo test --test update -- refresher",
+            "a test counts spawned children across a burst of calls",
+            "a test asserts the refresher writes nothing to stdout or stderr"
+          ]
+        },
+        {
+          "id": "t-state",
+          "title": "Carry the verdict, and the versions, to the page",
+          "summary_md": "The page has no way to learn a version today. `state_json` (`src/server/page.rs:376`) does not carry one, `status_json` does not, no event type would deliver one, and nothing in `src/` reads `CARGO_PKG_VERSION` outside `skill.rs`.\n\nSo the state payload gains the running server's version and, when the cache holds one, the verdict. Read at page load and on reconnect. The daemon reads the cache and may spawn the refresher; it never makes a request itself. A static export has no server, so it carries neither and the notice cannot appear — which is what the notice wants anyway.\n\n`server.json` gains a `version` field too (`ServerFile` in `src/server/state_dir.rs:18` has `pid`, `port`, `secret`, `started_at` and nothing else). Without it a new CLI cannot tell it is talking to a daemon running older code, which after any update is the normal case for the next thirty minutes. An older `server.json` with no version field must still parse.",
+          "status": "planned",
+          "estimate": "m",
+          "risk": "medium",
+          "depends_on": [
+            "t-refresher"
+          ],
+          "files": [
+            {
+              "path": "src/server/page.rs",
+              "action": "modify",
+              "note": "the state payload carries the running version and the cached verdict"
+            },
+            {
+              "path": "src/server/state_dir.rs",
+              "action": "modify",
+              "note": "`ServerFile` gains `version`"
+            },
+            {
+              "path": "src/server/http.rs",
+              "action": "modify",
+              "note": "the tick loop reads the cache and may spawn the refresher; it never makes a request"
+            }
+          ],
+          "acceptance": [
+            "The state payload carries the running server's version",
+            "It carries the verdict only when the cache holds a fresh one",
+            "A static export carries neither",
+            "`server.json` records the version that wrote it, and one written without the field still parses",
+            "No request is made on any request-handling path: the daemon only ever reads the cache and spawns"
+          ],
+          "validation": [
+            "cargo test --test server_loop -- state_version",
+            "a test proves `plan push`, `plan check` and `status --json` make no outbound request"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p-page",
+      "title": "Saying so, and asking",
+      "summary_md": "The part the reviewer sees. One line in the page when a newer version exists, and one button — which you approved.",
+      "tasks": [
+        {
+          "id": "t-notice",
+          "title": "A notice in the page, in the existing notice component",
+          "summary_md": "A new notice kind carrying the version that is out and the one running, in a neutral voice — this is the tool talking about itself, not a message from the agent.\n\nTwo details in `plan.js` that will bite whoever builds this. `noticeNode` (line 2874) unconditionally calls `agentMark(spec.mark)` and falls back to `agentTitle()` for the kicker, so the agent-free voice is a change to `noticeNode`, not just a new entry in `NOTICE_KINDS` (line 2864). And `renderNotices` (line 2891) iterates a hardcoded list of kinds — a kind missing from that array renders nothing, silently, which looks exactly like a bug somewhere else.\n\nDismissal has to survive a reload, so it goes in `localStorage` keyed by the dismissed version, following what the page already does for the theme — including the `try`/`catch`, because the static export runs under an opaque origin where touching `localStorage` *throws* (`plan.js:408`, `plan.js:795`).\n\nAfter an update the notice does not disappear, because the daemon is still old. It changes: *version X is installed; this review is running Y, and will pick it up when this server next starts* — with nothing to press.\n\nAn install with no receipt gets the notice and no button, which is what you approved.",
+          "status": "planned",
+          "estimate": "m",
+          "risk": "medium",
+          "depends_on": [
+            "t-state"
+          ],
+          "files": [
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify",
+              "note": "`NOTICE_KINDS`, `noticeNode`'s agent assumption, and `renderNotices`'s hardcoded list"
+            },
+            {
+              "path": "src/plan/assets/plan.css",
+              "action": "modify"
+            }
+          ],
+          "acceptance": [
+            "The notice appears only when the verdict says a newer version exists",
+            "It names both versions",
+            "It carries no agent name, mark or avatar",
+            "It does not appear on a static export",
+            "Dismissing it survives a reload, and a later version brings it back",
+            "Reading `localStorage` under an opaque origin cannot throw out of the render",
+            "After an update it says the review is still on the old version and offers nothing to press",
+            "An install with no receipt shows the notice and no button"
+          ],
+          "validation": [
+            "cargo test --test browser -- update_notice",
+            "the dismissal test must reload the page, not just assert the node is gone"
+          ]
+        },
+        {
+          "id": "t-button",
+          "title": "The button, and what it says while it works",
+          "summary_md": "Pressing it asks the server to run the update. The notice says it is working, then what happened.\n\nThe route is in `src/server/ingress.rs`, as a new `Command` variant — `POST /a/<artifact>/cmd`, behind the page cookie and the strict `Origin` check. **Not** `src/server/verbs.rs`, which revision 1 named: that is the agent's `/cli/` surface behind the bearer secret and the lease session token, which the page does not have and must never have.\n\nOne thing ingress does that this must not: every command it handles today is committed to the event log. An update request is not a fact about the review, and logging it means the fold replays it on the next server start. It belongs with `server.stopping` and `nudge` — delivered, never logged. The surrounding code's default is the opposite, so this needs saying out loud and testing.\n\nThe work happens off the request thread, because `run_sync()` downloads a file. One at a time: pressing twice does not update twice.",
+          "status": "planned",
+          "estimate": "m",
+          "risk": "medium",
+          "depends_on": [
+            "t-notice"
+          ],
+          "files": [
+            {
+              "path": "src/server/ingress.rs",
+              "action": "modify",
+              "note": "a new `Command` variant; the page's cookie surface, not the agent's bearer one"
+            },
+            {
+              "path": "src/plan/assets/plan.js",
+              "action": "modify"
+            }
+          ],
+          "acceptance": [
+            "The route is on the page's cookie-and-Origin surface, never the bearer one",
+            "The request is delivered and never written to the event log",
+            "Restarting the server does not replay the update request",
+            "The download does not block the request thread or any other page request",
+            "Pressing it updates the binary and the notice says the review is still on the old one",
+            "A failure says what happened and leaves the notice pressable again",
+            "Pressing twice does not update twice",
+            "An install with no receipt exposes no button and the route refuses"
+          ],
+          "validation": [
+            "cargo test --test browser -- update_button",
+            "a test restarts the server after a press and proves the fold replays nothing"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p-link",
+      "title": "Getting back to the page",
+      "summary_md": "Folded in at your request. It is not an update feature, but it is in the way of one: a page you cannot get back to cannot offer you anything.\n\nYou clicked a `/b/` link a second time, got raw JSON, and correctly concluded the server had died. It had not — it answered a probe in under two milliseconds while you were reading the error.",
+      "tasks": [
+        {
+          "id": "t-link",
+          "title": "A spent one-time link should not look like a crash",
+          "summary_md": "`/b/<token>` links are one-time by design: they trade the token for a session cookie and burn it, then redirect to `/a/<artifact>`, which is the durable URL. That part is right and should stay. What is wrong is what happens on the second click.\n\nToday it returns `{\"error\":{\"code\":\"bad_bootstrap\"}}` as raw JSON in the browser window. There is nothing to read, nothing to do, and no hint that the server is fine — so it reads as a dead server. You have now hit this twice, and both times concluded something worse than what happened.\n\nThree changes, smallest first:\n\n1. **If the browser already holds a valid session, a spent or unknown token just redirects to the page.** This is the common case — clicking your own old link again in the same browser — and it should simply work, silently.\n2. **Otherwise, serve an HTML page, not JSON.** It says the link was one-time, that the server is running, and names `artefacto open` as the way to get another.\n3. **A request that asks for JSON still gets JSON**, so nothing machine-read changes.\n\nNo token is ever un-burned, and an unknown token is still refused. This only changes what the refusal looks like.",
+          "status": "planned",
+          "estimate": "s",
+          "risk": "low",
+          "files": [
+            {
+              "path": "src/server/http.rs",
+              "action": "modify",
+              "note": "the bootstrap route's refusal path"
+            }
+          ],
+          "acceptance": [
+            "A spent token presented with a valid session cookie redirects to the artifact page",
+            "A spent token with no session gets an HTML page naming `artefacto open`, not raw JSON",
+            "A request with `Accept: application/json` still gets the JSON error",
+            "An unknown or malformed token is still refused, and is not distinguishable from a spent one",
+            "No token is ever reusable: a spent token without a session never grants one"
+          ],
+          "validation": [
+            "cargo test --test server_loop -- bootstrap_spent",
+            "a test proves a spent token with no cookie cannot obtain a session"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p-record",
+      "title": "Saying what it now does",
+      "tasks": [
+        {
+          "id": "t-record",
+          "title": "The README's update section, the spec, and the build record",
+          "summary_md": "The README's no-network claim already changed in `t-updater`, which is the point — it was never allowed to be false in the meantime. What is left is the section covering `artefacto update`, `--check`, `ARTEFACTO_NO_UPDATE_CHECK`, and who gets no button and why.\n\nThe spec gains three rules as decisions with their reasons: the update is axoupdater's, not artefacto's; nothing in artefacto ever waits on the network, because the check happens in a process nobody waits for; and any on-disk format shared across repositories stays readable and writable by the previous version for at least one version (the rule `r-shared-skill` implies and `src/index.rs:266` already half-implements).\n\nThe build record gets the round, including that revisions 1 and 2 planned to hand-roll what one dependency already does, and that the answer came from reading loadout rather than from more planning.",
+          "status": "planned",
+          "estimate": "s",
+          "risk": "low",
+          "depends_on": [
+            "t-button",
+            "t-link"
+          ],
+          "files": [
+            {
+              "path": "README.md",
+              "action": "modify"
+            },
+            {
+              "path": "docs/specs/2026-09-06-artefacto-design.md",
+              "action": "modify"
+            },
+            {
+              "path": "docs/BUILD-STATUS.md",
+              "action": "modify"
+            }
+          ],
+          "acceptance": [
+            "The command, `--check` and the off switch are documented",
+            "It says which installs get no button, and why",
+            "The spec says nothing in artefacto ever waits on the network, and how that is achieved",
+            "The spec states the cross-version compatibility rule for shared on-disk formats",
+            "No document claims artefacto touches no network",
+            "A screenshot of the notice is in the record"
+          ],
+          "validation": [
+            "cargo test --test cli -- update_help",
+            "the gate: cargo fmt --check, cargo clippy --all-targets, cargo test"
+          ]
+        }
+      ]
+    }
+  ]
+}

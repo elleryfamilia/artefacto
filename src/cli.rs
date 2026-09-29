@@ -49,6 +49,8 @@ pub enum Command {
     Resolve(ResolveArgs),
     /// Emit the skill package: a JSON manifest, or files under a directory.
     Skill(SkillArgs),
+    /// Update artefacto to the latest release. Installer-based installs only.
+    Update(UpdateArgs),
     /// Drop sent reviews from the log and rotate the session secret. Stops the
     /// server first; the artifact index is kept.
     Clean {
@@ -79,6 +81,24 @@ pub struct SkillArgs {
     /// Write the package under this directory, replacing what is there.
     #[arg(long, group = "form", value_name = "DIR")]
     pub install: Option<PathBuf>,
+}
+
+/// `artefacto update`. The only command that makes an outbound request, and
+/// it does so only because somebody typed it.
+#[derive(Args, Debug)]
+pub struct UpdateArgs {
+    /// Only report whether a newer release exists; install nothing.
+    #[arg(long)]
+    pub check: bool,
+
+    /// The detached refresher: ask, write the verdict down, print nothing.
+    ///
+    /// Hidden because it is not a thing to run by hand. It exists so that the
+    /// server can learn whether a new release exists without ever waiting on
+    /// the network itself: it spawns this and forgets about it, and the answer
+    /// is there for the next tick.
+    #[arg(long, hide = true)]
+    pub refresh_cache: bool,
 }
 
 #[derive(Args, Debug)]

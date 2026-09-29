@@ -501,7 +501,9 @@ fn the_reviewer_approves_and_the_agent_receives_the_document() {
     connected(&mut page);
     comment(&mut page, "task:t-a", "fine by me");
 
-    page.click(".feedback-bar-approve");
+    page.click(".pv-panel-foot .feedback-bar-approve");
+    // Approve asks before it sends; the confirm is part of the verdict now.
+    page.click(".pv-confirm-go");
     page.wait_until(
         "document.querySelector('.feedback-bar-sent').textContent.indexOf('review sent') === 0",
         "the bar to confirm the review was sent",
@@ -518,6 +520,84 @@ fn the_reviewer_approves_and_the_agent_receives_the_document() {
     assert_eq!(
         last["data"]["feedback"]["comments"][0]["text"],
         "fine by me"
+    );
+}
+
+#[test]
+fn the_bar_says_when_no_agent_is_listening() {
+    // The reviewer's doubt this exists for: a click that looked like it did
+    // nothing. The verdict is stored either way -- what the bar must not say
+    // is "sent" and stop there.
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    page.click(".pv-panel-foot .feedback-bar-approve");
+    page.click(".pv-confirm-go");
+    page.wait_until(
+        "document.querySelector('.feedback-bar-sent').textContent.indexOf('review sent') === 0",
+        "the bar to confirm the review was sent",
+    );
+    let sent = "document.querySelector('.feedback-bar-sent').textContent";
+    assert!(
+        page.text(sent).contains("not read yet"),
+        "the push still holds the lease and has read nothing: {}",
+        page.text(sent)
+    );
+
+    // Let that lease lapse: the agent pushed and stopped. Nobody is listening.
+    s.server()
+        .age_lease(artefacto::server::lease::TTL + std::time::Duration::from_secs(1));
+    page.wait_until(
+        "document.querySelector('.feedback-bar-sent').textContent.indexOf('no agent is attached') >= 0",
+        "the lapsed lease to reach the page",
+    );
+    assert!(
+        page.text(sent).contains("review sent"),
+        "and it is still sent, not lost: {}",
+        page.text(sent)
+    );
+}
+
+#[test]
+fn the_bar_names_the_agent_that_read_the_verdict() {
+    let Some(browser) = Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    page.click(".pv-panel-foot .feedback-bar-approve");
+    page.click(".pv-confirm-go");
+    page.wait_until(
+        "document.querySelector('.feedback-bar-sent').textContent.indexOf('review sent') === 0",
+        "the bar to confirm the review was sent",
+    );
+
+    // The agent acknowledges the frame that carried the verdict. That
+    // acknowledgement is the only proof the protocol has of reading.
+    let seq = s.server().last_event_of_type("review.submitted")["seq"]
+        .as_u64()
+        .expect("the verdict's seq")
+        .to_string();
+    s.repo
+        .run(&["ack", "--seq", &seq, "--session", &s.session])
+        .success();
+
+    page.wait_until(
+        "document.querySelector('.feedback-bar-sent').textContent.indexOf('read by') >= 0",
+        "the acknowledgement to reach the page",
+    );
+    assert!(
+        page.text("document.querySelector('.feedback-bar-sent').textContent")
+            .contains("read by agent"),
+        "the agent that acknowledged is the one named"
     );
 }
 
@@ -818,7 +898,7 @@ fn the_sent_notice_counts_the_plan_on_screen() {
     );
 
     page.click(".pv-panel-handle");
-    page.click(".feedback-bar-send");
+    page.click(".pv-panel-foot .feedback-bar-send");
     page.wait_until(
         "!!document.querySelector('.pv-notice[data-kind=\"sent\"]')",
         "the sent notice",
@@ -1769,7 +1849,7 @@ fn a_lost_cookie_reads_as_signed_out_not_as_a_gone_server() {
         false
     );
     assert_eq!(
-        page.eval("document.querySelector('.feedback-bar-send').disabled"),
+        page.eval("document.querySelector('.pv-panel-foot .feedback-bar-send').disabled"),
         true
     );
     assert_eq!(
@@ -2032,7 +2112,7 @@ fn send_review_cannot_be_sent_twice_while_in_flight() {
     // The second click forces the button back on, the way a frame arriving
     // mid-flight once did.
     page.eval(
-        "(function(){ const b = document.querySelector('.feedback-bar-send'); b.click(); b.disabled = false; b.click(); return true; })()",
+        "(function(){ const b = document.querySelector('.pv-panel-foot .feedback-bar-send'); b.click(); b.disabled = false; b.click(); return true; })()",
     );
     support::wait_for(
         || s.server().count_events("review.submitted") == 1,
@@ -2045,7 +2125,7 @@ fn send_review_cannot_be_sent_twice_while_in_flight() {
         "and only one"
     );
     page.wait_until(
-        "document.querySelector('.feedback-bar-send').classList.contains('is-filled')",
+        "document.querySelector('.pv-panel-foot .feedback-bar-send').classList.contains('is-filled')",
         "the button to settle after its pulse",
     );
 }
@@ -2601,7 +2681,7 @@ fn a_gone_artifact_found_by_the_probe_reads_as_lost_everywhere() {
         "signed out"
     );
     assert_eq!(
-        page.eval("document.querySelector('.feedback-bar-send').disabled"),
+        page.eval("document.querySelector('.pv-panel-foot .feedback-bar-send').disabled"),
         true
     );
     assert!(page
@@ -3165,7 +3245,7 @@ fn a_sent_review_is_unmistakable() {
     page.navigate(&s.url);
     connected(&mut page);
     comment(&mut page, "task:t-a", "fine");
-    page.click(".feedback-bar-send");
+    page.click(".pv-panel-foot .feedback-bar-send");
     page.wait_until(
         "document.querySelector('.pv-notice[data-kind=\"sent\"]')",
         "the sent notice",
@@ -3177,9 +3257,14 @@ fn a_sent_review_is_unmistakable() {
         text.starts_with("Review sent for revision 1: 1 comment"),
         "{text}"
     );
-    assert!(text.contains("The agent has it"), "{text}");
+    assert!(
+        text.contains("agent has not read it yet"),
+        "what the notice says is true: the push holds the lease and has \
+         acknowledged nothing, so the verdict is stored and unread -- not \
+         \"the agent has it\": {text}"
+    );
     page.wait_until(
-        "document.querySelector('.feedback-bar-send').classList.contains('is-filled')",
+        "document.querySelector('.pv-panel-foot .feedback-bar-send').classList.contains('is-filled')",
         "the button to say a second click is a second send",
     );
     assert!(page
@@ -3199,7 +3284,7 @@ fn a_sent_review_is_unmistakable() {
         false
     );
     assert_eq!(
-        page.eval("document.querySelector('.feedback-bar-send').classList.contains('is-filled') || document.querySelector('.pv-panel-foot').classList.contains('is-sent')"),
+        page.eval("document.querySelector('.pv-panel-foot .feedback-bar-send').classList.contains('is-filled') || document.querySelector('.pv-panel-foot').classList.contains('is-sent')"),
         false,
         "a new revision reopens the review: no verdict is filled"
     );
@@ -3254,7 +3339,7 @@ fn an_answer_can_be_edited_and_removed() {
     );
 
     // And a removed answer is not in the review.
-    page.click(".feedback-bar-send");
+    page.click(".pv-panel-foot .feedback-bar-send");
     page.wait_until(
         "document.querySelector('.pv-notice[data-kind=\"sent\"]')",
         "sent",
@@ -4233,7 +4318,7 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
         "the handle carries its name on a first visit"
     );
     assert_eq!(
-        page.eval("document.querySelector('.feedback-bar-approve').getBoundingClientRect().width"),
+        page.eval("document.querySelector('.pv-panel-foot .feedback-bar-approve').getBoundingClientRect().width"),
         0,
         "and the verdict is not reachable until it is opened"
     );
@@ -4245,7 +4330,7 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
     );
     assert_eq!(
         page.eval(
-            "(function(){ const r = document.querySelector('.feedback-bar-approve').getBoundingClientRect(); \
+            "(function(){ const r = document.querySelector('.pv-panel-foot .feedback-bar-approve').getBoundingClientRect(); \
                const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); \
                return r.width > 0 && r.height > 0 && !!el && el.closest('.feedback-bar-verdict') !== null; })()"
         ),
@@ -4286,13 +4371,13 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
 
     // This plan has work left, so the verdict is approval of a proposal.
     assert_eq!(
-        page.text("document.querySelector('.feedback-bar-approve').textContent"),
+        page.text("document.querySelector('.pv-panel-foot .feedback-bar-approve').textContent"),
         "Approve",
         "a plan with work outstanding is approved, not signed off"
     );
 
     // Request changes is one verdict, Approve the other; the sent one fills.
-    page.click(".feedback-bar-send");
+    page.click(".pv-panel-foot .feedback-bar-send");
     page.wait_until(
         "document.querySelector('.pv-panel-foot').classList.contains('is-sent')",
         "the bar to show the review as sent",
@@ -4302,17 +4387,17 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
         "request_changes"
     );
     assert_eq!(
-        page.eval("document.querySelector('.feedback-bar-send').classList.contains('is-filled') && !document.querySelector('.feedback-bar-approve').classList.contains('is-filled')"),
+        page.eval("document.querySelector('.pv-panel-foot .feedback-bar-send').classList.contains('is-filled') && !document.querySelector('.pv-panel-foot .feedback-bar-approve').classList.contains('is-filled')"),
         true,
         "Request changes is the filled control"
     );
     assert_eq!(
-        page.eval("document.querySelectorAll('.pv-btn.is-filled').length"),
+        page.eval("document.querySelectorAll('.pv-panel-foot .pv-btn.is-filled').length"),
         1,
-        "and the only one"
+        "and the only one in the bar"
     );
     assert_eq!(
-        page.eval("!!document.querySelector('.feedback-bar-approve input')"),
+        page.eval("!!document.querySelector('.pv-panel-foot .feedback-bar-approve input')"),
         false,
         "no Approve checkbox"
     );
@@ -4340,9 +4425,11 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
         Some("request_changes".to_string()),
         "and that is what a reload would be handed"
     );
-    page.click(".feedback-bar-approve");
+    page.click(".pv-panel-foot .feedback-bar-approve");
+    // Approve asks before it sends; the confirm is part of the verdict now.
+    page.click(".pv-confirm-go");
     page.wait_until(
-        "document.querySelector('.feedback-bar-approve').classList.contains('is-filled')",
+        "document.querySelector('.pv-panel-foot .feedback-bar-approve').classList.contains('is-filled')",
         "Approve to be the filled control",
     );
     assert_eq!(
@@ -4350,7 +4437,7 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
         "approve"
     );
     assert_eq!(
-        page.eval("document.querySelectorAll('.pv-btn.is-filled').length === 1 && !document.querySelector('.feedback-bar-send').classList.contains('is-filled')"),
+        page.eval("document.querySelectorAll('.pv-panel-foot .pv-btn.is-filled').length === 1 && !document.querySelector('.pv-panel-foot .feedback-bar-send').classList.contains('is-filled')"),
         true,
         "the other verdict is not filled"
     );
@@ -4365,7 +4452,7 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
     connected(&mut page);
     assert_eq!(
         page.eval(
-            "document.querySelector('.feedback-bar-approve').classList.contains('is-filled')"
+            "document.querySelector('.pv-panel-foot .feedback-bar-approve').classList.contains('is-filled')"
         ),
         true,
         "the snapshot carries the verdict"
@@ -4373,6 +4460,103 @@ fn two_verdicts_one_filled_and_leaving_is_not_losing() {
 }
 
 /// Ask a question about `target` from the panel and wait for it in the log
+#[test]
+fn a_verdict_can_be_given_without_opening_the_conversation() {
+    let Some(browser) = support::browser::Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    // The panel is shut. Before this, the only verdict controls lived in its
+    // foot, so approving a plan meant opening a chat with the agent first --
+    // which is a strange place to keep a decision about the document.
+    assert_eq!(
+        page.eval("document.querySelector('.pv-dock').classList.contains('is-hidden')"),
+        true,
+        "the conversation starts closed"
+    );
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-verdict-end .feedback-bar-approve')"),
+        true,
+        "the end of the document carries the verdict too"
+    );
+
+    page.click(".pv-verdict-end .feedback-bar-approve");
+    page.click(".pv-confirm-go");
+    page.wait_until(
+        "document.querySelector('.pv-verdict-end .feedback-bar-approve').classList.contains('is-filled')",
+        "the verdict to land from the document's own control",
+    );
+    assert_eq!(
+        s.server().last_event_of_type("review.submitted")["data"]["verdict"],
+        "approve"
+    );
+    // One verdict, two groups: the bar must not be left saying something
+    // different from the control that was actually pressed.
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-foot .feedback-bar-approve').classList.contains('is-filled')"),
+        true,
+        "both groups agree on the verdict that was sent"
+    );
+}
+
+#[test]
+fn approving_asks_first_and_cancelling_sends_nothing() {
+    let Some(browser) = support::browser::Browser::launch() else {
+        return;
+    };
+    let s = served("minimal.json");
+    let mut page = browser.new_page();
+    page.navigate(&s.url);
+    connected(&mut page);
+
+    page.click(".pv-verdict-end .feedback-bar-approve");
+    page.wait_until(
+        "!!document.querySelector('.pv-confirm')",
+        "the confirm to open",
+    );
+    // The safe button holds the focus: a dialog asking whether you meant it
+    // must not let a stray Enter mean yes.
+    assert_eq!(
+        page.eval("document.activeElement.classList.contains('pv-confirm-not')"),
+        true,
+        "Cancel has the focus, not the verdict"
+    );
+    // No agent chrome: this is the page asking, not the agent.
+    assert_eq!(
+        page.eval("!!document.querySelector('.pv-confirm .ag-mark')"),
+        false,
+        "the confirm wears no agent mark"
+    );
+
+    page.click(".pv-confirm-not");
+    page.wait_until(
+        "!document.querySelector('.pv-confirm')",
+        "the confirm to close",
+    );
+    assert_eq!(
+        page.eval("document.querySelector('.pv-panel-foot').classList.contains('is-sent')"),
+        false,
+        "cancelling sends no verdict"
+    );
+    assert!(
+        s.server().events_of_type("review.submitted").is_empty(),
+        "and the server was never told"
+    );
+
+    // Request changes is the recoverable direction and does not ask: a
+    // confirm on the safe verdict would only train the reviewer to click
+    // through the one that matters.
+    page.click(".pv-verdict-end .feedback-bar-send");
+    page.wait_until(
+        "document.querySelector('.pv-verdict-end .feedback-bar-send').classList.contains('is-filled')",
+        "request changes to send without asking",
+    );
+}
+
 /// as thread `c-N`. The element's mark aims the panel; Enter sends.
 fn ask(page: &mut support::browser::Page, target: &str, text: &str, thread: &str) {
     page.click(&format!("[data-plan-ref=\"{target}\"] .ask-btn"));
@@ -4792,11 +4976,11 @@ fn a_served_plan_whose_work_is_done_asks_a_different_question() {
     // The verdict asks the right thing too: there is nothing left to approve.
     page.click(".pv-panel-handle");
     assert_eq!(
-        page.text("document.querySelector('.feedback-bar-approve').textContent"),
+        page.text("document.querySelector('.pv-panel-foot .feedback-bar-approve').textContent"),
         "Sign off"
     );
     assert_eq!(
-        page.text("document.querySelector('.feedback-bar-send').textContent"),
+        page.text("document.querySelector('.pv-panel-foot .feedback-bar-send').textContent"),
         "Request changes",
         "the other verdict still reads the same: changes to what was built"
     );
@@ -5242,7 +5426,10 @@ fn the_plan_strip_says_where_you_are_and_takes_you_there() {
         page.text("document.querySelector('.pv-map-part.is-active').dataset.mapPart"),
         "summary"
     );
-    page.eval("document.querySelector('[data-plan-ref=\"phase:p-backend\"]').scrollIntoView({ block: 'start' })");
+    page.eval(
+        "(function(){ document.querySelector('[data-plan-ref=\"phase:p-backend\"]').scrollIntoView({ block: 'start' }); \
+           window.artefactoPlan.map.renderNow(); return true; })()",
+    );
     page.wait_until(
         "document.querySelector('.pv-map-part.is-active') && document.querySelector('.pv-map-part.is-active').dataset.mapPart === 'phases'",
         "the phases part to become the one you are in",
@@ -5255,20 +5442,32 @@ fn the_plan_strip_says_where_you_are_and_takes_you_there() {
         "and the summary to be behind you"
     );
     // The numeral itself says which phase you are in; the strip does not
-    // also spell out "1 of 2" beside it. Scrolled to an explicit fraction
-    // rather than to an element: the read line is a fraction of the whole
-    // document, so where `scrollIntoView` lands in it depends on the
-    // document's height, and on this plan the first phase owns a narrow band
-    // near the end.
+    // also spell out "1 of 2" beside it.
+    //
+    // Aimed through the strip's own coordinate space rather than at a
+    // fraction of the document. The segments are not a linear map of the
+    // page -- each has a floor under its width -- so the band that belongs
+    // to the first phase is narrow and moves whenever the document's height
+    // changes. This test used to scroll to a hardcoded 0.8, which sat on the
+    // very last fraction of that band: adding one row to the end of the page
+    // tipped it into the second phase. Asking the strip where the numeral is
+    // cannot drift.
     page.eval(
-        "window.scrollTo({ top: 0.8 * (document.documentElement.scrollHeight - window.innerHeight), behavior: 'instant' })",
+        "(function(){ const top = function (sel) { \
+             return document.querySelector(sel).getBoundingClientRect().top + window.scrollY; }; \
+           const a = top('[data-plan-ref=\"phase:p-core\"]'), b = top('[data-plan-ref=\"phase:p-backend\"]'); \
+           window.scrollTo({ top: window.artefactoPlan.map.lineToScroll((a + b) / 2), left: 0, behavior: 'instant' }); \
+           window.artefactoPlan.map.renderNow(); return true; })()",
     );
     page.wait_until(
         "document.querySelector('.pv-map-ph.is-active') && \
            document.querySelector('.pv-map-ph.is-active').textContent === '01'",
         "the numeral for the phase the read line is in",
     );
-    page.eval("window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' })");
+    page.eval(
+        "(function(){ window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' }); \
+           window.artefactoPlan.map.renderNow(); return true; })()",
+    );
     page.wait_until(
         "document.querySelector('.pv-map-ph.is-active').textContent === '02'",
         "the numeral to follow the reader to the last phase",
@@ -5497,7 +5696,10 @@ fn a_long_plan_gets_ticks_instead_of_numerals() {
         "Emulation.setDeviceMetricsOverride",
         serde_json::json!({ "width": 1280, "height": 520, "deviceScaleFactor": 1, "mobile": false }),
     );
-    page.eval("window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' })");
+    page.eval(
+        "(function(){ window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' }); \
+           window.artefactoPlan.map.renderNow(); return true; })()",
+    );
     page.wait_until(
         "!!document.querySelector('.pv-map-tick.is-active')",
         "the tick for the phase you are in",
@@ -6015,7 +6217,9 @@ fn a_sent_review_is_never_called_hanging() {
     // the verdict has been sent. The agent is not waiting on anything, so
     // nothing stops the page, blocking question or not.
     page.click(".pv-panel-handle");
-    page.click(".feedback-bar-approve");
+    page.click(".pv-panel-foot .feedback-bar-approve");
+    // Approve asks before it sends; the confirm is part of the verdict now.
+    page.click(".pv-confirm-go");
     page.wait_until(
         "document.querySelector('.pv-panel-foot').classList.contains('is-sent')",
         "the review to be sent",

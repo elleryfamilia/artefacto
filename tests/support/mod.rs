@@ -78,7 +78,12 @@ impl Repo {
             // HOME alone is not enough: an agent whose configuration
             // directory has been moved with an environment variable is still
             // reachable from a test if that variable is inherited.
-            .env_remove("CLAUDE_CONFIG_DIR");
+            .env_remove("CLAUDE_CONFIG_DIR")
+            // hokki sets this inside every session it runs, and the test
+            // suite is often run from one. Without removing it a test's push
+            // would install the skill into the engine of the hokki the
+            // developer is working in.
+            .env_remove("DSH_HOME");
         c
     }
 
@@ -360,6 +365,7 @@ impl InProcess {
                 port: server.port,
                 secret,
                 started_at: "2026-09-10T00:00:00Z".to_string(),
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
             },
         )
         .expect("server.json");

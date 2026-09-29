@@ -705,3 +705,213 @@ fn check_json_reports_the_deprecated_format_as_a_warning_not_stderr() {
         "the deprecation note must not print to stderr: {stderr}"
     );
 }
+
+/// A HOME with no install receipt in it, so `update` cannot mistake the
+/// developer's real install for the one under test. Every update test needs
+/// this: without it the command reads `~/.config/artefacto/` and would report
+/// on whatever is actually installed on the machine running the suite.
+fn homeless() -> (tempfile::TempDir, Command) {
+    let home = tempfile::tempdir().expect("a temp home");
+    let mut c = bin();
+    c.env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env_remove("CARGO_HOME");
+    (home, c)
+}
+
+#[test]
+fn update_without_a_receipt_says_so_and_names_the_installer() {
+    let (_home, mut c) = homeless();
+    let assert = c.args(["update", "--check"]).assert().code(4);
+    let err = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        err.contains("not installed by the artefacto installer"),
+        "it must say why it cannot update: {err}"
+    );
+    assert!(
+        err.contains("artefacto-installer.sh"),
+        "and name the way to get an install it can update: {err}"
+    );
+    // Nothing on stdout: an agent parsing this must not find prose there.
+    assert!(
+        assert.get_output().stdout.is_empty(),
+        "a refusal writes to stderr only"
+    );
+}
+
+#[test]
+fn update_refuses_when_the_receipt_is_for_a_binary_somewhere_else() {
+    // The hazard this closes: axoupdater installs into the *receipt's* prefix,
+    // not next to the binary you ran. So `cargo run -- update` from a checkout
+    // would replace the copy on the developer's PATH. axoupdater's own guard
+    // refuses, but it refuses by reporting "no update needed" -- which reads
+    // as "you are on the latest release", a confident answer to a question it
+    // never asked, and it never touches the network to find out.
+    let home = tempfile::tempdir().expect("a temp home");
+    let elsewhere = home.path().join("elsewhere");
+    std::fs::create_dir_all(home.path().join(".config/artefacto")).unwrap();
+    std::fs::create_dir_all(elsewhere.join("bin")).unwrap();
+    std::fs::write(
+        home.path().join(".config/artefacto/artefacto-receipt.json"),
+        serde_json::json!({
+            "binaries": ["artefacto"],
+            "install_layout": "cargo-home",
+            "install_prefix": elsewhere.to_str().unwrap(),
+            "modify_path": true,
+            "provider": { "source": "cargo-dist", "version": "0.32.0" },
+            "source": {
+                "app_name": "artefacto",
+                "name": "artefacto",
+                "owner": "elleryfamilia",
+                "release_type": "github"
+            },
+            "version": "0.1.0"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let assert = bin()
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .args(["update", "--check"])
+        .assert()
+        .code(4);
+    let err = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        err.contains("not the installed artefacto"),
+        "it must say this copy is not the one the receipt names: {err}"
+    );
+    assert!(
+        !err.contains("latest release") && !err.contains("is available"),
+        "and must not answer the version question it never asked: {err}"
+    );
+}
+
+#[test]
+fn update_help_documents_check_and_says_installs_only() {
+    bin()
+        .args(["update", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--check"))
+        .stdout(contains("Installer-based installs only"));
+}
+
+#[test]
+fn the_refresher_writes_a_verdict_and_says_nothing() {
+    // The detached child the server spawns. It exists only to leave a file
+    // behind: anything it printed would go to /dev/null, and anything it
+    // returned would be ignored, so silence and exit 0 are the contract.
+    let home = tempfile::tempdir().expect("a temp home");
+    let state = tempfile::tempdir().expect("a temp state dir");
+    let assert = bin()
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env("XDG_STATE_HOME", state.path())
+        .args(["update", "--refresh-cache"])
+        .assert()
+        .success();
+    let out = assert.get_output();
+    assert!(
+        out.stdout.is_empty() && out.stderr.is_empty(),
+        "the refresher is silent: stdout {:?} stderr {:?}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Shared across repositories: one answer per machine, not one per repo.
+    let cache = state.path().join("artefacto").join("update-check");
+    let text = std::fs::read_to_string(&cache)
+        .unwrap_or_else(|e| panic!("the verdict must be written to {}: {e}", cache.display()));
+    let mut parts = text.split_whitespace();
+    parts
+        .next()
+        .expect("a timestamp")
+        .parse::<u64>()
+        .expect("a number");
+    assert_eq!(
+        parts.next(),
+        Some(env!("CARGO_PKG_VERSION")),
+        "stamped with the binary that asked, so a later version ignores it"
+    );
+    // No receipt in this HOME, so there is nothing to tell anyone: "failed"
+    // is the honest verdict, not "current".
+    assert_eq!(parts.next(), Some("failed"), "in: {text:?}");
+}
+
+#[test]
+fn the_kill_switch_stops_the_refresher_from_asking() {
+    let home = tempfile::tempdir().expect("a temp home");
+    let state = tempfile::tempdir().expect("a temp state dir");
+    bin()
+        .env("HOME", home.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("ARTEFACTO_NO_UPDATE_CHECK", "1")
+        .args(["update", "--check"])
+        .assert()
+        .code(4);
+    // The switch is about the automatic check. A command typed by hand still
+    // does what it was asked -- it refused above because there is no receipt,
+    // not because the switch is set.
+    assert!(
+        !state.path().join("artefacto").join("update-check").exists(),
+        "an explicit command writes no verdict cache"
+    );
+}
+
+#[test]
+fn refresh_cache_is_not_advertised() {
+    // It is not a thing to run by hand: it exists so the server can learn
+    // about a release without waiting on the network itself.
+    let assert = bin().args(["update", "--help"]).assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    assert!(
+        !stdout.contains("refresh-cache"),
+        "the hidden flag must stay out of the help: {stdout}"
+    );
+}
+
+#[test]
+fn no_ordinary_command_can_reach_the_network() {
+    // The promise the README makes, held by a test rather than by care.
+    //
+    // Pointed at a port nothing is listening on: any code that tried to reach
+    // GitHub through the proxy would fail, and `--check` is the one command
+    // allowed to care. Everything below must be completely unaffected,
+    // because none of them ask anything of the network at all.
+    let home = tempfile::tempdir().expect("a temp home");
+    let state = tempfile::tempdir().expect("a temp state dir");
+    let nowhere = "http://127.0.0.1:9";
+
+    for args in [
+        vec!["plan", "check", &fixture("minimal.json")],
+        vec!["plan", "schema"],
+        vec!["list", "--json"],
+        vec!["status", "--json"],
+    ] {
+        let out = bin()
+            .env("HOME", home.path())
+            .env("XDG_STATE_HOME", state.path())
+            .env("HTTP_PROXY", nowhere)
+            .env("HTTPS_PROXY", nowhere)
+            .env("ALL_PROXY", nowhere)
+            .args(&args)
+            .output()
+            .expect("it runs");
+        let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+        assert!(
+            !stderr.contains("proxy") && !stderr.contains("connection refused"),
+            "`artefacto {}` must not touch the network: {stderr}",
+            args.join(" ")
+        );
+    }
+
+    // And none of them left a verdict behind, which is the other half: the
+    // check is the server's job, not something every command does on the way
+    // past.
+    assert!(
+        !state.path().join("artefacto").join("update-check").exists(),
+        "no ordinary command writes an update verdict"
+    );
+}

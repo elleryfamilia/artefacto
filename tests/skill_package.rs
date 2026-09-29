@@ -13,6 +13,7 @@ fn bin() -> Command {
     // developer's own shell must not send a test's writes to their real
     // agent configuration.
     c.env_remove("CLAUDE_CONFIG_DIR");
+    c.env_remove("DSH_HOME");
     c
 }
 
@@ -625,6 +626,63 @@ fn a_relative_configuration_override_means_no_agent_rather_than_the_default() {
     assert!(
         !home.path().join(".claude/skills").exists(),
         "and nothing written to the default it is not using"
+    );
+}
+
+/// hokki is a desktop app: its engine is not a dotfile in the home, and it is
+/// found either through `DSH_HOME` — which hokki sets in every session it
+/// runs — or, on macOS, at its application-data path. An agent that keeps
+/// its skills somewhere else is still an agent to teach the loop.
+#[test]
+fn a_hokki_engine_is_installed_into_through_its_own_variable() {
+    let home = tempfile::tempdir().expect("home");
+    let engine = tempfile::tempdir().expect("engine");
+    // The engine directory itself, which is what DSH_HOME names.
+    std::fs::create_dir_all(engine.path().join("skills")).unwrap();
+
+    let out = bin()
+        .args(["skill", "--for", "all"])
+        .env("HOME", home.path())
+        .env("DSH_HOME", engine.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("hokki:"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    for path in PATHS {
+        assert_eq!(
+            std::fs::read_to_string(engine.path().join("skills").join(path)).unwrap(),
+            repo_file(&format!("skills/{path}")),
+            "the engine's skills directory is where hokki reads"
+        );
+    }
+}
+
+/// The macOS default, for a person running artefacto from a terminal rather
+/// than from inside a hokki session: no `DSH_HOME`, and the app's own engine
+/// directory under the home.
+#[test]
+#[cfg(target_os = "macos")]
+fn the_hokki_default_is_the_apps_engine_directory() {
+    let home = tempfile::tempdir().expect("home");
+    let engine = home.path().join("Library/Application Support/hokki/engine");
+    std::fs::create_dir_all(&engine).unwrap();
+
+    bin()
+        .args(["skill", "--for", "all"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(
+        engine.join("skills/artefacto-plan/SKILL.md").exists(),
+        "found without a variable, because hokki is installed there"
     );
 }
 

@@ -201,6 +201,16 @@ fn ack_under(shared: &Shared, committer: &Committer, name: &str, seq: u64) -> Re
     if seq > last {
         bail!("cannot acknowledge seq {seq}; the log ends at {last}");
     }
+    /* Which verdicts this acknowledgement moves past. Read before the append,
+    so the announcement below is made once, on the transition, and not on
+    every later ack that is already past the seq. */
+    let read: Vec<String> = committer.with_review(|r| {
+        r.artifacts
+            .values()
+            .filter(|a| a.verdict_seq.is_some_and(|v| v > current && v <= seq))
+            .map(|a| a.id.clone())
+            .collect()
+    });
     committer.append(
         "",
         0,
@@ -208,5 +218,18 @@ fn ack_under(shared: &Shared, committer: &Committer, name: &str, seq: u64) -> Re
         "cursor.acked",
         serde_json::json!({ "agent": name, "acked_seq": seq }),
     )?;
+    for artifact in read {
+        /* Page-only and never logged, like every presence announcement: it
+        says what a page has just been told, and a restart rebuilds the fact
+        it describes (`cursors` against `verdict_seq`) from the log. Without
+        it the bar stayed on "no agent has read it yet" until a reload, which
+        is exactly the doubt this exists to remove. */
+        crate::server::presence::announce(
+            shared,
+            &artifact,
+            "review.read",
+            serde_json::json!({ "agent": name, "seq": seq }),
+        );
+    }
     Ok(())
 }

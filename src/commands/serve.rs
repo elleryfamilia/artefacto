@@ -106,6 +106,7 @@ fn start(
             port,
             secret: secret.clone(),
             started_at: now_rfc3339(),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
         },
     )?;
     let shared = Arc::new(Shared::with_nudges(dir, secret, port, nudges)?);

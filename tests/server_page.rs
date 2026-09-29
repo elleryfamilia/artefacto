@@ -410,6 +410,17 @@ fn the_state_route_returns_the_folded_review_and_the_rendered_body() {
     assert_eq!(v["reviewed"][0], "task:t-b");
     assert_eq!(v["submitted"], false);
     assert!(v["presence"].is_null(), "no agent has attached");
+    assert_eq!(
+        v["version"],
+        env!("CARGO_PKG_VERSION"),
+        "the page is told what this server is running: after an update the \
+         binary on disk is new and this daemon is still the old one, and the \
+         page is the only place that difference can be explained"
+    );
+    assert!(
+        v["update"].is_null(),
+        "and nothing about a release, because no check has produced a verdict"
+    );
     assert_eq!(v["last_seq"], s.last_seq());
     assert!(
         v["plan"]["phases"].is_array(),
@@ -437,6 +448,48 @@ fn the_state_route_returns_the_folded_review_and_the_rendered_body() {
         1,
         "only the data island; the page's own script must not run twice"
     );
+}
+
+#[test]
+fn the_snapshot_says_where_the_verdict_stands_delivered() {
+    // What the page's delivery state reads. A verdict sent with nobody
+    // attached must read as unread, and an agent's acknowledgement past its
+    // seq is the only thing that may turn it read -- the same seq the
+    // protocol has the agent name when it acknowledges a frame.
+    let s = InProcess::start();
+    s.seed_artifact();
+    let cookie = s.session_cookie("plan:demo");
+    let review = s.post_cmd(
+        &cookie,
+        "plan:demo",
+        serde_json::json!({
+            "cmd": "review.submit", "client_id": "cid-1",
+            "verdict": "approve", "base_revision": 1,
+        }),
+    );
+    let verdict_seq = review["seq"].as_u64().expect("the seq it landed at");
+
+    let state = |s: &InProcess| -> serde_json::Value {
+        let r = s.get("/a/plan:demo/state", &[("Cookie", &cookie)]);
+        serde_json::from_str(r.split("\r\n\r\n").nth(1).expect("a body")).expect("json")
+    };
+
+    let v = state(&s);
+    assert_eq!(v["verdict_seq"], verdict_seq, "where the verdict arrived");
+    assert!(
+        v["cursors"].as_object().is_some_and(|c| c.is_empty()),
+        "nobody has acknowledged anything, so the verdict is unread: {}",
+        v["cursors"]
+    );
+
+    // The agent acknowledges the frame that carried it.
+    s.log_event(
+        artefacto::server::event::Actor::Server,
+        "cursor.acked",
+        serde_json::json!({ "agent": "claude", "acked_seq": verdict_seq }),
+    );
+    let v = state(&s);
+    assert_eq!(v["cursors"]["claude"], verdict_seq);
 }
 
 #[test]

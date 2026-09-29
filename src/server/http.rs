@@ -208,6 +208,10 @@ impl Shared {
 /// route.
 pub fn run(shared: Arc<Shared>, server: Arc<tiny_http::Server>, idle: Option<Duration>) {
     let mut last_tick = Instant::now();
+    // Starts in the past so the first sweep happens promptly after a start
+    // rather than five minutes in: a reviewer who opens a page straight away
+    // should not have to wait out a window to be told a release exists.
+    let mut last_update_sweep = Instant::now() - UPDATE_SWEEP_EVERY;
     loop {
         if shared.stopping() {
             break;
@@ -219,6 +223,16 @@ pub fn run(shared: Arc<Shared>, server: Arc<tiny_http::Server>, idle: Option<Dur
         if last_tick.elapsed() >= TICK_EVERY {
             crate::server::presence::tick(&shared, shared.now_ms());
             last_tick = Instant::now();
+        }
+        // Keeping the update verdict warm is the only thing on this loop that
+        // touches anything outside the process, and it touches it by starting
+        // a process nobody waits for. Its own clock, because the presence tick
+        // runs five times a second and the verdict is a daily question -- this
+        // is here to bound how often the file is read, not to decide when to
+        // re-ask, which `update::decide` owns.
+        if last_update_sweep.elapsed() >= UPDATE_SWEEP_EVERY {
+            crate::update::tick_check();
+            last_update_sweep = Instant::now();
         }
         match server.recv_timeout(Duration::from_millis(250)) {
             Ok(Some(request)) => {
@@ -244,6 +258,10 @@ pub fn run(shared: Arc<Shared>, server: Arc<tiny_http::Server>, idle: Option<Dur
 
 /// How often presence and the nudge timers are run.
 const TICK_EVERY: Duration = Duration::from_millis(200);
+
+/// How often the update verdict is looked at. Not how often it is re-asked --
+/// that is a day, and `update::decide` owns it.
+const UPDATE_SWEEP_EVERY: Duration = Duration::from_secs(5 * 60);
 
 /// Give requests already in progress a moment to answer.
 ///
